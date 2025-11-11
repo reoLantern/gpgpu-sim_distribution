@@ -99,6 +99,8 @@ enum AdaptiveCache { FIXED = 0, ADAPTIVE_CACHE = 1 };
 #include <stdio.h>
 #include <string.h>
 #include <set>
+#include <cstdint>
+#include <iostream>
 
 typedef unsigned long long new_addr_type;
 typedef unsigned long long cudaTextureObject_t;
@@ -1288,6 +1290,10 @@ class warp_inst_t : public inst_t {
   bool m_is_depbar;
 
   unsigned int m_depbar_group_no;
+
+#if defined(DEBUG) && DEBUG
+  std::string opcode_for_debug;
+#endif
 };
 
 void move_warp(warp_inst_t *&dst, warp_inst_t *&src);
