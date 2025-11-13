@@ -3318,7 +3318,7 @@ void shader_core_ctx::incexecstat(warp_inst_t *&inst) {
         incexp_stat(inst->active_count(), scaling_coeffs->exp_coeff);
         break;
       case TENSOR__OP:
-        inctensor_stat(inst->active_count(), scaling_coeffs->tensor_coeff);
+        inctensor_stat(inst->active_count(), scaling_coeffs->tensor_coeff * inst->initiation_interval);
         break;
       case TEX__OP:
         inctex_stat(inst->active_count(), scaling_coeffs->tex_coeff);
