@@ -416,8 +416,6 @@ void warp_inst_t::generate_mem_accesses() {
       assert(total_accesses > 0 && total_accesses <= m_config->warp_size);
       if (m_is_ldsm) {
         total_accesses *= m_ldsm_num;
-        std::cout << "LDSM warp access count: " << total_accesses
-                  << " for matrix num: " << m_ldsm_num << std::endl;
       }
       cycles = total_accesses;  // shared memory conflicts modeled as larger
                                 // initiation interval
