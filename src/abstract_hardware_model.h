@@ -1077,6 +1077,8 @@ class warp_inst_t : public inst_t {
     m_is_depbar = false;
 
     m_depbar_group_no = 0;
+
+    m_is_ldsm = false;
   }
   warp_inst_t(const core_config *config) {
     m_uid = 0;
@@ -1098,6 +1100,8 @@ class warp_inst_t : public inst_t {
     m_is_depbar = false;
 
     m_depbar_group_no = 0;
+
+    m_is_ldsm = false;
   }
   virtual ~warp_inst_t() {}
 
@@ -1290,6 +1294,9 @@ class warp_inst_t : public inst_t {
   bool m_is_depbar;
 
   unsigned int m_depbar_group_no;
+
+  bool m_is_ldsm;
+  unsigned int m_ldsm_num;  // LDSM matrix number: 1, 2, 4
 
 #if defined(DEBUG) && DEBUG
   std::string opcode_for_debug;
