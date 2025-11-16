@@ -439,10 +439,12 @@ void shader_core_ctx::create_exec_pipeline() {
 
   for (unsigned j = 0; j < m_config->m_specialized_unit.size(); j++) {
     for (unsigned k = 0; k < m_config->m_specialized_unit[j].num_units; k++) {
+      unsigned issue_reg_id = k;
+      if (m_config->sub_core_model)  issue_reg_id = k % m_config->gpgpu_num_sched_per_core;
       m_fu.push_back(new specialized_unit(
           &m_pipeline_reg[EX_WB], m_config, this, SPEC_UNIT_START_ID + j,
           m_config->m_specialized_unit[j].name,
-          m_config->m_specialized_unit[j].latency, k));
+          m_config->m_specialized_unit[j].latency, issue_reg_id));
       m_dispatch_port.push_back(m_config->m_specialized_unit[j].ID_OC_SPEC_ID);
       m_issue_port.push_back(m_config->m_specialized_unit[j].OC_EX_SPEC_ID);
     }
