@@ -46,6 +46,8 @@ class Scoreboard {
   void releaseRegister(unsigned wid, unsigned regnum);
 
   bool checkCollision(unsigned wid, const inst_t *inst) const;
+  void findCollisionRegs(unsigned wid, const inst_t *inst,
+                         std::vector<unsigned> &regs) const;
   bool pendingWrites(unsigned wid) const;
   void printContents() const;
   const bool islongop(unsigned warp_id, unsigned regnum);

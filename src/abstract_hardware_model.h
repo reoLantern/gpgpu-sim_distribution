@@ -99,6 +99,7 @@ enum AdaptiveCache { FIXED = 0, ADAPTIVE_CACHE = 1 };
 #include <stdio.h>
 #include <string.h>
 #include <set>
+#include <string>
 #include <cstdint>
 #include <iostream>
 
@@ -1079,6 +1080,7 @@ class warp_inst_t : public inst_t {
     m_depbar_group_no = 0;
 
     m_is_ldsm = false;
+    m_trace_string.clear();
   }
   warp_inst_t(const core_config *config) {
     m_uid = 0;
@@ -1102,6 +1104,7 @@ class warp_inst_t : public inst_t {
     m_depbar_group_no = 0;
 
     m_is_ldsm = false;
+    m_trace_string.clear();
   }
   virtual ~warp_inst_t() {}
 
@@ -1109,7 +1112,10 @@ class warp_inst_t : public inst_t {
   void broadcast_barrier_reduction(const active_mask_t &access_mask);
   void do_atomic(bool forceDo = false);
   void do_atomic(const active_mask_t &access_mask, bool forceDo = false);
-  void clear() { m_empty = true; }
+  void clear() {
+    m_empty = true;
+    m_trace_string.clear();
+  }
 
   void issue(const active_mask_t &mask, unsigned warp_id,
              unsigned long long cycle, int dynamic_warp_id, int sch_id,
@@ -1218,6 +1224,8 @@ class warp_inst_t : public inst_t {
     return m_warp_active_mask[n] && m_per_scalar_thread_valid &&
            (m_per_scalar_thread[n].callback.function != NULL);
   }
+  void set_trace_string(const std::string &trace) { m_trace_string = trace; }
+  const std::string &trace_string() const { return m_trace_string; }
   new_addr_type get_addr(unsigned n) const {
     assert(m_per_scalar_thread_valid);
     return m_per_scalar_thread[n].memreqaddr[0];
@@ -1298,6 +1306,7 @@ class warp_inst_t : public inst_t {
   bool m_is_ldsm;
   unsigned int m_ldsm_num;  // LDSM matrix number: 1, 2, 4
 
+  std::string m_trace_string;
 #if defined(DEBUG) && DEBUG
   std::string opcode_for_debug;
 #endif
@@ -1400,6 +1409,7 @@ class register_set {
     m_name = name;
   }
   const char *get_name() { return m_name; }
+  unsigned size() const { return regs.size(); }
   bool has_free() {
     for (unsigned i = 0; i < regs.size(); i++) {
       if (regs[i]->empty()) {

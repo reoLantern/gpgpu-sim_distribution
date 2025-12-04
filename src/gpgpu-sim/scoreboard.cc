@@ -149,6 +149,29 @@ bool Scoreboard::checkCollision(unsigned wid, const class inst_t* inst) const {
   return false;
 }
 
+void Scoreboard::findCollisionRegs(unsigned wid, const class inst_t* inst,
+                                   std::vector<unsigned>& regs) const {
+  std::set<int> inst_regs;
+  regs.clear();
+
+  for (unsigned iii = 0; iii < inst->outcount; iii++)
+    inst_regs.insert(inst->out[iii]);
+
+  for (unsigned jjj = 0; jjj < inst->incount; jjj++)
+    inst_regs.insert(inst->in[jjj]);
+
+  if (inst->pred > 0) inst_regs.insert(inst->pred);
+  if (inst->ar1 > 0) inst_regs.insert(inst->ar1);
+  if (inst->ar2 > 0) inst_regs.insert(inst->ar2);
+
+  for (std::set<int>::const_iterator it = inst_regs.begin();
+       it != inst_regs.end(); ++it) {
+    if (reg_table[wid].find(*it) != reg_table[wid].end()) {
+      regs.push_back(*it);
+    }
+  }
+}
+
 bool Scoreboard::pendingWrites(unsigned wid) const {
   return !reg_table[wid].empty();
 }

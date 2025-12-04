@@ -417,6 +417,7 @@ void warp_inst_t::generate_mem_accesses() {
       if (m_is_ldsm) {
         total_accesses *= m_ldsm_num;
       }
+      total_accesses = 1;
       cycles = total_accesses;  // shared memory conflicts modeled as larger
                                 // initiation interval
       m_config->gpgpu_ctx->stats->ptx_file_line_stats_add_smem_bank_conflict(

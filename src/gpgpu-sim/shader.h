@@ -43,6 +43,7 @@
 #include <list>
 #include <map>
 #include <set>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -72,6 +73,10 @@
 #define WRITE_PACKET_SIZE 8
 
 #define WRITE_MASK_SIZE 8
+
+#ifndef ENABLE_LDST_ENTRY_QUEUE
+#define ENABLE_LDST_ENTRY_QUEUE 1
+#endif
 
 class gpgpu_context;
 
@@ -655,12 +660,7 @@ class opndcoll_rfu_t {  // operand collector based register file unit
   // modifiers
   bool writeback(warp_inst_t &warp);
 
-  void step() {
-    dispatch_ready_cu();
-    allocate_reads();
-    for (unsigned p = 0; p < m_in_ports.size(); p++) allocate_cu(p);
-    process_banks();
-  }
+  void step();
 
   void dump(FILE *fp) const {
     fprintf(fp, "\n");
@@ -673,6 +673,7 @@ class opndcoll_rfu_t {  // operand collector based register file unit
   }
 
   shader_core_ctx *shader_core() { return m_shader; }
+  shader_core_ctx *get_shader() { return m_shader; }
 
  private:
   void process_banks() { m_arbiter.reset_alloction(); }
@@ -954,18 +955,20 @@ class opndcoll_rfu_t {  // operand collector based register file unit
     unsigned get_sp_op() const { return m_warp->sp_op; }
     unsigned get_id() const { return m_cuid; }  // returns CU hw id
     unsigned get_reg_id() const { return m_reg_id; }
+    warp_inst_t *get_warp() const { return m_warp; }
 
     // modifiers
     void init(unsigned n, unsigned num_banks, const core_config *config,
               opndcoll_rfu_t *rfu, bool m_sub_core_model, unsigned reg_id,
               unsigned num_banks_per_sched);
-    bool allocate(register_set *pipeline_reg, register_set *output_reg);
+    bool allocate(register_set *pipeline_reg, register_set *output_reg, unsigned specific_reg_id, bool use_sub_core_logic);
 
     void collect_operand(unsigned op) { m_not_ready.reset(op); }
     unsigned get_num_operands() const { return m_warp->get_num_operands(); }
     unsigned get_num_regs() const { return m_warp->get_num_regs(); }
     void dispatch();
-    bool is_free() { return m_free; }
+    bool is_free() const { return m_free; }
+    unsigned pending_operands() const { return m_not_ready.count(); }
 
    private:
     bool m_free;
@@ -1142,6 +1145,11 @@ class simd_function_unit {
     m_dispatch_reg->print(fp);
   }
   const char *get_name() { return m_name.c_str(); }
+  bool dispatch_busy() const { return !m_dispatch_reg->empty(); }
+  bool initiation_interval_busy(unsigned latency) const {
+    return occupied.test(latency);
+  }
+  const warp_inst_t *dispatch_reg_contents() const { return m_dispatch_reg; }
 
  protected:
   std::string m_name;
@@ -1336,6 +1344,9 @@ class specialized_unit : public pipelined_simd_unit {
 
  private:
   int m_supported_op;
+
+ public:
+  int get_supported_op() const { return m_supported_op; }
 };
 
 class simt_core_cluster;
@@ -1390,7 +1401,11 @@ class ldst_unit : public pipelined_simd_unit {
       default:
         return false;
     }
+#if ENABLE_LDST_ENTRY_QUEUE
+    return m_entry_fifo.size() < m_entry_fifo_capacity;
+#else
     return m_dispatch_reg->empty();
+#endif
   }
 
   virtual void active_lanes_in_pipeline();
@@ -1456,6 +1471,7 @@ class ldst_unit : public pipelined_simd_unit {
            std::map<unsigned /*regnum*/, unsigned /*count*/>>
       m_pending_writes;
   std::list<mem_fetch *> m_response_fifo;
+  std::deque<warp_inst_t> m_entry_fifo;  // LSU entry queue (head buffer)
   opndcoll_rfu_t *m_operand_collector;
   Scoreboard *m_scoreboard;
 
@@ -1475,6 +1491,7 @@ class ldst_unit : public pipelined_simd_unit {
 
   std::vector<std::deque<mem_fetch *>> l1_latency_queue;
   void L1_latency_queue_cycle();
+  unsigned m_entry_fifo_capacity;
 };
 
 enum pipeline_stage_name_t {
@@ -2488,6 +2505,8 @@ class shader_core_ctx : public core_t {
   void execute();
 
   void writeback();
+  bool is_tensor_op(const warp_inst_t &inst) const;
+  bool is_tensor_fu(const simd_function_unit *fu) const;
 
   // used in display_pipeline():
   void dump_warp_state(FILE *fout) const;
@@ -2495,6 +2514,18 @@ class shader_core_ctx : public core_t {
 
   unsigned long long m_last_inst_gpu_sim_cycle;
   unsigned long long m_last_inst_gpu_tot_sim_cycle;
+
+  bool m_issue_warp_this_cycle;
+  std::vector<std::string> m_issue_warp_log;
+  bool m_tensor_issue_this_cycle;
+  std::vector<std::string> m_tensor_issue_log;
+  bool m_tensor_issued_to_oc;
+  bool m_tensor_inst_in_ibuffer;
+  bool m_tensor_scoreboard_block;
+  bool m_tensor_oc_block;
+  std::vector<std::string> m_tensor_issue_stage_log;
+  std::vector<std::string> m_tensor_execute_stall_log;
+  std::vector<std::string> m_depbar_trace_per_warp;
 
   // general information
   unsigned m_sid;  // shader id
