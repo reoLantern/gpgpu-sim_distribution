@@ -650,12 +650,15 @@ class opndcoll_rfu_t {  // operand collector based register file unit
     m_shader = NULL;
     m_initialized = false;
   }
-  void add_cu_set(unsigned cu_set, unsigned num_cu, unsigned num_dispatch);
+  void add_cu_set(unsigned cu_set, unsigned num_cu, unsigned num_dispatch,
+                  const char *set_name = NULL);
   typedef std::vector<register_set *> port_vector_t;
   typedef std::vector<unsigned int> uint_vector_t;
   void add_port(port_vector_t &input, port_vector_t &ouput,
                 uint_vector_t cu_sets);
   void init(unsigned num_banks, shader_core_ctx *shader);
+  std::string get_cu_set_name(unsigned set_id) const;
+  unsigned get_cu_set_id(unsigned cu_id) const;
 
   // modifiers
   bool writeback(warp_inst_t &warp);
@@ -1056,6 +1059,8 @@ class opndcoll_rfu_t {  // operand collector based register file unit
   // port_to_du_t                     m_dispatch_units;
   // std::map<warp_inst_t**,std::list<collector_unit_t*> > m_free_cu;
   shader_core_ctx *m_shader;
+  std::vector<unsigned> m_cu_set_id;      // cu_id -> set_id
+  std::vector<std::string> m_cu_set_name; // set_id -> human readable name
 };
 
 class barrier_set_t {
@@ -1671,6 +1676,7 @@ class shader_core_config : public core_config {
   int gpgpu_operand_collector_num_units_mem;
   int gpgpu_operand_collector_num_units_gen;
   int gpgpu_operand_collector_num_units_int;
+  int gpgpu_operand_collector_num_units_spec_3;
 
   unsigned int gpgpu_operand_collector_num_in_ports_sp;
   unsigned int gpgpu_operand_collector_num_in_ports_dp;
@@ -1679,6 +1685,7 @@ class shader_core_config : public core_config {
   unsigned int gpgpu_operand_collector_num_in_ports_mem;
   unsigned int gpgpu_operand_collector_num_in_ports_gen;
   unsigned int gpgpu_operand_collector_num_in_ports_int;
+  unsigned int gpgpu_operand_collector_num_in_ports_spec_3;
 
   unsigned int gpgpu_operand_collector_num_out_ports_sp;
   unsigned int gpgpu_operand_collector_num_out_ports_dp;
@@ -1687,6 +1694,7 @@ class shader_core_config : public core_config {
   unsigned int gpgpu_operand_collector_num_out_ports_mem;
   unsigned int gpgpu_operand_collector_num_out_ports_gen;
   unsigned int gpgpu_operand_collector_num_out_ports_int;
+  unsigned int gpgpu_operand_collector_num_out_ports_spec_3;
 
   unsigned int gpgpu_num_sp_units;
   unsigned int gpgpu_tensor_core_avail;
@@ -2095,6 +2103,7 @@ class shader_core_ctx : public core_t {
   void accept_ldst_unit_response(class mem_fetch *mf);
   void broadcast_barrier_reduction(unsigned cta_id, unsigned bar_id,
                                    warp_set_t warps);
+  void log_ldg_groups_state() const;
   void set_kernel(kernel_info_t *k) {
     assert(k);
     m_kernel = k;
@@ -2516,15 +2525,11 @@ class shader_core_ctx : public core_t {
   unsigned long long m_last_inst_gpu_tot_sim_cycle;
 
   bool m_issue_warp_this_cycle;
-  std::vector<std::string> m_issue_warp_log;
   bool m_tensor_issue_this_cycle;
-  std::vector<std::string> m_tensor_issue_log;
   bool m_tensor_issued_to_oc;
   bool m_tensor_inst_in_ibuffer;
   bool m_tensor_scoreboard_block;
   bool m_tensor_oc_block;
-  std::vector<std::string> m_tensor_issue_stage_log;
-  std::vector<std::string> m_tensor_execute_stall_log;
   std::vector<std::string> m_depbar_trace_per_warp;
 
   // general information

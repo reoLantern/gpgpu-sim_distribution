@@ -518,6 +518,10 @@ void shader_core_config::reg_options(class OptionParser *opp) {
                          OPT_INT32,
                          &gpgpu_operand_collector_num_units_tensor_core,
                          "number of collector units (default = 4)", "4");
+  option_parser_register(opp, "-gpgpu_operand_collector_num_units_spec_3",
+                         OPT_INT32, &gpgpu_operand_collector_num_units_spec_3,
+                         "number of collector units for specialized unit 3 ",
+                         "8");
   option_parser_register(opp, "-gpgpu_operand_collector_num_units_mem",
                          OPT_INT32, &gpgpu_operand_collector_num_units_mem,
                          "number of collector units (default = 2)", "2");
@@ -544,6 +548,11 @@ void shader_core_config::reg_options(class OptionParser *opp) {
       opp, "-gpgpu_operand_collector_num_in_ports_tensor_core", OPT_INT32,
       &gpgpu_operand_collector_num_in_ports_tensor_core,
       "number of collector unit in ports (default = 1)", "1");
+  option_parser_register(
+      opp, "-gpgpu_operand_collector_num_in_ports_spec_3", OPT_INT32,
+      &gpgpu_operand_collector_num_in_ports_spec_3,
+      "number of collector unit in ports for specialized unit 3",
+      "4");
   option_parser_register(opp, "-gpgpu_operand_collector_num_in_ports_mem",
                          OPT_INT32, &gpgpu_operand_collector_num_in_ports_mem,
                          "number of collector unit in ports (default = 1)",
@@ -572,6 +581,11 @@ void shader_core_config::reg_options(class OptionParser *opp) {
       opp, "-gpgpu_operand_collector_num_out_ports_tensor_core", OPT_INT32,
       &gpgpu_operand_collector_num_out_ports_tensor_core,
       "number of collector unit in ports (default = 1)", "1");
+  option_parser_register(
+      opp, "-gpgpu_operand_collector_num_out_ports_spec_3", OPT_INT32,
+      &gpgpu_operand_collector_num_out_ports_spec_3,
+      "number of collector unit out ports for specialized unit 3 ",
+      "4");
   option_parser_register(opp, "-gpgpu_operand_collector_num_out_ports_mem",
                          OPT_INT32, &gpgpu_operand_collector_num_out_ports_mem,
                          "number of collector unit in ports (default = 1)",
