@@ -1497,6 +1497,8 @@ class ldst_unit : public pipelined_simd_unit {
   std::vector<std::deque<mem_fetch *>> l1_latency_queue;
   void L1_latency_queue_cycle();
   unsigned m_entry_fifo_capacity;
+
+  unsigned pending_mf_count(const warp_inst_t &inst) const;
 };
 
 enum pipeline_stage_name_t {
