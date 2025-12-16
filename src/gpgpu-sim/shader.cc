@@ -415,7 +415,8 @@ void shader_core_ctx::create_exec_pipeline() {
       in_ports.push_back(&m_pipeline_reg[ID_OC_MEM]);
       out_ports.push_back(&m_pipeline_reg[OC_EX_MEM]);
       cu_sets.push_back((unsigned)MEM_CUS);
-      cu_sets.push_back((unsigned)GEN_CUS);
+      if (!m_config->gpgpu_operand_collector_mem_strict)
+        cu_sets.push_back((unsigned)GEN_CUS);
       m_operand_collector.add_port(in_ports, out_ports, cu_sets);
       in_ports.clear(), out_ports.clear(), cu_sets.clear();
     }

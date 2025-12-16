@@ -1671,6 +1671,7 @@ class shader_core_config : public core_config {
 
   // op collector
   bool enable_specialized_operand_collector;
+  bool gpgpu_operand_collector_mem_strict;
   int gpgpu_operand_collector_num_units_sp;
   int gpgpu_operand_collector_num_units_dp;
   int gpgpu_operand_collector_num_units_sfu;
