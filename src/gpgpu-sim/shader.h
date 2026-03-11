@@ -998,12 +998,29 @@ class opndcoll_rfu_t {  // operand collector based register file unit
       m_num_collectors = (*cus).size();
       m_next_cu = 0;
     }
-    void init(bool sub_core_model, unsigned num_warp_scheds) {
+    void init(bool sub_core_model, unsigned num_warp_scheds,
+              bool age_based_dispatch) {
       m_sub_core_model = sub_core_model;
       m_num_warp_scheds = num_warp_scheds;
+      m_age_based_dispatch = age_based_dispatch;
     }
 
     collector_unit_t *find_ready() {
+      if (m_age_based_dispatch) {
+        collector_unit_t *best = NULL;
+        unsigned long long best_uid = (unsigned long long)-1;
+        for (unsigned c = 0; c < m_num_collectors; c++) {
+          collector_unit_t &cu = (*m_collector_units)[c];
+          if (cu.ready()) {
+            unsigned long long uid = cu.get_warp()->get_uid();
+            if (best == NULL || uid < best_uid) {
+              best = &cu;
+              best_uid = uid;
+            }
+          }
+        }
+        return best;
+      }
       // With sub-core enabled round robin starts with the next cu assigned to a
       // different sub-core than the one that dispatched last
       unsigned cusPerSched = m_num_collectors / m_num_warp_scheds;
@@ -1026,6 +1043,7 @@ class opndcoll_rfu_t {  // operand collector based register file unit
     unsigned m_next_cu;  // for initialization
     bool m_sub_core_model;
     unsigned m_num_warp_scheds;
+    bool m_age_based_dispatch;
   };
 
   // opndcoll_rfu_t data members
@@ -1481,9 +1499,14 @@ class ldst_unit : public pipelined_simd_unit {
   Scoreboard *m_scoreboard;
 
   mem_fetch *m_next_global;
-  warp_inst_t m_next_wb;
-  unsigned m_writeback_arb;  // round-robin arbiter for writeback contention
-                             // between L1T, L1C, shared
+  mem_fetch *m_pending_l1t;
+  mem_fetch *m_pending_l1c;
+  mem_fetch *m_pending_l1d;
+  // per-subcore writeback slots (one per scheduler/subcore)
+  std::vector<warp_inst_t> m_next_wb_per_sched;
+  // LDGSTS dedicated slot
+  warp_inst_t m_next_wb_ldgsts;
+  std::vector<unsigned> m_writeback_arb_per_sched;  // round-robin per subcore
   unsigned m_num_writeback_clients;
 
   enum mem_stage_stall_type m_mem_rc;
@@ -1672,6 +1695,7 @@ class shader_core_config : public core_config {
   // op collector
   bool enable_specialized_operand_collector;
   bool gpgpu_operand_collector_mem_strict;
+  bool gpgpu_operand_collector_age_based_dispatch;
   int gpgpu_operand_collector_num_units_sp;
   int gpgpu_operand_collector_num_units_dp;
   int gpgpu_operand_collector_num_units_sfu;

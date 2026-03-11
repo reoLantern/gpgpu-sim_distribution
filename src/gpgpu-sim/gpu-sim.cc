@@ -508,6 +508,12 @@ void shader_core_config::reg_options(class OptionParser *opp) {
       "when specialized operand collector is enabled, disallow MEM pipeline "
       "instructions from falling back to the generic collector set (default = 0)",
       "0");
+  option_parser_register(
+      opp, "-gpgpu_operand_collector_age_based_dispatch", OPT_BOOL,
+      &gpgpu_operand_collector_age_based_dispatch,
+      "when enabled, each operand collector set dispatches the oldest ready "
+      "instruction (by UID) instead of round-robin (default = 0)",
+      "0");
   option_parser_register(opp, "-gpgpu_operand_collector_num_units_sp",
                          OPT_INT32, &gpgpu_operand_collector_num_units_sp,
                          "number of collector units (default = 4)", "4");

@@ -54,7 +54,7 @@
 #define PRIORITIZE_MSHR_OVER_WB 1
 #define MAX(a, b) (((a) > (b)) ? (a) : (b))
 #define MIN(a, b) (((a) < (b)) ? (a) : (b))
-#define CYCLE_LOG 1
+#define CYCLE_LOG 0
 #if CYCLE_LOG
 #define CYCLE_PRINTF(...) printf(__VA_ARGS__)
 #else
@@ -3111,7 +3111,13 @@ void ldst_unit::init(mem_fetch_interface *icnt,
   m_mem_rc = NO_RC_FAIL;
   m_num_writeback_clients =
       5;  // = shared memory, global/local (uncached), L1D, L1T, L1C
-  m_writeback_arb = 0;
+  unsigned num_sched = m_config->gpgpu_num_sched_per_core;
+  m_next_wb_per_sched.assign(num_sched, warp_inst_t(m_config));
+  m_writeback_arb_per_sched.assign(num_sched, 0);
+  m_next_wb_ldgsts = warp_inst_t(m_config);
+  m_pending_l1t = NULL;
+  m_pending_l1c = NULL;
+  m_pending_l1d = NULL;
   m_next_global = NULL;
   m_last_inst_gpu_sim_cycle = 0;
   m_last_inst_gpu_tot_sim_cycle = 0;
@@ -3125,7 +3131,6 @@ ldst_unit::ldst_unit(mem_fetch_interface *icnt,
                      const memory_config *mem_config, shader_core_stats *stats,
                      unsigned sid, unsigned tpc, gpgpu_sim *gpu)
     : pipelined_simd_unit(NULL, config, config->smem_latency, core, 0),
-      m_next_wb(config),
       m_gpu(gpu) {
   assert(config->smem_latency > 1);
   init(icnt, mf_allocator, core, operand_collector, scoreboard, config,
@@ -3154,8 +3159,7 @@ ldst_unit::ldst_unit(mem_fetch_interface *icnt,
                      const memory_config *mem_config, shader_core_stats *stats,
                      unsigned sid, unsigned tpc, l1_cache *new_l1d_cache)
     : pipelined_simd_unit(NULL, config, 3, core, 0),
-      m_L1D(new_l1d_cache),
-      m_next_wb(config) {
+      m_L1D(new_l1d_cache) {
   init(icnt, mf_allocator, core, operand_collector, scoreboard, config,
        mem_config, stats, sid, tpc);
 }
@@ -3195,210 +3199,263 @@ void ldst_unit::issue(register_set &reg_set) {
 }
 
 void ldst_unit::writeback() {
-  // process next instruction that is going to writeback
-  if (!m_next_wb.empty()) {
-    if (m_operand_collector->writeback(m_next_wb)) {
-      bool insn_completed = false;
-      for (unsigned r = 0; r < MAX_OUTPUT_VALUES; r++) {
-        if (m_next_wb.out[r] > 0) {
-          if (m_next_wb.space.get_type() != shared_space) {
-            assert(m_pending_writes[m_next_wb.warp_id()][m_next_wb.out[r]] > 0);
-            unsigned still_pending =
-                --m_pending_writes[m_next_wb.warp_id()][m_next_wb.out[r]];
-            if (!still_pending) {
-              m_pending_writes[m_next_wb.warp_id()].erase(m_next_wb.out[r]);
-              m_scoreboard->releaseRegister(m_next_wb.warp_id(),
-                                            m_next_wb.out[r]);
-              insn_completed = true;
-            }
-          } else {  // shared
-            m_scoreboard->releaseRegister(m_next_wb.warp_id(),
-                                          m_next_wb.out[r]);
+  auto process_wb = [&](warp_inst_t &wb_inst) {
+    if (wb_inst.empty()) return false;
+    if (!m_operand_collector->writeback(wb_inst)) return false;
+
+    bool insn_completed = false;
+    for (unsigned r = 0; r < MAX_OUTPUT_VALUES; r++) {
+      if (wb_inst.out[r] > 0) {
+        if (wb_inst.space.get_type() != shared_space) {
+          assert(m_pending_writes[wb_inst.warp_id()][wb_inst.out[r]] > 0);
+          unsigned still_pending =
+              --m_pending_writes[wb_inst.warp_id()][wb_inst.out[r]];
+          if (!still_pending) {
+            m_pending_writes[wb_inst.warp_id()].erase(wb_inst.out[r]);
+            m_scoreboard->releaseRegister(wb_inst.warp_id(), wb_inst.out[r]);
             insn_completed = true;
           }
-        } else if (m_next_wb.m_is_ldgsts) {  // for LDGSTS instructions where no
-                                             // output register is used
-          m_pending_ldgsts[m_next_wb.warp_id()][m_next_wb.pc]
-                          [m_next_wb.get_addr(0)]--;
-          if (m_pending_ldgsts[m_next_wb.warp_id()][m_next_wb.pc]
-                              [m_next_wb.get_addr(0)] == 0) {
-            insn_completed = true;
+        } else {  // shared
+          m_scoreboard->releaseRegister(wb_inst.warp_id(), wb_inst.out[r]);
+          insn_completed = true;
+        }
+      } else if (wb_inst.m_is_ldgsts) {  // for LDGSTS instructions where no
+                                         // output register is used
+        m_pending_ldgsts[wb_inst.warp_id()][wb_inst.pc][wb_inst.get_addr(0)]--;
+        if (m_pending_ldgsts[wb_inst.warp_id()][wb_inst.pc]
+                            [wb_inst.get_addr(0)] == 0) {
+          insn_completed = true;
+        }
+        break;
+      }
+    }
+    if (insn_completed) {
+      m_core->warp_inst_complete(wb_inst);
+      if (wb_inst.m_is_ldgsts) {
+        m_core->unset_depbar(wb_inst);
+      }
+    }
+
+    wb_inst.clear();
+    m_last_inst_gpu_sim_cycle = m_core->get_gpu()->gpu_sim_cycle;
+    m_last_inst_gpu_tot_sim_cycle = m_core->get_gpu()->gpu_tot_sim_cycle;
+    return true;
+  };
+
+  for (unsigned s = 0; s < m_next_wb_per_sched.size(); ++s) {
+    process_wb(m_next_wb_per_sched[s]);
+  }
+  process_wb(m_next_wb_ldgsts);
+
+  // Stage one ready response from each cache into a pending slot so that we do
+  // not drop it if the target subcore writeback slot is busy.
+  if (!m_pending_l1t && m_L1T->access_ready()) m_pending_l1t = m_L1T->next_access();
+  if (!m_pending_l1c && m_L1C->access_ready()) m_pending_l1c = m_L1C->next_access();
+  if (m_L1D && !m_pending_l1d && m_L1D->access_ready())
+    m_pending_l1d = m_L1D->next_access();
+
+  // Dedicated LDGSTS channel: pull from global bypass when available.
+  if (m_next_wb_ldgsts.empty() && m_next_global &&
+      m_next_global->get_inst().m_is_ldgsts) {
+    warp_inst_t inst = m_next_global->get_inst();
+    if (m_next_global->isatomic()) {
+      m_core->decrement_atomic_count(
+          m_next_global->get_wid(),
+          m_next_global->get_access_warp_mask().count());
+    }
+    delete m_next_global;
+    m_next_global = NULL;
+    m_next_wb_ldgsts = inst;
+    if (m_core->get_sid() == 0) {
+      unsigned long long cycle = m_core->get_gpu()->gpu_tot_sim_cycle +
+                                 m_core->get_gpu()->gpu_sim_cycle;
+      unsigned remaining = pending_mf_count(m_next_wb_ldgsts);
+      if (!m_next_wb_ldgsts.trace_string().empty()) {
+        CYCLE_PRINTF(
+            "[cycle %llu][SM %u] LSU writeback source=global warp=%u pc=0x%llx op=%d remaining=%u [trace=%s]\n",
+            cycle, m_core->get_sid(), m_next_wb_ldgsts.warp_id(),
+            (unsigned long long)m_next_wb_ldgsts.pc,
+            (int)m_next_wb_ldgsts.op, remaining,
+            m_next_wb_ldgsts.trace_string().c_str());
+      } else {
+        CYCLE_PRINTF(
+            "[cycle %llu][SM %u] LSU writeback source=global warp=%u pc=0x%llx op=%d remaining=%u\n",
+            cycle, m_core->get_sid(), m_next_wb_ldgsts.warp_id(),
+            (unsigned long long)m_next_wb_ldgsts.pc,
+            (int)m_next_wb_ldgsts.op, remaining);
+      }
+    }
+  }
+
+  for (unsigned sched = 0; sched < m_next_wb_per_sched.size(); ++sched) {
+    if (!m_next_wb_per_sched[sched].empty()) continue;
+
+    unsigned serviced_client = (unsigned)-1;
+    for (unsigned c = 0; c < m_num_writeback_clients; c++) {
+      unsigned next_client =
+          (c + m_writeback_arb_per_sched[sched]) % m_num_writeback_clients;
+      switch (next_client) {
+        case 0:  // shared memory
+          if (!m_pipeline_reg[0]->empty() &&
+              (unsigned)m_pipeline_reg[0]->get_schd_id() == sched) {
+            warp_inst_t inst = *m_pipeline_reg[0];
+            if (inst.isatomic()) {
+              inst.do_atomic();
+              m_core->decrement_atomic_count(inst.warp_id(),
+                                             inst.active_count());
+            }
+            m_core->dec_inst_in_pipeline(m_pipeline_reg[0]->warp_id());
+            m_pipeline_reg[0]->clear();
+            m_next_wb_per_sched[sched] = inst;
+            serviced_client = next_client;
+            if (m_core->get_sid() == 0) {
+              unsigned long long cycle =
+                  m_core->get_gpu()->gpu_tot_sim_cycle +
+                  m_core->get_gpu()->gpu_sim_cycle;
+              unsigned remaining = pending_mf_count(inst);
+              if (!inst.trace_string().empty()) {
+                CYCLE_PRINTF(
+                    "[cycle %llu][SM %u] LSU writeback source=shared warp=%u pc=0x%llx op=%d remaining=%u [trace=%s]\n",
+                    cycle, m_core->get_sid(), inst.warp_id(),
+                    (unsigned long long)inst.pc, (int)inst.op, remaining,
+                    inst.trace_string().c_str());
+              } else {
+                CYCLE_PRINTF(
+                    "[cycle %llu][SM %u] LSU writeback source=shared warp=%u pc=0x%llx op=%d remaining=%u\n",
+                    cycle, m_core->get_sid(), inst.warp_id(),
+                    (unsigned long long)inst.pc, (int)inst.op, remaining);
+              }
+            }
           }
           break;
-        }
+        case 1:  // texture response
+          if (m_pending_l1t &&
+              m_pending_l1t->get_inst().get_schd_id() == sched) {
+            warp_inst_t inst = m_pending_l1t->get_inst();
+            delete m_pending_l1t;
+            m_pending_l1t = NULL;
+            m_next_wb_per_sched[sched] = inst;
+            serviced_client = next_client;
+            if (m_core->get_sid() == 0) {
+              unsigned long long cycle =
+                  m_core->get_gpu()->gpu_tot_sim_cycle +
+                  m_core->get_gpu()->gpu_sim_cycle;
+              unsigned remaining = pending_mf_count(inst);
+              if (!inst.trace_string().empty()) {
+                CYCLE_PRINTF(
+                    "[cycle %llu][SM %u] LSU writeback source=L1T warp=%u pc=0x%llx op=%d remaining=%u [trace=%s]\n",
+                    cycle, m_core->get_sid(), inst.warp_id(),
+                    (unsigned long long)inst.pc, (int)inst.op, remaining,
+                    inst.trace_string().c_str());
+              } else {
+                CYCLE_PRINTF(
+                    "[cycle %llu][SM %u] LSU writeback source=L1T warp=%u pc=0x%llx op=%d remaining=%u\n",
+                    cycle, m_core->get_sid(), inst.warp_id(),
+                    (unsigned long long)inst.pc, (int)inst.op, remaining);
+              }
+            }
+          }
+          break;
+        case 2:  // const cache response
+          if (m_pending_l1c &&
+              m_pending_l1c->get_inst().get_schd_id() == sched) {
+            warp_inst_t inst = m_pending_l1c->get_inst();
+            delete m_pending_l1c;
+            m_pending_l1c = NULL;
+            m_next_wb_per_sched[sched] = inst;
+            serviced_client = next_client;
+            if (m_core->get_sid() == 0) {
+              unsigned long long cycle =
+                  m_core->get_gpu()->gpu_tot_sim_cycle +
+                  m_core->get_gpu()->gpu_sim_cycle;
+              unsigned remaining = pending_mf_count(inst);
+              if (!inst.trace_string().empty()) {
+                CYCLE_PRINTF(
+                    "[cycle %llu][SM %u] LSU writeback source=L1C warp=%u pc=0x%llx op=%d remaining=%u [trace=%s]\n",
+                    cycle, m_core->get_sid(), inst.warp_id(),
+                    (unsigned long long)inst.pc, (int)inst.op, remaining,
+                    inst.trace_string().c_str());
+              } else {
+                CYCLE_PRINTF(
+                    "[cycle %llu][SM %u] LSU writeback source=L1C warp=%u pc=0x%llx op=%d remaining=%u\n",
+                    cycle, m_core->get_sid(), inst.warp_id(),
+                    (unsigned long long)inst.pc, (int)inst.op, remaining);
+              }
+            }
+          }
+          break;
+        case 3:  // global/local
+          if (m_next_global &&
+              !m_next_global->get_inst().m_is_ldgsts &&
+              m_next_global->get_inst().get_schd_id() == sched) {
+            warp_inst_t inst = m_next_global->get_inst();
+            if (m_next_global->isatomic()) {
+              m_core->decrement_atomic_count(
+                  m_next_global->get_wid(),
+                  m_next_global->get_access_warp_mask().count());
+            }
+            delete m_next_global;
+            m_next_global = NULL;
+            m_next_wb_per_sched[sched] = inst;
+            serviced_client = next_client;
+            if (m_core->get_sid() == 0) {
+              unsigned long long cycle =
+                  m_core->get_gpu()->gpu_tot_sim_cycle +
+                  m_core->get_gpu()->gpu_sim_cycle;
+              unsigned remaining = pending_mf_count(inst);
+              if (!inst.trace_string().empty()) {
+                CYCLE_PRINTF(
+                    "[cycle %llu][SM %u] LSU writeback source=global warp=%u pc=0x%llx op=%d remaining=%u [trace=%s]\n",
+                    cycle, m_core->get_sid(), inst.warp_id(),
+                    (unsigned long long)inst.pc, (int)inst.op, remaining,
+                    inst.trace_string().c_str());
+              } else {
+                CYCLE_PRINTF(
+                    "[cycle %llu][SM %u] LSU writeback source=global warp=%u pc=0x%llx op=%d remaining=%u\n",
+                    cycle, m_core->get_sid(), inst.warp_id(),
+                    (unsigned long long)inst.pc, (int)inst.op, remaining);
+              }
+            }
+          }
+          break;
+        case 4:
+          if (m_L1D && m_pending_l1d &&
+              m_pending_l1d->get_inst().get_schd_id() == sched) {
+            warp_inst_t inst = m_pending_l1d->get_inst();
+            delete m_pending_l1d;
+            m_pending_l1d = NULL;
+            m_next_wb_per_sched[sched] = inst;
+            serviced_client = next_client;
+            if (m_core->get_sid() == 0) {
+              unsigned long long cycle =
+                  m_core->get_gpu()->gpu_tot_sim_cycle +
+                  m_core->get_gpu()->gpu_sim_cycle;
+              unsigned remaining = pending_mf_count(inst);
+              if (!inst.trace_string().empty()) {
+                CYCLE_PRINTF(
+                    "[cycle %llu][SM %u] LSU writeback source=L1D warp=%u pc=0x%llx op=%d remaining=%u [trace=%s]\n",
+                    cycle, m_core->get_sid(), inst.warp_id(),
+                    (unsigned long long)inst.pc, (int)inst.op, remaining,
+                    inst.trace_string().c_str());
+              } else {
+                CYCLE_PRINTF(
+                    "[cycle %llu][SM %u] LSU writeback source=L1D warp=%u pc=0x%llx op=%d remaining=%u\n",
+                    cycle, m_core->get_sid(), inst.warp_id(),
+                    (unsigned long long)inst.pc, (int)inst.op, remaining);
+              }
+            }
+          }
+          break;
+        default:
+          abort();
       }
-      if (insn_completed) {
-        m_core->warp_inst_complete(m_next_wb);
-        if (m_next_wb.m_is_ldgsts) {
-          m_core->unset_depbar(m_next_wb);
-        }
-      }
-
-      m_next_wb.clear();
-      m_last_inst_gpu_sim_cycle = m_core->get_gpu()->gpu_sim_cycle;
-      m_last_inst_gpu_tot_sim_cycle = m_core->get_gpu()->gpu_tot_sim_cycle;
+      if (serviced_client != (unsigned)-1) break;
     }
-  }
 
-  unsigned serviced_client = -1;
-  for (unsigned c = 0; m_next_wb.empty() && (c < m_num_writeback_clients);
-       c++) {
-    unsigned next_client = (c + m_writeback_arb) % m_num_writeback_clients;
-    switch (next_client) {
-      case 0:  // shared memory
-        if (!m_pipeline_reg[0]->empty()) {
-          m_next_wb = *m_pipeline_reg[0];
-          if (m_next_wb.isatomic()) {
-            m_next_wb.do_atomic();
-            m_core->decrement_atomic_count(m_next_wb.warp_id(),
-                                           m_next_wb.active_count());
-          }
-          m_core->dec_inst_in_pipeline(m_pipeline_reg[0]->warp_id());
-          m_pipeline_reg[0]->clear();
-          serviced_client = next_client;
-          if (m_core->get_sid() == 0) {
-            unsigned long long cycle =
-                m_core->get_gpu()->gpu_tot_sim_cycle +
-                m_core->get_gpu()->gpu_sim_cycle;
-            unsigned remaining = pending_mf_count(m_next_wb);
-            if (!m_next_wb.trace_string().empty()) {
-              CYCLE_PRINTF(
-                  "[cycle %llu][SM %u] LSU writeback source=shared warp=%u pc=0x%llx op=%d remaining=%u [trace=%s]\n",
-                  cycle, m_core->get_sid(), m_next_wb.warp_id(),
-                  (unsigned long long)m_next_wb.pc, (int)m_next_wb.op,
-                  remaining, m_next_wb.trace_string().c_str());
-            } else {
-              CYCLE_PRINTF(
-                  "[cycle %llu][SM %u] LSU writeback source=shared warp=%u pc=0x%llx op=%d remaining=%u\n",
-                  cycle, m_core->get_sid(), m_next_wb.warp_id(),
-                  (unsigned long long)m_next_wb.pc, (int)m_next_wb.op,
-                  remaining);
-            }
-          }
-        }
-        break;
-      case 1:  // texture response
-        if (m_L1T->access_ready()) {
-          mem_fetch *mf = m_L1T->next_access();
-          m_next_wb = mf->get_inst();
-          delete mf;
-          serviced_client = next_client;
-          if (m_core->get_sid() == 0) {
-            unsigned long long cycle =
-                m_core->get_gpu()->gpu_tot_sim_cycle +
-                m_core->get_gpu()->gpu_sim_cycle;
-            unsigned remaining = pending_mf_count(m_next_wb);
-            if (!m_next_wb.trace_string().empty()) {
-              CYCLE_PRINTF(
-                  "[cycle %llu][SM %u] LSU writeback source=L1T warp=%u pc=0x%llx op=%d remaining=%u [trace=%s]\n",
-                  cycle, m_core->get_sid(), m_next_wb.warp_id(),
-                  (unsigned long long)m_next_wb.pc, (int)m_next_wb.op,
-                  remaining, m_next_wb.trace_string().c_str());
-            } else {
-              CYCLE_PRINTF(
-                  "[cycle %llu][SM %u] LSU writeback source=L1T warp=%u pc=0x%llx op=%d remaining=%u\n",
-                  cycle, m_core->get_sid(), m_next_wb.warp_id(),
-                  (unsigned long long)m_next_wb.pc, (int)m_next_wb.op,
-                  remaining);
-            }
-          }
-        }
-        break;
-      case 2:  // const cache response
-        if (m_L1C->access_ready()) {
-          mem_fetch *mf = m_L1C->next_access();
-          m_next_wb = mf->get_inst();
-          delete mf;
-          serviced_client = next_client;
-          if (m_core->get_sid() == 0) {
-            unsigned long long cycle =
-                m_core->get_gpu()->gpu_tot_sim_cycle +
-                m_core->get_gpu()->gpu_sim_cycle;
-            unsigned remaining = pending_mf_count(m_next_wb);
-            if (!m_next_wb.trace_string().empty()) {
-              CYCLE_PRINTF(
-                  "[cycle %llu][SM %u] LSU writeback source=L1C warp=%u pc=0x%llx op=%d remaining=%u [trace=%s]\n",
-                  cycle, m_core->get_sid(), m_next_wb.warp_id(),
-                  (unsigned long long)m_next_wb.pc, (int)m_next_wb.op,
-                  remaining, m_next_wb.trace_string().c_str());
-            } else {
-              CYCLE_PRINTF(
-                  "[cycle %llu][SM %u] LSU writeback source=L1C warp=%u pc=0x%llx op=%d remaining=%u\n",
-                  cycle, m_core->get_sid(), m_next_wb.warp_id(),
-                  (unsigned long long)m_next_wb.pc, (int)m_next_wb.op,
-                  remaining);
-            }
-          }
-        }
-        break;
-      case 3:  // global/local
-        if (m_next_global) {
-          m_next_wb = m_next_global->get_inst();
-          if (m_next_global->isatomic()) {
-            m_core->decrement_atomic_count(
-                m_next_global->get_wid(),
-                m_next_global->get_access_warp_mask().count());
-          }
-          delete m_next_global;
-          m_next_global = NULL;
-          serviced_client = next_client;
-          if (m_core->get_sid() == 0) {
-            unsigned long long cycle =
-                m_core->get_gpu()->gpu_tot_sim_cycle +
-                m_core->get_gpu()->gpu_sim_cycle;
-            unsigned remaining = pending_mf_count(m_next_wb);
-            if (!m_next_wb.trace_string().empty()) {
-              CYCLE_PRINTF(
-                  "[cycle %llu][SM %u] LSU writeback source=global warp=%u pc=0x%llx op=%d remaining=%u [trace=%s]\n",
-                  cycle, m_core->get_sid(), m_next_wb.warp_id(),
-                  (unsigned long long)m_next_wb.pc, (int)m_next_wb.op,
-                  remaining, m_next_wb.trace_string().c_str());
-            } else {
-              CYCLE_PRINTF(
-                  "[cycle %llu][SM %u] LSU writeback source=global warp=%u pc=0x%llx op=%d remaining=%u\n",
-                  cycle, m_core->get_sid(), m_next_wb.warp_id(),
-                  (unsigned long long)m_next_wb.pc, (int)m_next_wb.op,
-                  remaining);
-            }
-          }
-        }
-        break;
-      case 4:
-        if (m_L1D && m_L1D->access_ready()) {
-          mem_fetch *mf = m_L1D->next_access();
-          m_next_wb = mf->get_inst();
-          delete mf;
-          serviced_client = next_client;
-          if (m_core->get_sid() == 0) {
-            unsigned long long cycle =
-                m_core->get_gpu()->gpu_tot_sim_cycle +
-                m_core->get_gpu()->gpu_sim_cycle;
-            unsigned remaining = pending_mf_count(m_next_wb);
-            if (!m_next_wb.trace_string().empty()) {
-              CYCLE_PRINTF(
-                  "[cycle %llu][SM %u] LSU writeback source=L1D warp=%u pc=0x%llx op=%d remaining=%u [trace=%s]\n",
-                  cycle, m_core->get_sid(), m_next_wb.warp_id(),
-                  (unsigned long long)m_next_wb.pc, (int)m_next_wb.op,
-                  remaining, m_next_wb.trace_string().c_str());
-            } else {
-              CYCLE_PRINTF(
-                  "[cycle %llu][SM %u] LSU writeback source=L1D warp=%u pc=0x%llx op=%d remaining=%u\n",
-                  cycle, m_core->get_sid(), m_next_wb.warp_id(),
-                  (unsigned long long)m_next_wb.pc, (int)m_next_wb.op,
-                  remaining);
-            }
-          }
-        }
-        break;
-      default:
-        abort();
+    if (serviced_client != (unsigned)-1) {
+      m_writeback_arb_per_sched[sched] =
+          (serviced_client + 1) % m_num_writeback_clients;
     }
-  }
-  // update arbitration priority only if:
-  // 1. the writeback buffer was available
-  // 2. a client was serviced
-  if (serviced_client != (unsigned)-1) {
-    m_writeback_arb = (serviced_client + 1) % m_num_writeback_clients;
   }
 }
 
@@ -4021,8 +4078,13 @@ void ldst_unit::print(FILE *fout) const {
     }
     fprintf(fout, "\n");
   }
-  fprintf(fout, "LD/ST wb    = ");
-  m_next_wb.print(fout);
+  fprintf(fout, "LD/ST wb (per sched):\n");
+  for (unsigned s = 0; s < m_next_wb_per_sched.size(); ++s) {
+    fprintf(fout, "  sched %u = ", s);
+    m_next_wb_per_sched[s].print(fout);
+  }
+  fprintf(fout, "  ldgsts    = ");
+  m_next_wb_ldgsts.print(fout);
   fprintf(
       fout,
       "Last LD/ST writeback @ %llu + %llu (gpu_sim_cycle+gpu_tot_sim_cycle)\n",
@@ -4890,7 +4952,9 @@ void opndcoll_rfu_t::init(unsigned num_banks, shader_core_ctx *shader) {
                   reg_id, m_num_banks_per_sched);
   }
   for (unsigned j = 0; j < m_dispatch_units.size(); j++) {
-    m_dispatch_units[j].init(sub_core_model, m_num_warp_scheds);
+    m_dispatch_units[j].init(sub_core_model, m_num_warp_scheds,
+                             shader->get_config()
+                                 ->gpgpu_operand_collector_age_based_dispatch);
   }
   m_initialized = true;
 }
