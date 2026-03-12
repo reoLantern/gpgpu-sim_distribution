@@ -42,6 +42,7 @@
 #include <deque>
 #include <list>
 #include <map>
+#include <omp.h>
 #include <set>
 #include <string>
 #include <utility>

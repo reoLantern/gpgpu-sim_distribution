@@ -2031,6 +2031,7 @@ void gpgpu_sim::cycle() {
   partiton_replys_in_parallel += partiton_replys_in_parallel_per_cycle;
 
   if (clock_mask & DRAM) {
+    #pragma omp parallel for
     for (unsigned i = 0; i < m_memory_config->m_n_mem; i++) {
       if (m_memory_config->simple_dram_model)
         m_memory_partition_unit[i]->simple_dram_model_cycle();
@@ -2088,26 +2089,32 @@ void gpgpu_sim::cycle() {
 
   if (clock_mask & CORE) {
     // L1 cache + shader core pipeline stages
-    m_power_stats->pwr_mem_stat->core_cache_stats[CURRENT_STAT_IDX].clear();
+    m_active_sms_this_cycle = 0;
+    #pragma omp parallel for schedule(runtime) reduction(+:m_active_sms_this_cycle)
     for (unsigned i = 0; i < m_shader_config->n_simt_clusters; i++) {
       if (m_cluster[i]->get_not_completed() || get_more_cta_left()) {
         m_cluster[i]->core_cycle();
-        *active_sms += m_cluster[i]->get_n_active_sms();
       }
-      // Update core icnt/cache stats for AccelWattch
+      // Update core icnt stats for AccelWattch (per-index, thread-safe)
       if (m_config.g_power_simulation_enabled) {
         m_cluster[i]->get_icnt_stats(
             m_power_stats->pwr_mem_stat->n_simt_to_mem[CURRENT_STAT_IDX][i],
             m_power_stats->pwr_mem_stat->n_mem_to_simt[CURRENT_STAT_IDX][i]);
+      }
+      m_active_sms_this_cycle += m_cluster[i]->get_n_active_sms();
+    }
+    *active_sms += m_active_sms_this_cycle;
+    // Serial loop: collect stats that accumulate into shared structures
+    m_power_stats->pwr_mem_stat->core_cache_stats[CURRENT_STAT_IDX].clear();
+    float temp = 0;
+    for (unsigned i = 0; i < m_shader_config->n_simt_clusters; i++) {
+      if (m_config.g_power_simulation_enabled) {
         m_cluster[i]->get_cache_stats(
             m_power_stats->pwr_mem_stat->core_cache_stats[CURRENT_STAT_IDX]);
       }
       m_cluster[i]->get_current_occupancy(
           gpu_occupancy.aggregate_warp_slot_filled,
           gpu_occupancy.aggregate_theoretical_warp_slots);
-    }
-    float temp = 0;
-    for (unsigned i = 0; i < m_shader_config->num_shader(); i++) {
       temp += m_shader_stats->m_pipeline_duty_cycle[i];
     }
     temp = temp / m_shader_config->num_shader();

@@ -3673,9 +3673,6 @@ void shader_core_ctx::register_cta_thread_exit(unsigned cta_num,
   assert(m_cta_status[cta_num] > 0);
   m_cta_status[cta_num]--;
   if (!m_cta_status[cta_num]) {
-    // Increment the completed CTAs
-    m_stats->ctas_completed++;
-    m_gpu->inc_completed_cta();
     m_n_active_cta--;
     m_barriers.deallocate_barrier(cta_num);
     shader_CTA_count_unlog(m_sid, 1);
@@ -3702,16 +3699,21 @@ void shader_core_ctx::register_cta_thread_exit(unsigned cta_num,
 
     // Jin: for concurrent kernels on sm
     release_shader_resource_1block(cta_num, *kernel);
-    kernel->dec_running();
-    if (!m_gpu->kernel_more_cta_left(kernel)) {
-      if (!kernel->running()) {
-        SHADER_DPRINTF(LIVENESS,
-                       "GPGPU-Sim uArch: GPU detected kernel %u \'%s\' "
-                       "finished on shader %u.\n",
-                       kernel->get_uid(), kernel->name().c_str(), m_sid);
+    #pragma omp critical
+    {
+      m_stats->ctas_completed++;
+      m_gpu->inc_completed_cta();
+      kernel->dec_running();
+      if (!m_gpu->kernel_more_cta_left(kernel)) {
+        if (!kernel->running()) {
+          SHADER_DPRINTF(LIVENESS,
+                         "GPGPU-Sim uArch: GPU detected kernel %u \'%s\' "
+                         "finished on shader %u.\n",
+                         kernel->get_uid(), kernel->name().c_str(), m_sid);
 
-        if (m_kernel == kernel) m_kernel = NULL;
-        m_gpu->set_kernel_done(kernel);
+          if (m_kernel == kernel) m_kernel = NULL;
+          m_gpu->set_kernel_done(kernel);
+        }
       }
     }
   }

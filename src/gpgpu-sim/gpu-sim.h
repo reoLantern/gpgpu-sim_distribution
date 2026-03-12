@@ -37,6 +37,7 @@
 #include <fstream>
 #include <iostream>
 #include <list>
+#include <omp.h>
 #include "../abstract_hardware_model.h"
 #include "../option_parser.h"
 #include "../trace.h"
@@ -704,6 +705,7 @@ class gpgpu_sim : public gpgpu_t {
   unsigned m_last_cluster_issue;
   float *average_pipeline_duty_cycle;
   float *active_sms;
+  float m_active_sms_this_cycle;
   // time of next rising edge
   double core_time;
   double icnt_time;
