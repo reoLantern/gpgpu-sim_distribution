@@ -1850,7 +1850,7 @@ struct shader_core_stats_pod {
   unsigned *single_issue_nums;
   unsigned *dual_issue_nums;
 
-  unsigned ctas_completed;
+  std::atomic<unsigned> ctas_completed;
   // memory access classification
   int gpgpu_n_mem_read_local;
   int gpgpu_n_mem_write_local;

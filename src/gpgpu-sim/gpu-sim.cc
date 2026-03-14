@@ -1263,7 +1263,7 @@ void gpgpu_sim::init() {
 void gpgpu_sim::update_stats() {
   m_memory_stats->memlatstat_lat_pw();
   gpu_tot_sim_cycle += gpu_sim_cycle;
-  gpu_tot_sim_insn += gpu_sim_insn;
+  gpu_tot_sim_insn += gpu_sim_insn.load();
   gpu_tot_issued_cta += m_total_cta_launched;
   partiton_reqs_in_parallel_total += partiton_reqs_in_parallel;
   partiton_replys_in_parallel_total += partiton_replys_in_parallel;
@@ -1481,11 +1481,11 @@ void gpgpu_sim::gpu_print_stat(unsigned long long streamID) {
   printf("kernel_stream_id = %llu\n", streamID);
 
   printf("gpu_sim_cycle = %lld\n", gpu_sim_cycle);
-  printf("gpu_sim_insn = %lld\n", gpu_sim_insn);
-  printf("gpu_ipc = %12.4f\n", (float)gpu_sim_insn / gpu_sim_cycle);
+  printf("gpu_sim_insn = %lld\n", (long long)gpu_sim_insn.load());
+  printf("gpu_ipc = %12.4f\n", (float)gpu_sim_insn.load() / gpu_sim_cycle);
   printf("gpu_tot_sim_cycle = %lld\n", gpu_tot_sim_cycle + gpu_sim_cycle);
-  printf("gpu_tot_sim_insn = %lld\n", gpu_tot_sim_insn + gpu_sim_insn);
-  printf("gpu_tot_ipc = %12.4f\n", (float)(gpu_tot_sim_insn + gpu_sim_insn) /
+  printf("gpu_tot_sim_insn = %lld\n", gpu_tot_sim_insn + gpu_sim_insn.load());
+  printf("gpu_tot_ipc = %12.4f\n", (float)(gpu_tot_sim_insn + gpu_sim_insn.load()) /
                                        (gpu_tot_sim_cycle + gpu_sim_cycle));
   printf("gpu_tot_issued_cta = %lld\n",
          gpu_tot_issued_cta + m_total_cta_launched);
@@ -1540,7 +1540,7 @@ void gpgpu_sim::gpu_print_stat(unsigned long long streamID) {
   unsigned long long elapsed_time =
       MAX(curr_time - gpgpu_ctx->the_gpgpusim->g_simulation_starttime, 1);
   printf("gpu_total_sim_rate=%u\n",
-         (unsigned)((gpu_tot_sim_insn + gpu_sim_insn) / elapsed_time));
+         (unsigned)((gpu_tot_sim_insn + gpu_sim_insn.load()) / elapsed_time));
 
   // shader_print_l1_miss_stat( stdout );
   shader_print_cache_stats(stdout);
@@ -2038,8 +2038,9 @@ void gpgpu_sim::cycle() {
       else
         m_memory_partition_unit[i]
             ->dram_cycle();  // Issue the dram command (scheduler + delay model)
-      // Update performance counters for DRAM
-      if (m_config.g_power_simulation_enabled) {
+      // Update performance counters for DRAM (only at sample points)
+      if (m_config.g_power_simulation_enabled &&
+          (((gpu_tot_sim_cycle + gpu_sim_cycle) + 1) % m_config.gpu_stat_sample_freq == 0)) {
         m_memory_partition_unit[i]->set_dram_power_stats(
             m_power_stats->pwr_mem_stat->n_cmd[CURRENT_STAT_IDX][i],
             m_power_stats->pwr_mem_stat->n_activity[CURRENT_STAT_IDX][i],
@@ -2095,8 +2096,9 @@ void gpgpu_sim::cycle() {
       if (m_cluster[i]->get_not_completed() || get_more_cta_left()) {
         m_cluster[i]->core_cycle();
       }
-      // Update core icnt stats for AccelWattch (per-index, thread-safe)
-      if (m_config.g_power_simulation_enabled) {
+      // Update core icnt stats for AccelWattch (only at sample points)
+      if (m_config.g_power_simulation_enabled &&
+          (((gpu_tot_sim_cycle + gpu_sim_cycle) + 1) % m_config.gpu_stat_sample_freq == 0)) {
         m_cluster[i]->get_icnt_stats(
             m_power_stats->pwr_mem_stat->n_simt_to_mem[CURRENT_STAT_IDX][i],
             m_power_stats->pwr_mem_stat->n_mem_to_simt[CURRENT_STAT_IDX][i]);
@@ -2105,13 +2107,16 @@ void gpgpu_sim::cycle() {
     }
     *active_sms += m_active_sms_this_cycle;
     // Serial loop: collect stats that accumulate into shared structures
-    m_power_stats->pwr_mem_stat->core_cache_stats[CURRENT_STAT_IDX].clear();
     float temp = 0;
-    for (unsigned i = 0; i < m_shader_config->n_simt_clusters; i++) {
-      if (m_config.g_power_simulation_enabled) {
+    if (m_config.g_power_simulation_enabled &&
+        (((gpu_tot_sim_cycle + gpu_sim_cycle) + 1) % m_config.gpu_stat_sample_freq == 0)) {
+      m_power_stats->pwr_mem_stat->core_cache_stats[CURRENT_STAT_IDX].clear();
+      for (unsigned i = 0; i < m_shader_config->n_simt_clusters; i++) {
         m_cluster[i]->get_cache_stats(
             m_power_stats->pwr_mem_stat->core_cache_stats[CURRENT_STAT_IDX]);
       }
+    }
+    for (unsigned i = 0; i < m_shader_config->n_simt_clusters; i++) {
       m_cluster[i]->get_current_occupancy(
           gpu_occupancy.aggregate_warp_slot_filled,
           gpu_occupancy.aggregate_theoretical_warp_slots);

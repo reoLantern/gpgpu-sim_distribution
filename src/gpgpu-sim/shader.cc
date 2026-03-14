@@ -846,7 +846,7 @@ void shader_core_stats::visualizer_print(gzFile visualizer_file) {
   }
   gzprintf(visualizer_file, "\n");
 
-  gzprintf(visualizer_file, "ctas_completed: %d\n", ctas_completed);
+  gzprintf(visualizer_file, "ctas_completed: %d\n", ctas_completed.load());
   ctas_completed = 0;
   // warp issue breakdown
   unsigned sid = m_config->gpgpu_warp_issue_shader;
@@ -2346,7 +2346,7 @@ void shader_core_ctx::warp_inst_complete(const warp_inst_t &inst) {
     m_stats->m_num_sim_insn[m_sid] += inst.active_count();
 
   m_stats->m_num_sim_winsn[m_sid]++;
-  m_gpu->gpu_sim_insn += inst.active_count();
+  m_gpu->gpu_sim_insn.fetch_add(inst.active_count());
   inst.completed(m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle);
 }
 
@@ -3699,22 +3699,22 @@ void shader_core_ctx::register_cta_thread_exit(unsigned cta_num,
 
     // Jin: for concurrent kernels on sm
     release_shader_resource_1block(cta_num, *kernel);
-    #pragma omp critical
-    {
-      m_stats->ctas_completed++;
-      m_gpu->inc_completed_cta();
-      kernel->dec_running();
-      if (!m_gpu->kernel_more_cta_left(kernel)) {
-        if (!kernel->running()) {
-          SHADER_DPRINTF(LIVENESS,
-                         "GPGPU-Sim uArch: GPU detected kernel %u \'%s\' "
-                         "finished on shader %u.\n",
-                         kernel->get_uid(), kernel->name().c_str(), m_sid);
+    // Lock-free CTA completion using atomics.
+    // inc_running() is only called in the serial issue_block2core() phase,
+    // so during the parallel core_cycle region only dec_running() occurs.
+    // fetch_sub returns the value before decrement, so only the thread
+    // that transitions the count from 1→0 (prev==1) enters the kernel-done path.
+    m_stats->ctas_completed++;
+    m_gpu->inc_completed_cta();
+    int prev_running = kernel->dec_running();
+    if (prev_running == 1 && !m_gpu->kernel_more_cta_left(kernel)) {
+      SHADER_DPRINTF(LIVENESS,
+                     "GPGPU-Sim uArch: GPU detected kernel %u \'%s\' "
+                     "finished on shader %u.\n",
+                     kernel->get_uid(), kernel->name().c_str(), m_sid);
 
-          if (m_kernel == kernel) m_kernel = NULL;
-          m_gpu->set_kernel_done(kernel);
-        }
-      }
+      if (m_kernel == kernel) m_kernel = NULL;
+      m_gpu->set_kernel_done(kernel);
     }
   }
 }
@@ -3743,7 +3743,7 @@ void gpgpu_sim::shader_print_runtime_stat(FILE *fout) {
 
 void gpgpu_sim::shader_print_scheduler_stat(FILE *fout,
                                             bool print_dynamic_info) const {
-  fprintf(fout, "ctas_completed %d, ", m_shader_stats->ctas_completed);
+  fprintf(fout, "ctas_completed %d, ", m_shader_stats->ctas_completed.load());
   // Print out the stats from the sampling shader core
   const unsigned scheduler_sampling_core =
       m_shader_config->gpgpu_warp_issue_shader;

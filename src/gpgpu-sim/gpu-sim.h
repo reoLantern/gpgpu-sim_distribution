@@ -34,6 +34,7 @@
 
 #include <stdint.h>
 #include <stdio.h>
+#include <atomic>
 #include <fstream>
 #include <iostream>
 #include <list>
@@ -602,7 +603,7 @@ class gpgpu_sim : public gpgpu_t {
   void print_stats(unsigned long long streamID);
   void update_stats();
   void deadlock_check();
-  void inc_completed_cta() { gpu_completed_cta++; }
+  void inc_completed_cta() { gpu_completed_cta.fetch_add(1); }
   void get_pdom_stack_top_info(unsigned sid, unsigned tid, unsigned *pc,
                                unsigned *rpc);
 
@@ -700,7 +701,7 @@ class gpgpu_sim : public gpgpu_t {
   // count.
   unsigned long long m_total_cta_launched;
   unsigned long long gpu_tot_issued_cta;
-  unsigned gpu_completed_cta;
+  std::atomic<unsigned> gpu_completed_cta;
 
   unsigned m_last_cluster_issue;
   float *average_pipeline_duty_cycle;
@@ -747,7 +748,7 @@ class gpgpu_sim : public gpgpu_t {
   virtual void createSIMTCluster() = 0;
 
  public:
-  unsigned long long gpu_sim_insn;
+  std::atomic<unsigned long long> gpu_sim_insn;
   unsigned long long gpu_tot_sim_insn;
   unsigned long long gpu_sim_insn_last_update;
   unsigned gpu_sim_insn_last_update_sid;

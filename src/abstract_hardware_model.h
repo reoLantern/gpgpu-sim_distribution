@@ -193,6 +193,7 @@ enum _memory_op_t { no_memory_op = 0, memory_load, memory_store };
 #include <assert.h>
 #include <stdlib.h>
 #include <algorithm>
+#include <atomic>
 #include <bitset>
 #include <deque>
 #include <list>
@@ -244,12 +245,13 @@ class kernel_info_t {
       std::map<std::string, const struct textureInfo *> nameToTextureInfo);
   ~kernel_info_t();
 
-  void inc_running() { m_num_cores_running++; }
-  void dec_running() {
-    assert(m_num_cores_running > 0);
-    m_num_cores_running--;
+  void inc_running() { m_num_cores_running.fetch_add(1); }
+  int dec_running() {
+    int prev = m_num_cores_running.fetch_sub(1);
+    assert(prev > 0);
+    return prev;  // caller checks prev==1 to detect last completion
   }
-  bool running() const { return m_num_cores_running > 0; }
+  bool running() const { return m_num_cores_running.load() > 0; }
   bool done() const { return no_more_ctas_to_run() && !running(); }
   class function_info *entry() {
     return m_kernel_entry;
@@ -342,7 +344,7 @@ class kernel_info_t {
   dim3 m_next_cta;
   dim3 m_next_tid;
 
-  unsigned m_num_cores_running;
+  std::atomic<int> m_num_cores_running;
 
   std::list<class ptx_thread_info *> m_active_threads;
   class memory_space *m_param_mem;
