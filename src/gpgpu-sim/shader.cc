@@ -2346,7 +2346,7 @@ void shader_core_ctx::warp_inst_complete(const warp_inst_t &inst) {
     m_stats->m_num_sim_insn[m_sid] += inst.active_count();
 
   m_stats->m_num_sim_winsn[m_sid]++;
-  m_gpu->gpu_sim_insn.fetch_add(inst.active_count());
+  m_local_stats.gpu_sim_insn += inst.active_count();
   inst.completed(m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle);
 }
 
@@ -2394,8 +2394,7 @@ void shader_core_ctx::writeback() {
     }
     m_warp[warp_id]->dec_inst_in_pipeline();
     warp_inst_complete(*pipe_reg);
-    m_gpu->gpu_sim_insn_last_update_sid = m_sid;
-    m_gpu->gpu_sim_insn_last_update = m_gpu->gpu_sim_cycle;
+    // gpu_sim_insn_last_update_sid/cycle moved to serial flush_local_stats()
     m_last_inst_gpu_sim_cycle = m_gpu->gpu_sim_cycle;
     m_last_inst_gpu_tot_sim_cycle = m_gpu->gpu_tot_sim_cycle;
     pipe_reg->clear();
@@ -5405,6 +5404,35 @@ void simt_core_cluster::print_not_completed(FILE *fp) const {
   }
 }
 
+void simt_core_cluster::flush_local_stats() {
+  // Flush core-level per-SM stats
+  for (unsigned i = 0; i < m_config->n_simt_cores_per_cluster; i++) {
+    auto &ls = m_core[i]->m_local_stats;
+    if (ls.gpu_sim_insn > 0) {
+      m_core[i]->get_gpu()->gpu_sim_insn += ls.gpu_sim_insn;
+      m_core[i]->get_gpu()->gpu_sim_insn_last_update_sid = m_core[i]->get_sid();
+      m_core[i]->get_gpu()->gpu_sim_insn_last_update =
+          m_core[i]->get_gpu()->gpu_sim_cycle;
+      ls.gpu_sim_insn = 0;
+    }
+  }
+  // Flush cluster-level icnt stats
+  auto &is = m_local_icnt_stats;
+  m_stats->made_write_mfs += is.made_write_mfs;
+  m_stats->made_read_mfs += is.made_read_mfs;
+  m_stats->gpgpu_n_mem_const += is.gpgpu_n_mem_const;
+  m_stats->gpgpu_n_mem_texture += is.gpgpu_n_mem_texture;
+  m_stats->gpgpu_n_mem_read_global += is.gpgpu_n_mem_read_global;
+  m_stats->gpgpu_n_mem_write_global += is.gpgpu_n_mem_write_global;
+  m_stats->gpgpu_n_mem_read_local += is.gpgpu_n_mem_read_local;
+  m_stats->gpgpu_n_mem_write_local += is.gpgpu_n_mem_write_local;
+  m_stats->gpgpu_n_mem_read_inst += is.gpgpu_n_mem_read_inst;
+  m_stats->gpgpu_n_mem_l2_writeback += is.gpgpu_n_mem_l2_writeback;
+  m_stats->gpgpu_n_mem_l1_write_allocate += is.gpgpu_n_mem_l1_write_allocate;
+  m_stats->gpgpu_n_mem_l2_write_allocate += is.gpgpu_n_mem_l2_write_allocate;
+  is = {};
+}
+
 float simt_core_cluster::get_current_occupancy(
     unsigned long long &active, unsigned long long &total) const {
   float aggregate = 0.f;
@@ -5523,49 +5551,25 @@ void simt_core_cluster::icnt_inject_request_packet(class mem_fetch *mf) {
 }
 
 void simt_core_cluster::update_icnt_stats(class mem_fetch *mf) {
-  // stats
+  // Accumulate into cluster-local stats to avoid cache-line bouncing
+  // in the parallel core_cycle region. Flushed by flush_local_stats().
   if (mf->get_is_write())
-    m_stats->made_write_mfs++;
+    m_local_icnt_stats.made_write_mfs++;
   else
-    m_stats->made_read_mfs++;
+    m_local_icnt_stats.made_read_mfs++;
   switch (mf->get_access_type()) {
-    case CONST_ACC_R:
-      m_stats->gpgpu_n_mem_const++;
-      break;
-    case TEXTURE_ACC_R:
-      m_stats->gpgpu_n_mem_texture++;
-      break;
-    case GLOBAL_ACC_R:
-      m_stats->gpgpu_n_mem_read_global++;
-      break;
-    // case GLOBAL_ACC_R: m_stats->gpgpu_n_mem_read_global++;
-    // printf("read_global%d\n",m_stats->gpgpu_n_mem_read_global); break;
-    case GLOBAL_ACC_W:
-      m_stats->gpgpu_n_mem_write_global++;
-      break;
-    case LOCAL_ACC_R:
-      m_stats->gpgpu_n_mem_read_local++;
-      break;
-    case LOCAL_ACC_W:
-      m_stats->gpgpu_n_mem_write_local++;
-      break;
-    case INST_ACC_R:
-      m_stats->gpgpu_n_mem_read_inst++;
-      break;
-    case L1_WRBK_ACC:
-      m_stats->gpgpu_n_mem_write_global++;
-      break;
-    case L2_WRBK_ACC:
-      m_stats->gpgpu_n_mem_l2_writeback++;
-      break;
-    case L1_WR_ALLOC_R:
-      m_stats->gpgpu_n_mem_l1_write_allocate++;
-      break;
-    case L2_WR_ALLOC_R:
-      m_stats->gpgpu_n_mem_l2_write_allocate++;
-      break;
-    default:
-      assert(0);
+    case CONST_ACC_R:    m_local_icnt_stats.gpgpu_n_mem_const++; break;
+    case TEXTURE_ACC_R:  m_local_icnt_stats.gpgpu_n_mem_texture++; break;
+    case GLOBAL_ACC_R:   m_local_icnt_stats.gpgpu_n_mem_read_global++; break;
+    case GLOBAL_ACC_W:   m_local_icnt_stats.gpgpu_n_mem_write_global++; break;
+    case LOCAL_ACC_R:    m_local_icnt_stats.gpgpu_n_mem_read_local++; break;
+    case LOCAL_ACC_W:    m_local_icnt_stats.gpgpu_n_mem_write_local++; break;
+    case INST_ACC_R:     m_local_icnt_stats.gpgpu_n_mem_read_inst++; break;
+    case L1_WRBK_ACC:    m_local_icnt_stats.gpgpu_n_mem_write_global++; break;
+    case L2_WRBK_ACC:    m_local_icnt_stats.gpgpu_n_mem_l2_writeback++; break;
+    case L1_WR_ALLOC_R:  m_local_icnt_stats.gpgpu_n_mem_l1_write_allocate++; break;
+    case L2_WR_ALLOC_R:  m_local_icnt_stats.gpgpu_n_mem_l2_write_allocate++; break;
+    default: assert(0);
   }
 }
 

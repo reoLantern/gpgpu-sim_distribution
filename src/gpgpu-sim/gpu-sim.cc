@@ -1263,7 +1263,7 @@ void gpgpu_sim::init() {
 void gpgpu_sim::update_stats() {
   m_memory_stats->memlatstat_lat_pw();
   gpu_tot_sim_cycle += gpu_sim_cycle;
-  gpu_tot_sim_insn += gpu_sim_insn.load();
+  gpu_tot_sim_insn += gpu_sim_insn;
   gpu_tot_issued_cta += m_total_cta_launched;
   partiton_reqs_in_parallel_total += partiton_reqs_in_parallel;
   partiton_replys_in_parallel_total += partiton_replys_in_parallel;
@@ -1481,11 +1481,11 @@ void gpgpu_sim::gpu_print_stat(unsigned long long streamID) {
   printf("kernel_stream_id = %llu\n", streamID);
 
   printf("gpu_sim_cycle = %lld\n", gpu_sim_cycle);
-  printf("gpu_sim_insn = %lld\n", (long long)gpu_sim_insn.load());
-  printf("gpu_ipc = %12.4f\n", (float)gpu_sim_insn.load() / gpu_sim_cycle);
+  printf("gpu_sim_insn = %lld\n", (long long)gpu_sim_insn);
+  printf("gpu_ipc = %12.4f\n", (float)gpu_sim_insn / gpu_sim_cycle);
   printf("gpu_tot_sim_cycle = %lld\n", gpu_tot_sim_cycle + gpu_sim_cycle);
-  printf("gpu_tot_sim_insn = %lld\n", gpu_tot_sim_insn + gpu_sim_insn.load());
-  printf("gpu_tot_ipc = %12.4f\n", (float)(gpu_tot_sim_insn + gpu_sim_insn.load()) /
+  printf("gpu_tot_sim_insn = %lld\n", gpu_tot_sim_insn + gpu_sim_insn);
+  printf("gpu_tot_ipc = %12.4f\n", (float)(gpu_tot_sim_insn + gpu_sim_insn) /
                                        (gpu_tot_sim_cycle + gpu_sim_cycle));
   printf("gpu_tot_issued_cta = %lld\n",
          gpu_tot_issued_cta + m_total_cta_launched);
@@ -1540,7 +1540,7 @@ void gpgpu_sim::gpu_print_stat(unsigned long long streamID) {
   unsigned long long elapsed_time =
       MAX(curr_time - gpgpu_ctx->the_gpgpusim->g_simulation_starttime, 1);
   printf("gpu_total_sim_rate=%u\n",
-         (unsigned)((gpu_tot_sim_insn + gpu_sim_insn.load()) / elapsed_time));
+         (unsigned)((gpu_tot_sim_insn + gpu_sim_insn) / elapsed_time));
 
   // shader_print_l1_miss_stat( stdout );
   shader_print_cache_stats(stdout);
@@ -2106,6 +2106,10 @@ void gpgpu_sim::cycle() {
       m_active_sms_this_cycle += m_cluster[i]->get_n_active_sms();
     }
     *active_sms += m_active_sms_this_cycle;
+    // Flush per-SM/cluster local stats into global counters (serial)
+    for (unsigned i = 0; i < m_shader_config->n_simt_clusters; i++) {
+      m_cluster[i]->flush_local_stats();
+    }
     // Serial loop: collect stats that accumulate into shared structures
     float temp = 0;
     if (m_config.g_power_simulation_enabled &&
@@ -2367,6 +2371,10 @@ void sst_gpgpu_sim::SST_cycle() {
         m_power_stats->pwr_mem_stat->n_mem_to_simt[CURRENT_STAT_IDX][i]);
     m_cluster[i]->get_cache_stats(
         m_power_stats->pwr_mem_stat->core_cache_stats[CURRENT_STAT_IDX]);
+  }
+  // Flush per-SM/cluster local stats into global counters
+  for (unsigned i = 0; i < m_shader_config->n_simt_clusters; i++) {
+    m_cluster[i]->flush_local_stats();
   }
   float temp = 0;
   for (unsigned i = 0; i < m_shader_config->num_shader(); i++) {

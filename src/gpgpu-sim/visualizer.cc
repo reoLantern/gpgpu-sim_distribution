@@ -74,7 +74,7 @@ void gpgpu_sim::visualizer_printstat() {
   // proc->visualizer_print(visualizer_file);
   // other parameters for graphing
   gzprintf(visualizer_file, "globalcyclecount: %lld\n", gpu_sim_cycle);
-  gzprintf(visualizer_file, "globalinsncount: %lld\n", (long long)gpu_sim_insn.load());
+  gzprintf(visualizer_file, "globalinsncount: %lld\n", (long long)gpu_sim_insn);
   gzprintf(visualizer_file, "globaltotinsncount: %lld\n", gpu_tot_sim_insn);
 
   time_vector_print_interval2gzfile(visualizer_file);

@@ -2110,6 +2110,24 @@ class shader_core_mem_fetch_allocator : public mem_fetch_allocator {
   const memory_config *m_memory_config;
 };
 
+// Per-SM local accumulators — flushed to global stats after parallel region.
+// Eliminates atomic/shared-variable contention on the hot path.
+struct per_sm_local_stats {
+  unsigned long long gpu_sim_insn = 0;
+  unsigned made_write_mfs = 0;
+  unsigned made_read_mfs = 0;
+  int gpgpu_n_mem_read_local = 0;
+  int gpgpu_n_mem_write_local = 0;
+  int gpgpu_n_mem_texture = 0;
+  int gpgpu_n_mem_const = 0;
+  int gpgpu_n_mem_read_global = 0;
+  int gpgpu_n_mem_write_global = 0;
+  int gpgpu_n_mem_read_inst = 0;
+  int gpgpu_n_mem_l2_writeback = 0;
+  int gpgpu_n_mem_l1_write_allocate = 0;
+  int gpgpu_n_mem_l2_write_allocate = 0;
+};
+
 class shader_core_ctx : public core_t {
  public:
   // creator:
@@ -2117,6 +2135,8 @@ class shader_core_ctx : public core_t {
                   unsigned shader_id, unsigned tpc_id,
                   const shader_core_config *config,
                   const memory_config *mem_config, shader_core_stats *stats);
+
+  per_sm_local_stats m_local_stats;  // per-SM accumulator for parallel region
 
   // used by simt_core_cluster:
   // modifiers
@@ -2722,6 +2742,7 @@ class simt_core_cluster {
   void get_icnt_stats(long &n_simt_to_mem, long &n_mem_to_simt) const;
   float get_current_occupancy(unsigned long long &active,
                               unsigned long long &total) const;
+  void flush_local_stats();  // flush per-SM/cluster local stats to globals
   virtual void create_shader_core_ctx() = 0;
 
  protected:
@@ -2736,6 +2757,7 @@ class simt_core_cluster {
   unsigned m_cta_issue_next_core;
   std::list<unsigned> m_core_sim_order;
   std::list<mem_fetch *> m_response_fifo;
+  per_sm_local_stats m_local_icnt_stats;  // cluster-level icnt stats accumulator
 };
 
 class exec_simt_core_cluster : public simt_core_cluster {
