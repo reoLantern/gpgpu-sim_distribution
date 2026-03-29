@@ -290,14 +290,28 @@ void shader_core_ctx::create_exec_pipeline() {
       GEN_CUS, m_config->gpgpu_operand_collector_num_units_gen,
       m_config->gpgpu_operand_collector_num_out_ports_gen, "GEN");
 
+  // When specialized OC is enabled, determine which types have dedicated ports
+  // so the generic port does NOT connect to them — preventing the generic port
+  // from stealing instructions that should go through dedicated CU sets.
+  const bool spec_oc = m_config->enable_specialized_operand_collector;
+  const bool mem_has_dedicated =
+      spec_oc && m_config->gpgpu_operand_collector_num_units_mem > 0;
+  const bool spec3_has_dedicated =
+      spec_oc &&
+      m_config->gpgpu_operand_collector_num_units_spec_3 > 0 &&
+      (unsigned)(SPECIALIZED_UNIT_3_OP - SPEC_UNIT_START_ID) <
+          m_config->m_specialized_unit.size();
+
   for (unsigned i = 0; i < m_config->gpgpu_operand_collector_num_in_ports_gen;
        i++) {
     in_ports.push_back(&m_pipeline_reg[ID_OC_SP]);
     in_ports.push_back(&m_pipeline_reg[ID_OC_SFU]);
-    in_ports.push_back(&m_pipeline_reg[ID_OC_MEM]);
     out_ports.push_back(&m_pipeline_reg[OC_EX_SP]);
     out_ports.push_back(&m_pipeline_reg[OC_EX_SFU]);
-    out_ports.push_back(&m_pipeline_reg[OC_EX_MEM]);
+    if (!mem_has_dedicated) {
+      in_ports.push_back(&m_pipeline_reg[ID_OC_MEM]);
+      out_ports.push_back(&m_pipeline_reg[OC_EX_MEM]);
+    }
     if (m_config->gpgpu_tensor_core_avail) {
       in_ports.push_back(&m_pipeline_reg[ID_OC_TENSOR_CORE]);
       out_ports.push_back(&m_pipeline_reg[OC_EX_TENSOR_CORE]);
@@ -312,6 +326,10 @@ void shader_core_ctx::create_exec_pipeline() {
     }
     if (m_config->m_specialized_unit.size() > 0) {
       for (unsigned j = 0; j < m_config->m_specialized_unit.size(); ++j) {
+        // Skip specialized_unit_3 if it has a dedicated SPEC3 port
+        if (spec3_has_dedicated &&
+            j == (unsigned)(SPECIALIZED_UNIT_3_OP - SPEC_UNIT_START_ID))
+          continue;
         in_ports.push_back(
             &m_pipeline_reg[m_config->m_specialized_unit[j].ID_OC_SPEC_ID]);
         out_ports.push_back(
@@ -441,7 +459,8 @@ void shader_core_ctx::create_exec_pipeline() {
         in_ports.push_back(&m_pipeline_reg[spec3_id]);
         out_ports.push_back(&m_pipeline_reg[spec3_out]);
         cu_sets.push_back((unsigned)SPEC3_CUS);
-        cu_sets.push_back((unsigned)GEN_CUS);
+        // No GEN_CUS fallback: SPEC3 (tensor) is fully isolated,
+        // symmetric with mem_strict behavior for MEM.
         m_operand_collector.add_port(in_ports, out_ports, cu_sets);
         in_ports.clear(), out_ports.clear(), cu_sets.clear();
       }
