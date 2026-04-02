@@ -374,6 +374,7 @@ class kernel_info_t {
 
   // Jin: kernel timing
  public:
+  unsigned allocated_ctas;
   unsigned long long launch_cycle;
   unsigned long long start_cycle;
   unsigned long long end_cycle;
