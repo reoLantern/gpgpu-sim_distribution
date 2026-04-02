@@ -416,6 +416,10 @@ void warp_inst_t::generate_mem_accesses() {
       assert(total_accesses > 0 && total_accesses <= m_config->warp_size);
       if (m_is_ldsm) {
         total_accesses *= m_ldsm_num;
+      } else if (data_size > 4) {
+        // LDS.64 (data_size=8) accesses 2 consecutive 32-bit words per thread,
+        // LDS.128 (data_size=16) accesses 4. Scale total_accesses accordingly.
+        total_accesses *= (data_size / 4);
       }
       cycles = total_accesses;  // shared memory conflicts modeled as larger
                                 // initiation interval
