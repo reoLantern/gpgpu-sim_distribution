@@ -76,7 +76,7 @@
 #define WRITE_MASK_SIZE 8
 
 #ifndef ENABLE_LDST_ENTRY_QUEUE
-#define ENABLE_LDST_ENTRY_QUEUE 1
+#define ENABLE_LDST_ENTRY_QUEUE 0
 #endif
 
 class gpgpu_context;
