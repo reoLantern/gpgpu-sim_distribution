@@ -1776,26 +1776,8 @@ void scheduler_unit::cycle() {
                   warp_inst_issued = true;
                   previous_issued_inst_exec_type =
                       exec_unit_type_t::SPECIALIZED;
-                  if (tensor_inst) {
+                  if (tensor_inst)
                     m_shader->m_tensor_inst_issued_this_sched_cycle = true;
-                    // Debug: print tensor issue for SM0 warp0
-                    if (m_shader->get_sid() == 0 && warp_id == 0) {
-                      static unsigned dbg_issue_cnt = 0;
-                      if (dbg_issue_cnt < 200) {
-                        unsigned long long cyc =
-                            m_shader->get_gpu()->gpu_tot_sim_cycle +
-                            m_shader->get_gpu()->gpu_sim_cycle;
-                        printf("[TC-DBG] cycle=%llu SM0 warp0 IMMA pc=0x%x ISSUE "
-                               "dst=R%u src=R%u,R%u,R%u\n",
-                               cyc, (unsigned)pI->pc,
-                               pI->outcount > 0 ? pI->out[0] : 0,
-                               pI->incount > 0 ? pI->in[0] : 0,
-                               pI->incount > 1 ? pI->in[1] : 0,
-                               pI->incount > 2 ? pI->in[2] : 0);
-                        dbg_issue_cnt++;
-                      }
-                    }
-                  }
                 }
 #if CYCLE_LOG
                 else if (tensor_inst) {
@@ -1827,26 +1809,6 @@ void scheduler_unit::cycle() {
           } else {
             if (tensor_inst) {
               m_shader->m_tensor_scoreboard_block = true;
-              // Debug: print tensor scoreboard stall for SM0 warp0
-              if (m_shader->get_sid() == 0 && warp_id == 0) {
-                static unsigned dbg_cnt = 0;
-                if (dbg_cnt < 5000) {
-                  unsigned long long cyc = m_shader->get_gpu()->gpu_tot_sim_cycle +
-                                           m_shader->get_gpu()->gpu_sim_cycle;
-                  std::vector<unsigned> col_regs;
-                  m_scoreboard->findCollisionRegs(warp_id, pI, col_regs);
-                  printf("[TC-DBG] cycle=%llu SM0 warp0 IMMA pc=0x%x STALL regs=",
-                         cyc, (unsigned)pI->pc);
-                  for (unsigned r = 0; r < col_regs.size(); r++)
-                    printf("%sR%u", r ? "," : "", col_regs[r]);
-                  printf(" (out=R%u in=R%u,R%u,R%u)\n",
-                         pI->outcount > 0 ? pI->out[0] : 0,
-                         pI->incount > 0 ? pI->in[0] : 0,
-                         pI->incount > 1 ? pI->in[1] : 0,
-                         pI->incount > 2 ? pI->in[2] : 0);
-                  dbg_cnt++;
-                }
-              }
 #if ENABLE_TENSOR_PROFILING
               // Fine-grained: which operand of IMMA is blocking?
               // IMMA src: in[0]=A, in[1]=B, in[2]=C(accum); out[0]=C
@@ -1957,43 +1919,6 @@ void scheduler_unit::cycle() {
   else if (!issued_inst)
     m_stats->shader_cycle_distro[2]++;  // pipeline stalled
 
-  // Debug: per-cycle tensor idle analysis for SM0 sched0
-  if (m_shader->get_sid() == 0 && m_id == 0) {
-    static unsigned tc_idle_dbg = 0;
-    if (tc_idle_dbg < 500) {
-      unsigned long long cyc = m_shader->get_gpu()->gpu_tot_sim_cycle +
-                               m_shader->get_gpu()->gpu_sim_cycle;
-      if (cyc >= 8700) {  // start after warmup
-        const char *status = "?";
-        const char *detail = "";
-        unsigned issued_warp = 0;
-        int issued_op = -1;
-
-        if (m_shader->m_tensor_inst_issued_this_sched_cycle) {
-          status = "TC_ISSUE";
-        } else if (issued_inst) {
-          status = "OTHER_ISSUE";
-          // find what was issued — look at last issued warp
-          // We'll just note it was a non-tensor issue
-        } else if (!valid_inst) {
-          status = "NO_VALID";
-        } else if (!ready_inst) {
-          status = "SCOREBOARD";
-        } else {
-          status = "PIPE_FULL";
-        }
-        printf("[SCHED] cycle=%llu sched=0 %s", cyc, status);
-        if (m_shader->m_tensor_scoreboard_block)
-          printf(" [tensor_sb_block]");
-        if (m_shader->m_tensor_oc_block)
-          printf(" [tensor_oc_block]");
-        if (m_shader->m_tensor_inst_in_ibuffer)
-          printf(" [tensor_in_ibuf]");
-        printf("\n");
-        tc_idle_dbg++;
-      }
-    }
-  }
 
 #if ENABLE_TENSOR_PROFILING
   // Tensor core utilization profiling (per scheduler per cycle).
@@ -2586,19 +2511,6 @@ void shader_core_ctx::writeback() {
 
     m_operand_collector.writeback(*pipe_reg);
     unsigned warp_id = pipe_reg->warp_id();
-    // Debug: print tensor writeback for SM0 warp0
-    if (m_sid == 0 && warp_id == 0 && is_tensor_op(*pipe_reg)) {
-      static unsigned dbg_wb_cnt = 0;
-      if (dbg_wb_cnt < 200) {
-        unsigned long long cyc = m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle;
-        printf("[TC-DBG] cycle=%llu SM0 warp0 IMMA pc=0x%x WRITEBACK dst=R%u "
-               "uid=%u\n",
-               cyc, (unsigned)pipe_reg->pc,
-               pipe_reg->outcount > 0 ? pipe_reg->out[0] : 0,
-               pipe_reg->get_uid());
-        dbg_wb_cnt++;
-      }
-    }
     m_scoreboard->releaseRegisters(pipe_reg);
     if (m_sid == 0 && !pipe_reg->trace_string().empty()) {
       unsigned long long cycle =
@@ -3265,21 +3177,6 @@ pipelined_simd_unit::pipelined_simd_unit(register_set *result_port,
 
 void pipelined_simd_unit::cycle() {
   if (!m_pipeline_reg[0]->empty()) {
-    // Debug: track tensor pipeline → EX_WB timing
-    if (m_core->get_sid() == 0 && m_pipeline_reg[0]->warp_id() == 0 &&
-        m_pipeline_reg[0]->op == SPECIALIZED_UNIT_3_OP) {
-      static unsigned dbg_pipe_cnt = 0;
-      if (dbg_pipe_cnt < 100) {
-        unsigned long long cyc = m_core->get_gpu()->gpu_tot_sim_cycle +
-                                 m_core->get_gpu()->gpu_sim_cycle;
-        printf("[TC-PIPE] cycle=%llu SM0 warp0 pc=0x%x stage0→EX_WB dst=R%u "
-               "pipeline_depth=%u\n",
-               cyc, (unsigned)m_pipeline_reg[0]->pc,
-               m_pipeline_reg[0]->outcount > 0 ? m_pipeline_reg[0]->out[0] : 0,
-               m_pipeline_depth);
-        dbg_pipe_cnt++;
-      }
-    }
     m_result_port->move_in(m_pipeline_reg[0]);
     assert(active_insts_in_pipeline > 0);
     active_insts_in_pipeline--;
