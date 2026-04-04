@@ -31,6 +31,7 @@
 // POSSIBILITY OF SUCH DAMAGE.
 
 #include "shader.h"
+#include <atomic>
 #include <float.h>
 #include <limits.h>
 #include <string.h>
@@ -572,6 +573,7 @@ shader_core_ctx::shader_core_ctx(class gpgpu_sim *gpu,
   m_tensor_inst_in_ibuffer = false;
   m_tensor_scoreboard_block = false;
   m_tensor_oc_block = false;
+  m_tensor_inst_issued_this_sched_cycle = false;
   m_depbar_trace_per_warp.assign(m_config->max_warps_per_shader, "");
 
   // Jin: for concurrent kernels on a SM
@@ -1758,6 +1760,8 @@ void scheduler_unit::cycle() {
                   warp_inst_issued = true;
                   previous_issued_inst_exec_type =
                       exec_unit_type_t::SPECIALIZED;
+                  if (tensor_inst)
+                    m_shader->m_tensor_inst_issued_this_sched_cycle = true;
                 }
 #if CYCLE_LOG
                 else if (tensor_inst) {
@@ -1789,6 +1793,37 @@ void scheduler_unit::cycle() {
           } else {
             if (tensor_inst) {
               m_shader->m_tensor_scoreboard_block = true;
+              // Fine-grained: which operand of IMMA is blocking?
+              // IMMA src: in[0]=A, in[1]=B, in[2]=C(accum); out[0]=C
+              {
+                static std::atomic<unsigned long long> tc_sb_A{0}, tc_sb_B{0},
+                    tc_sb_C{0}, tc_sb_other{0};
+                static std::atomic<bool> tc_sb_atexit{false};
+                if (!tc_sb_atexit.exchange(true)) {
+                  atexit([]() {
+                    printf("\n=== Tensor Scoreboard Breakdown ===\n");
+                    printf("tc_sb_A     = %12llu\n", tc_sb_A.load());
+                    printf("tc_sb_B     = %12llu\n", tc_sb_B.load());
+                    printf("tc_sb_C     = %12llu\n", tc_sb_C.load());
+                    printf("tc_sb_other = %12llu\n", tc_sb_other.load());
+                  });
+                }
+                std::vector<unsigned> col_regs;
+                m_scoreboard->findCollisionRegs(warp_id, pI, col_regs);
+                std::set<unsigned> col_set(col_regs.begin(), col_regs.end());
+                bool found_a = false, found_b = false, found_c = false;
+                if (pI->incount >= 1 && col_set.count(pI->in[0]))
+                  found_a = true;
+                if (pI->incount >= 2 && col_set.count(pI->in[1]))
+                  found_b = true;
+                if ((pI->outcount >= 1 && col_set.count(pI->out[0])) ||
+                    (pI->incount >= 3 && col_set.count(pI->in[2])))
+                  found_c = true;
+                if (found_a) tc_sb_A++;
+                if (found_b) tc_sb_B++;
+                if (found_c) tc_sb_C++;
+                if (!found_a && !found_b && !found_c) tc_sb_other++;
+              }
             }
 #if CYCLE_LOG
             if (m_shader->get_sid() == 0) {
@@ -1865,6 +1900,54 @@ void scheduler_unit::cycle() {
                                         // to memory)
   else if (!issued_inst)
     m_stats->shader_cycle_distro[2]++;  // pipeline stalled
+
+  // Tensor core utilization profiling (per scheduler per cycle).
+  // Track why tensor core was not issuing this cycle.
+  {
+    static std::atomic<unsigned long long> tc_issued{0};
+    static std::atomic<unsigned long long> tc_scoreboard{0};
+    static std::atomic<unsigned long long> tc_idoc_full{0};
+    static std::atomic<unsigned long long> tc_no_tensor_warp{0};
+    static std::atomic<unsigned long long> tc_total_cycles{0};
+    static std::atomic<bool> tc_atexit_registered{false};
+
+    if (!tc_atexit_registered.exchange(true)) {
+      atexit([]() {
+        unsigned long long total = tc_total_cycles.load();
+        if (total == 0) return;
+        printf("\n=== Tensor Core Utilization (per scheduler-cycle) ===\n");
+        printf("tc_issued        = %12llu  (%.1f%%)\n", tc_issued.load(),
+               100.0 * tc_issued.load() / total);
+        printf("tc_scoreboard    = %12llu  (%.1f%%)\n", tc_scoreboard.load(),
+               100.0 * tc_scoreboard.load() / total);
+        printf("tc_idoc_full     = %12llu  (%.1f%%)\n", tc_idoc_full.load(),
+               100.0 * tc_idoc_full.load() / total);
+        printf("tc_no_tensor_warp= %12llu  (%.1f%%)\n", tc_no_tensor_warp.load(),
+               100.0 * tc_no_tensor_warp.load() / total);
+        printf("tc_total_cycles  = %12llu\n", total);
+      });
+    }
+
+    tc_total_cycles++;
+    if (m_shader->m_tensor_inst_issued_this_sched_cycle) {
+      tc_issued++;
+    } else if (m_shader->m_tensor_scoreboard_block) {
+      tc_scoreboard++;
+    } else if (m_shader->m_tensor_oc_block) {
+      tc_idoc_full++;
+    } else if (m_shader->m_tensor_inst_in_ibuffer) {
+      // Tensor inst exists in ibuffer but wasn't blocked by scoreboard or OC —
+      // must be some other issue (dual-issue restriction, etc.)
+      tc_idoc_full++;
+    } else {
+      tc_no_tensor_warp++;
+    }
+    // Reset per-cycle flags
+    m_shader->m_tensor_inst_in_ibuffer = false;
+    m_shader->m_tensor_scoreboard_block = false;
+    m_shader->m_tensor_oc_block = false;
+    m_shader->m_tensor_inst_issued_this_sched_cycle = false;
+  }
 }
 
 void scheduler_unit::do_on_warp_issued(
@@ -2433,6 +2516,16 @@ bool ldst_unit::shared_cycle(warp_inst_t &inst, mem_stage_stall_type &rc_fail,
   }
 
   bool stall = inst.dispatch_delay();
+
+  // If pipeline bank-conflict stall is done, check for async write contention.
+  // LDGSTS data returning from global memory writes to shmem banks, competing
+  // with pipeline reads (LDSM).  While async writes are active, pipeline reads
+  // see one extra stall cycle per dispatch phase.
+  if (!stall && m_shmem_arbiter.is_write_active()) {
+    stall = true;
+    m_shmem_arbiter.inc_pipeline_stall();
+  }
+
   if (stall) {
     fail_type = S_MEM;
     rc_fail = BK_CONF;
@@ -3141,6 +3234,7 @@ void ldst_unit::init(mem_fetch_interface *icnt,
   m_last_inst_gpu_sim_cycle = 0;
   m_last_inst_gpu_tot_sim_cycle = 0;
   m_entry_fifo_capacity = 20;  // configurable queue depth for LSU front-end
+  m_shmem_arbiter.init(m_config->num_shmem_bank, 4 /* bytes per bank per cycle */);
 }
 
 ldst_unit::ldst_unit(mem_fetch_interface *icnt,
@@ -3277,6 +3371,10 @@ void ldst_unit::writeback() {
   if (m_next_wb_ldgsts.empty() && m_next_global &&
       m_next_global->get_inst().m_is_ldgsts) {
     warp_inst_t inst = m_next_global->get_inst();
+    // LDGSTS data arrived from global — must write to shared memory banks.
+    // Model the shmem write port occupancy.
+    unsigned wb_bytes = m_next_global->get_data_size();
+    m_shmem_arbiter.async_write(wb_bytes);
     if (m_next_global->isatomic()) {
       m_core->decrement_atomic_count(
           m_next_global->get_wid(),
@@ -3508,6 +3606,8 @@ inst->space.get_type() != shared_space) { unsigned warp_id = inst->warp_id();
 }
 */
 void ldst_unit::cycle() {
+  m_shmem_arbiter.new_cycle();
+
 #if ENABLE_LDST_ENTRY_QUEUE
   // Refill dispatch register from entry FIFO if available.
   if (m_dispatch_reg->empty() && !m_entry_fifo.empty()) {

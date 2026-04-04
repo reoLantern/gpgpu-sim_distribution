@@ -1365,6 +1365,10 @@ class specialized_unit : public pipelined_simd_unit {
   virtual void active_lanes_in_pipeline();
   virtual void issue(register_set &source_reg);
   bool is_issue_partitioned() { return true; }
+  // Specialized units (tensor core, etc.) have independent writeback paths
+  // per sub-core (micro2025 Figure 3: per-subcore result queue).
+  // No need to pre-reserve the SM-wide result bus at issue time.
+  virtual bool stallable() const { return true; }
 
  private:
   int m_supported_op;
@@ -1377,6 +1381,61 @@ class simt_core_cluster;
 class shader_memory_interface;
 class shader_core_mem_fetch_allocator;
 class cache_t;
+
+// Models shared memory bandwidth contention between pipeline reads (LDSM/STS)
+// and async writes (LDGSTS writeback, future TMA/WGMMA).
+// Real GPU: LDGSTS data returning from global memory must write through shared
+// memory banks, competing with LDSM reads for bank bandwidth.
+class shmem_port_arbiter {
+ public:
+  shmem_port_arbiter()
+      : m_num_banks(0), m_bank_width(0),
+        m_async_write_cycles(0),
+        m_stat_async_write_cycles(0), m_stat_pipeline_stall_cycles(0) {}
+
+  void init(unsigned num_banks, unsigned bank_width_bytes) {
+    m_num_banks = num_banks;
+    m_bank_width = bank_width_bytes;
+  }
+
+  // Called at start of each cycle — drain one cycle of async write work.
+  void new_cycle() {
+    if (m_async_write_cycles > 0) {
+      m_async_write_cycles--;
+      m_stat_async_write_cycles++;
+    }
+  }
+
+  // Called when async data (LDGSTS/TMA) arrives and needs to write to shmem.
+  // num_bytes: bytes to write. Occupies shared memory for
+  // ceil(num_bytes / (num_banks * bank_width)) cycles.
+  void async_write(unsigned num_bytes) {
+    if (m_num_banks == 0) return;
+    unsigned bw_per_cycle = m_num_banks * m_bank_width;
+    unsigned cycles = (num_bytes + bw_per_cycle - 1) / bw_per_cycle;
+    m_async_write_cycles += cycles;
+  }
+
+  // Returns true if async writes are currently occupying shared memory,
+  // meaning pipeline reads should see additional contention.
+  bool is_write_active() const { return m_async_write_cycles > 0; }
+
+  void inc_pipeline_stall() { m_stat_pipeline_stall_cycles++; }
+
+  unsigned long long get_stat_async_write_cycles() const {
+    return m_stat_async_write_cycles;
+  }
+  unsigned long long get_stat_pipeline_stall_cycles() const {
+    return m_stat_pipeline_stall_cycles;
+  }
+
+ private:
+  unsigned m_num_banks;
+  unsigned m_bank_width;       // bytes per bank per cycle
+  unsigned m_async_write_cycles;  // remaining cycles of async write activity
+  unsigned long long m_stat_async_write_cycles;
+  unsigned long long m_stat_pipeline_stall_cycles;
+};
 
 class ldst_unit : public pipelined_simd_unit {
  public:
@@ -1509,6 +1568,8 @@ class ldst_unit : public pipelined_simd_unit {
   warp_inst_t m_next_wb_ldgsts;
   std::vector<unsigned> m_writeback_arb_per_sched;  // round-robin per subcore
   unsigned m_num_writeback_clients;
+
+  shmem_port_arbiter m_shmem_arbiter;
 
   enum mem_stage_stall_type m_mem_rc;
 
@@ -2578,6 +2639,7 @@ class shader_core_ctx : public core_t {
   bool m_tensor_inst_in_ibuffer;
   bool m_tensor_scoreboard_block;
   bool m_tensor_oc_block;
+  bool m_tensor_inst_issued_this_sched_cycle;
   std::vector<std::string> m_depbar_trace_per_warp;
 
   // general information
