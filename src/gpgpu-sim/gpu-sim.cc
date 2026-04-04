@@ -394,6 +394,9 @@ void shader_core_config::reg_options(class OptionParser *opp) {
   option_parser_register(opp, "-gpgpu_perfect_mem", OPT_BOOL,
                          &gpgpu_perfect_mem,
                          "enable perfect memory mode (no cache miss)", "0");
+  option_parser_register(opp, "-gpgpu_perfect_mem_latency", OPT_UINT32,
+                         &gpgpu_perfect_mem_latency,
+                         "fixed latency for perfect memory (0=instant)", "0");
   option_parser_register(
       opp, "-n_regfile_gating_group", OPT_UINT32, &n_regfile_gating_group,
       "group of lanes that should be read/written together)", "4");

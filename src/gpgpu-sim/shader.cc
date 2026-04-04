@@ -174,7 +174,9 @@ void shader_core_ctx::create_front_pipeline() {
     m_icnt = new sst_memory_interface(
         this, static_cast<sst_simt_core_cluster *>(m_cluster));
   } else if (m_config->gpgpu_perfect_mem) {
-    m_icnt = new perfect_memory_interface(this, m_cluster);
+    m_perfect_mem = new perfect_memory_interface(this, m_cluster);
+    m_perfect_mem->set_fixed_latency(m_config->gpgpu_perfect_mem_latency);
+    m_icnt = m_perfect_mem;
   } else {
     m_icnt = new shader_memory_interface(this, m_cluster);
   }
@@ -1250,9 +1252,35 @@ void shader_core_ctx::issue_warp(register_set &pipe_reg_set,
   m_warp[warp_id]->set_next_pc(next_inst->pc + next_inst->isize);
 }
 
+void perfect_memory_interface::push(mem_fetch *mf) {
+  if (mf && mf->isatomic()) mf->do_atomic();
+  m_core->inc_simt_to_mem(mf->get_num_flits(true));
+  if (m_fixed_latency == 0) {
+    m_cluster->push_response_fifo(mf);
+  } else {
+    unsigned long long ready = m_core->get_gpu()->gpu_tot_sim_cycle +
+                               m_core->get_gpu()->gpu_sim_cycle +
+                               m_fixed_latency;
+    m_delay_queue.push({ready, mf});
+  }
+}
+
+void perfect_memory_interface::cycle() {
+  unsigned long long now =
+      m_core->get_gpu()->gpu_tot_sim_cycle + m_core->get_gpu()->gpu_sim_cycle;
+  while (!m_delay_queue.empty() && m_delay_queue.front().ready_cycle <= now &&
+         !m_cluster->response_queue_full()) {
+    m_cluster->push_response_fifo(m_delay_queue.front().mf);
+    m_delay_queue.pop();
+  }
+}
+
 void shader_core_ctx::issue() {
   // Process timed scoreboard releases (tensor result bypass).
   m_scoreboard->cycle(m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle);
+
+  // Drain delayed responses from perfect memory interface.
+  if (m_perfect_mem) m_perfect_mem->cycle();
 
   m_issue_warp_this_cycle = false;
   m_tensor_issued_to_oc = false;

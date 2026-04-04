@@ -59,6 +59,7 @@
 #include "stack.h"
 #include "stats.h"
 #include "traffic_breakdown.h"
+#include <queue>
 
 #define NO_OP_FLAG 0xFF
 
@@ -1732,6 +1733,7 @@ class shader_core_config : public core_config {
   // data
   char *gpgpu_shader_core_pipeline_opt;
   bool gpgpu_perfect_mem;
+  unsigned gpgpu_perfect_mem_latency;
   bool gpgpu_clock_gated_reg_file;
   bool gpgpu_clock_gated_lanes;
   enum divergence_support_t model;
@@ -2670,6 +2672,7 @@ class shader_core_ctx : public core_t {
 
   // interconnect interface
   mem_fetch_interface *m_icnt;
+  class perfect_memory_interface *m_perfect_mem = nullptr;  // non-null when perfmem enabled
   shader_core_mem_fetch_allocator *m_mem_fetch_allocator;
 
   // fetch
@@ -2905,23 +2908,26 @@ class shader_memory_interface : public mem_fetch_interface {
 
 class perfect_memory_interface : public mem_fetch_interface {
  public:
-  perfect_memory_interface(shader_core_ctx *core, simt_core_cluster *cluster) {
-    m_core = core;
-    m_cluster = cluster;
-  }
+  perfect_memory_interface(shader_core_ctx *core, simt_core_cluster *cluster)
+      : m_core(core), m_cluster(cluster), m_fixed_latency(0) {}
+
+  void set_fixed_latency(unsigned lat) { m_fixed_latency = lat; }
+
   virtual bool full(unsigned size, bool write) const {
     return m_cluster->response_queue_full();
   }
-  virtual void push(mem_fetch *mf) {
-    if (mf && mf->isatomic())
-      mf->do_atomic();  // execute atomic inside the "memory subsystem"
-    m_core->inc_simt_to_mem(mf->get_num_flits(true));
-    m_cluster->push_response_fifo(mf);
-  }
+  virtual void push(mem_fetch *mf);
+  void cycle();
 
  private:
   shader_core_ctx *m_core;
   simt_core_cluster *m_cluster;
+  unsigned m_fixed_latency;
+  struct delayed_response {
+    unsigned long long ready_cycle;
+    mem_fetch *mf;
+  };
+  std::queue<delayed_response> m_delay_queue;
 };
 
 /**
