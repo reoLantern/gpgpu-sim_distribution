@@ -79,6 +79,10 @@
 #define ENABLE_LDST_ENTRY_QUEUE 0
 #endif
 
+#ifndef ENABLE_TENSOR_PROFILING
+#define ENABLE_TENSOR_PROFILING 0
+#endif
+
 class gpgpu_context;
 
 enum exec_unit_type_t {

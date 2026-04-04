@@ -1793,6 +1793,7 @@ void scheduler_unit::cycle() {
           } else {
             if (tensor_inst) {
               m_shader->m_tensor_scoreboard_block = true;
+#if ENABLE_TENSOR_PROFILING
               // Fine-grained: which operand of IMMA is blocking?
               // IMMA src: in[0]=A, in[1]=B, in[2]=C(accum); out[0]=C
               {
@@ -1824,6 +1825,7 @@ void scheduler_unit::cycle() {
                 if (found_c) tc_sb_C++;
                 if (!found_a && !found_b && !found_c) tc_sb_other++;
               }
+#endif
             }
 #if CYCLE_LOG
             if (m_shader->get_sid() == 0) {
@@ -1901,6 +1903,7 @@ void scheduler_unit::cycle() {
   else if (!issued_inst)
     m_stats->shader_cycle_distro[2]++;  // pipeline stalled
 
+#if ENABLE_TENSOR_PROFILING
   // Tensor core utilization profiling (per scheduler per cycle).
   // Track why tensor core was not issuing this cycle.
   {
@@ -1936,18 +1939,23 @@ void scheduler_unit::cycle() {
     } else if (m_shader->m_tensor_oc_block) {
       tc_idoc_full++;
     } else if (m_shader->m_tensor_inst_in_ibuffer) {
-      // Tensor inst exists in ibuffer but wasn't blocked by scoreboard or OC —
-      // must be some other issue (dual-issue restriction, etc.)
       tc_idoc_full++;
     } else {
       tc_no_tensor_warp++;
     }
-    // Reset per-cycle flags
-    m_shader->m_tensor_inst_in_ibuffer = false;
-    m_shader->m_tensor_scoreboard_block = false;
-    m_shader->m_tensor_oc_block = false;
-    m_shader->m_tensor_inst_issued_this_sched_cycle = false;
   }
+  // Reset per-cycle flags (always, regardless of profiling)
+  m_shader->m_tensor_inst_in_ibuffer = false;
+  m_shader->m_tensor_scoreboard_block = false;
+  m_shader->m_tensor_oc_block = false;
+  m_shader->m_tensor_inst_issued_this_sched_cycle = false;
+#else
+  // Reset flags even when profiling is off (they are set unconditionally above)
+  m_shader->m_tensor_inst_in_ibuffer = false;
+  m_shader->m_tensor_scoreboard_block = false;
+  m_shader->m_tensor_oc_block = false;
+  m_shader->m_tensor_inst_issued_this_sched_cycle = false;
+#endif
 }
 
 void scheduler_unit::do_on_warp_issued(
