@@ -158,6 +158,10 @@ void icnt_reg_options(class OptionParser* opp) {
                          &g_inct_config.verbose, "inct_verbose", "0");
   option_parser_register(opp, "-icnt_grant_cycles", OPT_UINT32,
                          &g_inct_config.grant_cycles, "grant_cycles", "1");
+  option_parser_register(opp, "-icnt_burst_size", OPT_UINT32,
+                         &g_inct_config.burst_size,
+                         "max packets per output port per cycle (default 1)",
+                         "1");
 }
 
 void icnt_wrapper_init() {

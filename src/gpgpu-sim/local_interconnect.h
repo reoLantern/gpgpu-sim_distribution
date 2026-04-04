@@ -51,6 +51,7 @@ struct inct_config {
   Arbiteration_type arbiter_algo;
   unsigned verbose;
   unsigned grant_cycles;
+  unsigned burst_size;  // max packets per output port per cycle (default 1)
 };
 
 class xbar_router {
@@ -108,6 +109,7 @@ class xbar_router {
 
   unsigned grant_cycles;
   unsigned grant_cycles_count;
+  unsigned burst_size;  // max packets per output port per cycle
 
   friend class LocalInterconnect;
 };

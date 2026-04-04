@@ -48,6 +48,7 @@ xbar_router::xbar_router(unsigned router_id, enum Interconnect_type m_type,
   verbose = m_localinct_config.verbose;
   grant_cycles = m_localinct_config.grant_cycles;
   grant_cycles_count = m_localinct_config.grant_cycles;
+  burst_size = m_localinct_config.burst_size;
   in_buffers.resize(total_nodes);
   out_buffers.resize(total_nodes);
   next_node.resize(total_nodes, 0);
@@ -136,7 +137,7 @@ void xbar_router::Perfect_Advance() {
 
 void xbar_router::RR_Advance() {
   bool active = false;
-  vector<bool> issued(total_nodes, false);
+  vector<unsigned> issued_count(total_nodes, 0);
   unsigned conflict_sub = 0;
   unsigned reqs = 0;
 
@@ -146,19 +147,18 @@ void xbar_router::RR_Advance() {
     if (!in_buffers[node_id].empty()) {
       active = true;
       Packet _packet = in_buffers[node_id].front();
-      // ensure that the outbuffer has space and not issued before in this cycle
       if (Has_Buffer_Out(_packet.output_deviceID, 1)) {
-        if (!issued[_packet.output_deviceID]) {
+        if (issued_count[_packet.output_deviceID] < burst_size) {
           out_buffers[_packet.output_deviceID].push(_packet);
           in_buffers[node_id].pop();
-          issued[_packet.output_deviceID] = true;
+          issued_count[_packet.output_deviceID]++;
           reqs++;
         } else
           conflict_sub++;
       } else {
         out_buffer_full++;
 
-        if (issued[_packet.output_deviceID]) conflict_sub++;
+        if (issued_count[_packet.output_deviceID] >= burst_size) conflict_sub++;
       }
     }
   }
@@ -217,12 +217,14 @@ void xbar_router::iSLIP_Advance() {
     conflicts_util += conflict_sub;
     cycles_util++;
   }
-  // do iSLIP
+  // do iSLIP with burst support
   for (auto dest : destination_set) {
-    if (Has_Buffer_Out(dest, 1)) {
+    unsigned burst_count = 0;
+    while (burst_count < burst_size && Has_Buffer_Out(dest, 1)) {
       unsigned start_node = next_node[dest];
       auto it =
           std::upper_bound(input_nodes.begin(), input_nodes.end(), start_node);
+      bool found = false;
       for (unsigned j = 0; j < input_nodes.size(); j++, it++) {
         if (it == input_nodes.end()) {
           it = input_nodes.begin();
@@ -233,30 +235,18 @@ void xbar_router::iSLIP_Advance() {
         if (_packet.output_deviceID == dest) {
           out_buffers[_packet.output_deviceID].push(_packet);
           in_buffers[node_id].pop();
-          input_nodes.erase(node_id);  // can only be used once
-          if (verbose)
-            printf("%d : cycle %llu : send req from %d to %d\n", m_id, cycles,
-                   node_id, dest - _n_shader);
+          input_nodes.erase(node_id);
           if (grant_cycles_count == 1)
             next_node[dest] = (++node_id % total_nodes);
-          if (verbose) {
-            for (unsigned k = j + 1; k < total_nodes; ++k) {
-              unsigned node_id2 = (k + next_node[dest]) % total_nodes;
-              if (!in_buffers[node_id2].empty()) {
-                Packet _packet2 = in_buffers[node_id2].front();
-
-                if (_packet2.output_deviceID == dest)
-                  printf("%d : cycle %llu : cannot send req from %d to %d\n",
-                         m_id, cycles, node_id2, dest - _n_shader);
-              }
-            }
-          }
-
           reqs++;
+          burst_count++;
+          found = true;
           break;
         }
       }
-    } else {
+      if (!found) break;  // no more inputs for this dest
+    }
+    if (burst_count == 0 && !Has_Buffer_Out(dest, 1)) {
       out_buffer_full++;
     }
   }
