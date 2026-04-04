@@ -431,6 +431,10 @@ void shader_core_config::reg_options(class OptionParser *opp) {
   option_parser_register(opp, "-gpgpu_n_cluster_ejection_buffer_size",
                          OPT_UINT32, &n_simt_ejection_buffer_size,
                          "number of packets in ejection buffer", "8");
+  option_parser_register(opp, "-gpgpu_n_mem_response_per_cycle", OPT_UINT32,
+                         &n_mem_response_per_cycle,
+                         "max memory responses delivered to SM per cycle "
+                         "(models crossbar burst bandwidth, default 1)", "1");
   option_parser_register(
       opp, "-gpgpu_n_ldst_response_buffer_size", OPT_UINT32,
       &ldst_unit_response_queue_size,

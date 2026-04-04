@@ -1818,6 +1818,7 @@ class shader_core_config : public core_config {
   unsigned n_simt_cores_per_cluster;
   unsigned n_simt_clusters;
   unsigned n_simt_ejection_buffer_size;
+  unsigned n_mem_response_per_cycle;  // max responses delivered per cycle (burst)
   unsigned ldst_unit_response_queue_size;
 
   int simt_core_sim_order;

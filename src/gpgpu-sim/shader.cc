@@ -5788,41 +5788,44 @@ void sst_simt_core_cluster::icnt_inject_request_packet_to_SST(
 }
 
 void simt_core_cluster::icnt_cycle() {
-  if (!m_response_fifo.empty()) {
+  // Deliver responses from ejection buffer to SM cores.
+  // Real GPU crossbar supports burst delivery (multiple cache lines/cycle).
+  unsigned n_delivered = 0;
+  while (!m_response_fifo.empty() &&
+         n_delivered < m_config->n_mem_response_per_cycle) {
     mem_fetch *mf = m_response_fifo.front();
     unsigned cid = m_config->sid_to_cid(mf->get_sid());
     if (mf->get_access_type() == INST_ACC_R) {
-      // instruction fetch response
       if (!m_core[cid]->fetch_unit_response_buffer_full()) {
         m_response_fifo.pop_front();
         m_core[cid]->accept_fetch_response(mf);
-      }
+        n_delivered++;
+      } else break;
     } else {
-      // data response
       if (!m_core[cid]->ldst_unit_response_buffer_full()) {
         m_response_fifo.pop_front();
         m_memory_stats->memlatstat_read_done(mf);
         m_core[cid]->accept_ldst_unit_response(mf);
-      }
+        n_delivered++;
+      } else break;
     }
   }
-  if (m_response_fifo.size() < m_config->n_simt_ejection_buffer_size) {
+  // Pull responses from ICNT into ejection buffer (burst).
+  unsigned n_popped = 0;
+  while (m_response_fifo.size() < m_config->n_simt_ejection_buffer_size &&
+         n_popped < m_config->n_mem_response_per_cycle) {
     mem_fetch *mf = (mem_fetch *)::icnt_pop(m_cluster_id);
-    if (!mf) return;
+    if (!mf) break;
     assert(mf->get_tpc() == m_cluster_id);
     assert(mf->get_type() == READ_REPLY || mf->get_type() == WRITE_ACK);
-
-    // The packet size varies depending on the type of request:
-    // - For read request and atomic request, the packet contains the data
-    // - For write-ack, the packet only has control metadata
     unsigned int packet_size =
         (mf->get_is_write()) ? mf->get_ctrl_size() : mf->size();
     m_stats->m_incoming_traffic_stats->record_traffic(mf, packet_size);
     mf->set_status(IN_CLUSTER_TO_SHADER_QUEUE,
                    m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
-    // m_memory_stats->memlatstat_read_done(mf,m_shader_config->max_warps_per_shader);
     m_response_fifo.push_back(mf);
     m_stats->n_mem_to_simt[m_cluster_id] += mf->get_num_flits(false);
+    n_popped++;
   }
 }
 

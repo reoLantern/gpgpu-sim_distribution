@@ -170,24 +170,78 @@ Usage:
 -gpgpu_perfect_mem_latency 200  # cycles of fixed round-trip delay
 ```
 
+## CIM Speedup Under Different Memory Models
+
+| Config | Baseline | CIM | CIM speedup |
+|--------|----------|-----|-------------|
+| perfmem lat=0 | 636,538 | 522,060 | **18.0%** |
+| perfmem lat=200 | 713,960 | 599,875 | **16.0%** |
+| perfmem lat=400 | 672,087 | 609,752 | **9.3%** |
+| realmem | 828,073 | 800,196 | **3.4%** |
+| Real A100 | — | — | **10-20%** |
+
+perfmem+lat200 gives 16% CIM speedup — matching real A100. This
+confirms the pipeline model is correct for compute/shmem behavior;
+the gap in realmem is purely from memory throughput.
+
+## Throughput Bottleneck: Controlled Experiments
+
+### Cluster-side burst drain (did NOT help)
+
+Added `-gpgpu_n_mem_response_per_cycle N` to allow cluster icnt_cycle()
+to deliver N responses per cycle (vs original 1). With burst=8 +
+larger ejection/response buffers: **no effect** (828K → 828K).
+
+This proves the bottleneck is NOT at the cluster→SM delivery path.
+
+### L2 sub-partition throughput (root cause identified)
+
+The real bottleneck is the L2 sub-partition processing rate:
+
+```
+gpu-sim.cc main loop (L2 clock domain):
+  for each sub-partition:      // 160 sub-partitions
+    icnt_pop() → push()        // 1 request IN per sub-partition per cycle
+    cache_cycle()              // 1 L2 access per sub-partition per cycle
+                               // 1 response OUT per sub-partition per cycle
+```
+
+Throughput math:
+- Supply: 160 sub-partitions × 1 req/cycle = **160 requests/cycle**
+- Demand: 108 SMs × ~4 req/cycle (during LDGSTS burst) = **432 requests/cycle**
+- Oversubscription: **2.7x**
+
+Even with rop_latency=1 and infinite queues, the 1-per-sub-partition-per-
+cycle throughput caps the pipeline at 160 requests/cycle, causing requests
+to queue up in ICNT and creating the 25-30% overhead.
+
+On real A100, each L2 slice is multi-banked and can service multiple
+requests per cycle. The crossbar also has much higher bandwidth than
+the modeled local_interconnect.
+
 ## Recommended Fixes
 
-### Option A: Increase ROP pop throughput (preferred)
+### Fix 1: L2 sub-partition multi-access (highest impact, not yet attempted)
 
-Allow ROP queue to pop multiple requests per cycle when they are ready.
-Real L2 is multi-banked and can service multiple requests in parallel.
+Allow each L2 sub-partition to process N requests per cycle in
+`gpu-sim.cc` main loop and `memory_sub_partition::cache_cycle()`.
+This requires changes in:
+- `gpu-sim.cc`: pop multiple from ICNT per sub-partition
+- `l2cache.cc`: process multiple from icnt_L2_queue per cycle
+- `l2cache.cc`: push multiple responses to L2_icnt_queue per cycle
+- `gpu-sim.cc`: push multiple responses from sub-partition to ICNT
 
-### Option B: Reduce rop_latency
+### Fix 2: Cluster burst drain (implemented, minor impact)
 
-Set `l2_rop_latency = 50` to match real SM→L2 pipeline delay. This
-helps latency but doesn't fix the throughput cap.
+`-gpgpu_n_mem_response_per_cycle N` — allows cluster to deliver N
+responses per cycle. Already implemented but ineffective without
+Fix 1, since L2 side can't produce responses fast enough.
 
-### Option C: Bypass ROP for L2 hits
+### Fix 3: Reduce rop_latency
 
-L2 hits don't need ROP processing. Add a fast path that skips the
-ROP delay for cache hits, sending responses directly to L2_icnt_queue.
+Set `l2_rop_latency = 50` to match real SM→L2 pipeline delay.
+Helps latency component (~2%) but doesn't fix throughput.
 
-### Option D: Increase L2 response queue
+### Fix 4: Increase queue sizes
 
-Increase `L2_icnt_queue` from 64 to 128+ entries to reduce the 13%
-back-pressure from response queue being full.
+Larger queues reduce back-pressure but don't fix throughput ceiling.
