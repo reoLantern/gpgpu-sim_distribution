@@ -3176,13 +3176,20 @@ pipelined_simd_unit::pipelined_simd_unit(register_set *result_port,
 }
 
 void pipelined_simd_unit::cycle() {
+  bool stage0_stalled = false;
   if (!m_pipeline_reg[0]->empty()) {
-    m_result_port->move_in(m_pipeline_reg[0]);
-    assert(active_insts_in_pipeline > 0);
-    active_insts_in_pipeline--;
+    if (m_result_port->has_free()) {
+      m_result_port->move_in(m_pipeline_reg[0]);
+      assert(active_insts_in_pipeline > 0);
+      active_insts_in_pipeline--;
+    } else {
+      // result port full — stall pipeline (stallable units)
+      stage0_stalled = true;
+    }
   }
   if (active_insts_in_pipeline) {
-    for (unsigned stage = 0; (stage + 1) < m_pipeline_depth; stage++)
+    unsigned start_shift = stage0_stalled ? 1 : 0;  // don't shift into stage 0 if stalled
+    for (unsigned stage = start_shift; (stage + 1) < m_pipeline_depth; stage++)
       move_warp(m_pipeline_reg[stage], m_pipeline_reg[stage + 1]);
   }
   if (!m_dispatch_reg->empty()) {
