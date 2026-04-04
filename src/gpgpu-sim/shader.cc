@@ -3293,7 +3293,7 @@ void ldst_unit::init(mem_fetch_interface *icnt,
   m_next_global = NULL;
   m_last_inst_gpu_sim_cycle = 0;
   m_last_inst_gpu_tot_sim_cycle = 0;
-  m_entry_fifo_capacity = 20;  // configurable queue depth for LSU front-end
+  m_entry_fifo_capacity = 4;  // configurable queue depth for LSU front-end
   m_shmem_arbiter.init(m_config->num_shmem_bank, 4 /* bytes per bank per cycle */);
 }
 
