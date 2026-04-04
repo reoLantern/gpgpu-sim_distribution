@@ -175,3 +175,27 @@ void Scoreboard::findCollisionRegs(unsigned wid, const class inst_t* inst,
 bool Scoreboard::pendingWrites(unsigned wid) const {
   return !reg_table[wid].empty();
 }
+
+void Scoreboard::reserveRegistersTimedRelease(const warp_inst_t *inst,
+                                              unsigned long long current_cycle,
+                                              unsigned latency) {
+  unsigned long long release_cycle = current_cycle + latency;
+  for (unsigned r = 0; r < MAX_OUTPUT_VALUES; r++) {
+    if (inst->out[r] > 0) {
+      reserveRegister(inst->warp_id(), inst->out[r]);
+      m_timed_releases.push_back({release_cycle, inst->warp_id(), inst->out[r]});
+    }
+  }
+  // Note: input registers are NOT reserved here — they use the normal
+  // scoreboard path (reserved by the producing instruction, released on
+  // its writeback).  This means LDSM→A dependencies still work correctly.
+}
+
+void Scoreboard::cycle(unsigned long long current_cycle) {
+  while (!m_timed_releases.empty() &&
+         m_timed_releases.front().release_cycle <= current_cycle) {
+    auto &entry = m_timed_releases.front();
+    releaseRegister(entry.warp_id, entry.reg);
+    m_timed_releases.pop_front();
+  }
+}

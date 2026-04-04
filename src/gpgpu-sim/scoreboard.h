@@ -28,6 +28,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <deque>
 #include <set>
 #include <vector>
 #include "assert.h"
@@ -44,6 +45,19 @@ class Scoreboard {
   void reserveRegisters(const warp_inst_t *inst);
   void releaseRegisters(const warp_inst_t *inst);
   void releaseRegister(unsigned wid, unsigned regnum);
+
+  // For fixed-latency instructions (IMMA/HMMA): reserve output registers
+  // but schedule automatic release after `latency` cycles.  Models the
+  // result queue + bypass in real hardware (micro2025): the result is
+  // available to consumers after the fixed latency, without waiting for
+  // RF writeback.  Input register dependencies (e.g., LDSM→A) are NOT
+  // affected — they still use normal scoreboard reserve/release.
+  void reserveRegistersTimedRelease(const warp_inst_t *inst,
+                                    unsigned long long current_cycle,
+                                    unsigned latency);
+
+  // Call once per cycle to release registers whose timer has expired.
+  void cycle(unsigned long long current_cycle);
 
   bool checkCollision(unsigned wid, const inst_t *inst) const;
   void findCollisionRegs(unsigned wid, const inst_t *inst,
@@ -63,6 +77,15 @@ class Scoreboard {
   std::vector<std::set<unsigned> > reg_table;
   // Register that depend on a long operation (global, local or tex memory)
   std::vector<std::set<unsigned> > longopregs;
+
+  // Timed release queue: output registers of fixed-latency instructions
+  // (tensor) are released automatically after a fixed number of cycles.
+  struct timed_release_t {
+    unsigned long long release_cycle;
+    unsigned warp_id;
+    unsigned reg;
+  };
+  std::deque<timed_release_t> m_timed_releases;  // sorted by release_cycle
 
   class gpgpu_t *m_gpu;
 };
