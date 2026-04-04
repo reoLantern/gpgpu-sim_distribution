@@ -219,23 +219,44 @@ On real A100, each L2 slice is multi-banked and can service multiple
 requests per cycle. The crossbar also has much higher bandwidth than
 the modeled local_interconnect.
 
+### ICNT Arbiter: Root Cause Confirmed
+
+The local_interconnect uses an iSLIP arbiter (`icnt_arbiter_algo=1`)
+that limits each output port to **1 packet per cycle**. On the reply
+network (L2→SM), this means each SM cluster can receive at most 1
+response per cycle.
+
+Switching to the PERFECT arbiter (`icnt_arbiter_algo=2`), which
+allows multiple packets per output port per cycle, dramatically
+improves results:
+
+| Config | Baseline | CIM | CIM speedup |
+|--------|----------|-----|-------------|
+| perfmem lat=0 | 636,538 | 522,060 | **18.0%** |
+| perfmem lat=200 | 713,960 | 599,875 | **16.0%** |
+| **realmem + PERFECT icnt** | **715,296** | **614,809** | **14.1%** |
+| realmem (iSLIP) | 828,073 | 800,196 | 3.4% |
+
+realmem + PERFECT icnt (715K) matches perfmem+lat200 (714K) almost
+exactly — confirming that the iSLIP output port contention was the
+sole throughput bottleneck. Real A100's crossbar behaves closer to
+PERFECT (high bandwidth, multi-port) than iSLIP (1 pkt/port/cycle).
+
 ## Recommended Fixes
 
-### Fix 1: L2 sub-partition multi-access (highest impact, not yet attempted)
+### Fix 1: ICNT arbiter improvement (confirmed effective)
 
-Allow each L2 sub-partition to process N requests per cycle in
-`gpu-sim.cc` main loop and `memory_sub_partition::cache_cycle()`.
-This requires changes in:
-- `gpu-sim.cc`: pop multiple from ICNT per sub-partition
-- `l2cache.cc`: process multiple from icnt_L2_queue per cycle
-- `l2cache.cc`: push multiple responses to L2_icnt_queue per cycle
-- `gpu-sim.cc`: push multiple responses from sub-partition to ICNT
+Use `-icnt_arbiter_algo 2` (PERFECT) or develop a bandwidth-limited
+crossbar model that allows N packets per output port per cycle. The
+PERFECT arbiter eliminates the throughput bottleneck entirely but may
+be too optimistic for memory-bound kernels. A parameterized model
+(e.g., N packets/port/cycle) would allow tuning per architecture.
 
-### Fix 2: Cluster burst drain (implemented, minor impact)
+### Fix 2: Cluster burst drain (implemented, effective with Fix 1)
 
 `-gpgpu_n_mem_response_per_cycle N` — allows cluster to deliver N
-responses per cycle. Already implemented but ineffective without
-Fix 1, since L2 side can't produce responses fast enough.
+responses per cycle to SM cores. Ineffective alone (L2 side limits),
+but useful when combined with Fix 1.
 
 ### Fix 3: Reduce rop_latency
 
