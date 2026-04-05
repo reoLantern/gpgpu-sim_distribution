@@ -1235,19 +1235,28 @@ void shader_core_ctx::issue_warp(register_set &pipe_reg_set,
 
   updateSIMTStack(warp_id, *pipe_reg);
 
-  // For tensor instructions (IMMA/HMMA): use timed scoreboard release.
-  // Real hardware has result queue + bypass — the result is available to
-  // consumers after a fixed latency, without waiting for RF writeback.
-  // This eliminates artificial C/D accumulator scoreboard stalls caused
-  // by the simulator's OC pipeline delay.
-  if (is_tensor_op(**pipe_reg)) {
-    unsigned tensor_latency = (*pipe_reg)->latency;
-    unsigned long long current_cycle =
-        m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle;
-    m_scoreboard->reserveRegistersTimedRelease(*pipe_reg, current_cycle,
-                                               tensor_latency);
-  } else {
-    m_scoreboard->reserveRegisters(*pipe_reg);
+  // Timed scoreboard release for fixed-latency instructions.
+  // Real hardware (micro2025): no operand collector. Fixed-latency instructions
+  // go through Issue → Control(1) → Allocate(3) → FU(latency) → result queue.
+  // Result is available at a FIXED time: latency + ~4 cycles from issue.
+  // Variable-latency instructions (loads/stores) use normal scoreboard
+  // (released on writeback) since their latency depends on cache/memory.
+  {
+    const unsigned ALLOCATE_OVERHEAD = 4;  // Control + Allocate stages
+    bool is_fixed_latency = ((*pipe_reg)->op != LOAD_OP &&
+                             (*pipe_reg)->op != STORE_OP &&
+                             (*pipe_reg)->op != TENSOR_CORE_LOAD_OP &&
+                             (*pipe_reg)->op != TENSOR_CORE_STORE_OP &&
+                             (*pipe_reg)->op != MEMORY_BARRIER_OP);
+    if (is_fixed_latency && (*pipe_reg)->latency > 0) {
+      unsigned total_latency = (*pipe_reg)->latency + ALLOCATE_OVERHEAD;
+      unsigned long long current_cycle =
+          m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle;
+      m_scoreboard->reserveRegistersTimedRelease(*pipe_reg, current_cycle,
+                                                 total_latency);
+    } else {
+      m_scoreboard->reserveRegisters(*pipe_reg);
+    }
   }
   m_warp[warp_id]->set_next_pc(next_inst->pc + next_inst->isize);
 }
