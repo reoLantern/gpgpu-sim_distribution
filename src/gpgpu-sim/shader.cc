@@ -3372,6 +3372,11 @@ void ldst_unit::issue(register_set &reg_set) {
 }
 
 void ldst_unit::writeback() {
+  // Reset per-cycle memory writeback bandwidth counter.
+  // Real hardware limits memory→RF transfer to 512 bits/cycle (micro2025).
+  // Each register = 1024 bits → 1 register per 2 cycles.
+  // m_operand_collector->writeback() writes registers one by one;
+  // we limit how many can succeed per cycle.
   auto process_wb = [&](warp_inst_t &wb_inst) {
     if (wb_inst.empty()) return false;
     if (!m_operand_collector->writeback(wb_inst)) return false;

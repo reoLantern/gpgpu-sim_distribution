@@ -81,7 +81,7 @@
 #endif
 
 #ifndef ENABLE_TENSOR_PROFILING
-#define ENABLE_TENSOR_PROFILING 0
+#define ENABLE_TENSOR_PROFILING 1
 #endif
 
 class gpgpu_context;
