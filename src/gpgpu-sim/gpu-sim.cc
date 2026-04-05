@@ -541,6 +541,11 @@ void shader_core_config::reg_options(class OptionParser *opp) {
                          OPT_INT32, &gpgpu_operand_collector_num_units_spec_3,
                          "number of collector units for specialized unit 3 ",
                          "8");
+  option_parser_register(opp, "-tensor_oc_bypass_latency", OPT_UINT32,
+                         &tensor_oc_bypass_latency,
+                         "tensor OC bypass: fixed-latency pipeline replacing "
+                         "OC for tensor ops (0=disabled, default 0)",
+                         "0");
   option_parser_register(opp, "-gpgpu_operand_collector_num_units_mem",
                          OPT_INT32, &gpgpu_operand_collector_num_units_mem,
                          "number of collector units (default = 2)", "2");

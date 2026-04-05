@@ -81,7 +81,7 @@
 #endif
 
 #ifndef ENABLE_TENSOR_PROFILING
-#define ENABLE_TENSOR_PROFILING 1
+#define ENABLE_TENSOR_PROFILING 0
 #endif
 
 class gpgpu_context;
@@ -1773,6 +1773,11 @@ class shader_core_config : public core_config {
   int gpgpu_operand_collector_num_units_int;
   int gpgpu_operand_collector_num_units_spec_3;
 
+  // Tensor OC bypass: fixed-latency pipeline replacing OC for tensor ops.
+  // 0 = disabled (use OC as before), >0 = bypass latency in cycles.
+  // Models micro2025 CONTROL+ALLOCATE+READ_RF pipeline (no operand collector).
+  unsigned tensor_oc_bypass_latency;
+
   unsigned int gpgpu_operand_collector_num_in_ports_sp;
   unsigned int gpgpu_operand_collector_num_in_ports_dp;
   unsigned int gpgpu_operand_collector_num_in_ports_sfu;
@@ -2647,6 +2652,14 @@ class shader_core_ctx : public core_t {
   bool m_tensor_scoreboard_block;
   bool m_tensor_oc_block;
   bool m_tensor_inst_issued_this_sched_cycle;
+
+  // Tensor OC bypass pipeline: per-subcore fixed-latency shift register.
+  // Replaces OC (ID_OC→CU→OC_EX) with a fixed-depth pipeline for tensor ops.
+  // [subcore_id][stage]: stage 0 is output (closest to FU), stage N-1 is entry.
+  std::vector<std::vector<warp_inst_t *>> m_tensor_bypass;
+  void tensor_bypass_cycle();
+  bool tensor_bypass_has_free(unsigned subcore_id) const;
+
   std::vector<std::string> m_depbar_trace_per_warp;
 
   // general information

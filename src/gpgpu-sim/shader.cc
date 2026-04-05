@@ -578,6 +578,18 @@ shader_core_ctx::shader_core_ctx(class gpgpu_sim *gpu,
   m_tensor_inst_issued_this_sched_cycle = false;
   m_depbar_trace_per_warp.assign(m_config->max_warps_per_shader, "");
 
+  // Tensor OC bypass pipeline initialization
+  if (m_config->tensor_oc_bypass_latency > 0) {
+    unsigned n_sub = m_config->gpgpu_num_sched_per_core;
+    unsigned depth = m_config->tensor_oc_bypass_latency;
+    m_tensor_bypass.resize(n_sub);
+    for (unsigned s = 0; s < n_sub; s++) {
+      m_tensor_bypass[s].resize(depth, nullptr);
+      for (unsigned d = 0; d < depth; d++)
+        m_tensor_bypass[s][d] = new warp_inst_t(m_config);
+    }
+  }
+
   // Jin: for concurrent kernels on a SM
   m_occupied_n_threads = 0;
   m_occupied_shmem = 0;
@@ -1184,6 +1196,24 @@ void shader_core_ctx::issue_warp(register_set &pipe_reg_set,
   }
 
   if (next_inst->op == BARRIER_OP) {
+#if ENABLE_TENSOR_PROFILING
+    // Per-iteration timing for SM0 warp0: log cycle at each BAR
+    if (m_sid == 0 && warp_id == 0) {
+      unsigned long long bar_cycle =
+          m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle;
+      static unsigned long long prev_bar_cycle = 0;
+      static unsigned bar_count = 0;
+      if (prev_bar_cycle > 0) {
+        printf("[SM0 warp0] BAR #%u at cycle %llu  (delta = %llu)\n",
+               bar_count, bar_cycle, bar_cycle - prev_bar_cycle);
+      } else {
+        printf("[SM0 warp0] BAR #%u at cycle %llu  (first)\n",
+               bar_count, bar_cycle);
+      }
+      prev_bar_cycle = bar_cycle;
+      bar_count++;
+    }
+#endif
     m_warp[warp_id]->store_info_of_last_inst_at_barrier(*pipe_reg);
     m_barriers.warp_reaches_barrier(m_warp[warp_id]->get_cta_id(), warp_id,
                                     const_cast<warp_inst_t *>(next_inst));
@@ -1805,7 +1835,41 @@ void scheduler_unit::cycle() {
                     spec_reg_set->has_free(m_shader->m_config->sub_core_model,
                                            m_id);
 
-                if (spec_pipe_avail) {
+                // Tensor OC bypass: route tensor instructions through
+                // fixed-latency pipeline instead of OC.
+                if (tensor_inst &&
+                    m_shader->m_config->tensor_oc_bypass_latency > 0) {
+                  if (m_shader->tensor_bypass_has_free(m_id)) {
+                    unsigned depth =
+                        m_shader->m_config->tensor_oc_bypass_latency;
+                    // issue_warp handles scoreboard, SIMT stack, etc.
+                    // It puts the instruction into spec_reg_set (ID_OC).
+                    // We then immediately move it to the bypass pipeline.
+                    // ID_OC must have space; with bypass, it's always
+                    // drained immediately so it should be free.
+                    if (spec_pipe_avail) {
+                      m_shader->issue_warp(*spec_reg_set, pI, active_mask,
+                                           warp_id, m_id);
+                      // Move from ID_OC into bypass entry
+                      warp_inst_t **issued_reg = spec_reg_set->get_ready(
+                          m_shader->m_config->sub_core_model, m_id);
+                      if (issued_reg && !(*issued_reg)->empty()) {
+                        move_warp(m_shader->m_tensor_bypass[m_id][depth - 1],
+                                  *issued_reg);
+                      }
+                      issued++;
+                      issued_inst = true;
+                      warp_inst_issued = true;
+                      previous_issued_inst_exec_type =
+                          exec_unit_type_t::SPECIALIZED;
+                      m_shader->m_tensor_inst_issued_this_sched_cycle = true;
+                    } else {
+                      m_shader->m_tensor_oc_block = true;
+                    }
+                  } else {
+                    m_shader->m_tensor_oc_block = true;
+                  }
+                } else if (spec_pipe_avail) {
                   m_shader->issue_warp(*spec_reg_set, pI, active_mask, warp_id,
                                        m_id);
                   issued++;
@@ -1815,10 +1879,11 @@ void scheduler_unit::cycle() {
                       exec_unit_type_t::SPECIALIZED;
                   if (tensor_inst)
                     m_shader->m_tensor_inst_issued_this_sched_cycle = true;
+                } else if (tensor_inst) {
+                  m_shader->m_tensor_oc_block = true;
                 }
 #if CYCLE_LOG
-                else if (tensor_inst) {
-                  m_shader->m_tensor_oc_block = true;
+                if (!spec_pipe_avail && tensor_inst) {
                   if (m_shader->get_sid() == 0) {
                     if (!pI->trace_string().empty()) {
                       CYCLE_PRINTF("[cycle %llu][SM %u] sched=%d warp=%u ibuffer -> OPC tensor op waiting: %s busy [warp=%u trace=%s]\n",
@@ -1963,7 +2028,8 @@ void scheduler_unit::cycle() {
   {
     static std::atomic<unsigned long long> tc_issued{0};
     static std::atomic<unsigned long long> tc_scoreboard{0};
-    static std::atomic<unsigned long long> tc_idoc_full{0};
+    static std::atomic<unsigned long long> tc_idoc_oc_full{0};
+    static std::atomic<unsigned long long> tc_idoc_not_selected{0};
     static std::atomic<unsigned long long> tc_no_tensor_warp{0};
     static std::atomic<unsigned long long> tc_total_cycles{0};
     static std::atomic<bool> tc_atexit_registered{false};
@@ -1972,13 +2038,18 @@ void scheduler_unit::cycle() {
       atexit([]() {
         unsigned long long total = tc_total_cycles.load();
         if (total == 0) return;
+        unsigned long long idoc_total = tc_idoc_oc_full.load() + tc_idoc_not_selected.load();
         printf("\n=== Tensor Core Utilization (per scheduler-cycle) ===\n");
         printf("tc_issued        = %12llu  (%.1f%%)\n", tc_issued.load(),
                100.0 * tc_issued.load() / total);
         printf("tc_scoreboard    = %12llu  (%.1f%%)\n", tc_scoreboard.load(),
                100.0 * tc_scoreboard.load() / total);
-        printf("tc_idoc_full     = %12llu  (%.1f%%)\n", tc_idoc_full.load(),
-               100.0 * tc_idoc_full.load() / total);
+        printf("tc_idoc_full     = %12llu  (%.1f%%)\n", idoc_total,
+               100.0 * idoc_total / total);
+        printf("  tc_idoc_oc_full    = %12llu  (%.1f%%)  ID_OC slot occupied\n",
+               tc_idoc_oc_full.load(), 100.0 * tc_idoc_oc_full.load() / total);
+        printf("  tc_idoc_not_sel    = %12llu  (%.1f%%)  tensor in ibuf, not issued, not sb, not oc_full\n",
+               tc_idoc_not_selected.load(), 100.0 * tc_idoc_not_selected.load() / total);
         printf("tc_no_tensor_warp= %12llu  (%.1f%%)\n", tc_no_tensor_warp.load(),
                100.0 * tc_no_tensor_warp.load() / total);
         printf("tc_total_cycles  = %12llu\n", total);
@@ -1991,9 +2062,9 @@ void scheduler_unit::cycle() {
     } else if (m_shader->m_tensor_scoreboard_block) {
       tc_scoreboard++;
     } else if (m_shader->m_tensor_oc_block) {
-      tc_idoc_full++;
+      tc_idoc_oc_full++;
     } else if (m_shader->m_tensor_inst_in_ibuffer) {
-      tc_idoc_full++;
+      tc_idoc_not_selected++;
     } else {
       tc_no_tensor_warp++;
     }
@@ -2156,6 +2227,41 @@ void swl_scheduler::order_warps() {
   }
 }
 
+bool shader_core_ctx::tensor_bypass_has_free(unsigned subcore_id) const {
+  if (m_config->tensor_oc_bypass_latency == 0) return false;
+  unsigned entry = m_config->tensor_oc_bypass_latency - 1;  // last stage = entry
+  return m_tensor_bypass[subcore_id][entry]->empty();
+}
+
+void shader_core_ctx::tensor_bypass_cycle() {
+  if (m_config->tensor_oc_bypass_latency == 0) return;
+  unsigned depth = m_config->tensor_oc_bypass_latency;
+  unsigned n_sub = m_config->gpgpu_num_sched_per_core;
+
+  // Find the OC_EX register set for tensor (spec_3)
+  unsigned spec3_idx = SPECIALIZED_UNIT_3_OP - SPEC_UNIT_START_ID;
+  if (spec3_idx >= m_config->m_specialized_unit.size()) return;
+  unsigned oc_ex_id = m_config->m_specialized_unit[spec3_idx].OC_EX_SPEC_ID;
+  register_set &oc_ex = m_pipeline_reg[oc_ex_id];
+
+  for (unsigned s = 0; s < n_sub; s++) {
+    // Stage 0 → OC_EX (output)
+    if (!m_tensor_bypass[s][0]->empty()) {
+      if (oc_ex.has_free(m_config->sub_core_model, s)) {
+        // Move bypass output to OC_EX_TENSOR for this subcore
+        oc_ex.move_in(m_config->sub_core_model, s, m_tensor_bypass[s][0]);
+      }
+      // If OC_EX is full, stall (don't shift)
+      if (!m_tensor_bypass[s][0]->empty()) continue;
+    }
+    // Shift pipeline: stage[i] ← stage[i+1]
+    for (unsigned d = 0; d + 1 < depth; d++) {
+      if (m_tensor_bypass[s][d]->empty() && !m_tensor_bypass[s][d + 1]->empty())
+        move_warp(m_tensor_bypass[s][d], m_tensor_bypass[s][d + 1]);
+    }
+  }
+}
+
 void shader_core_ctx::read_operands() {
   for (unsigned int i = 0; i < m_config->reg_file_port_throughput; ++i)
     m_operand_collector.step();
@@ -2281,6 +2387,36 @@ void shader_core_ctx::execute() {
     bool has_ready = issue_inst.has_ready(partition_issue, reg_id);
     warp_inst_t *ready_inst = (has_ready && ready_reg) ? *ready_reg : NULL;
     bool tensor_fu = is_tensor_fu(m_fu[n]);
+#if ENABLE_TENSOR_PROFILING
+    // Track OC_EX → FU stall reasons for tensor FU
+    if (tensor_fu) {
+      static std::atomic<unsigned long long> fu_accepted{0};
+      static std::atomic<unsigned long long> fu_ocex_empty{0};
+      static std::atomic<unsigned long long> fu_dispatch_busy{0};
+      static std::atomic<unsigned long long> fu_ii_busy{0};
+      static std::atomic<bool> fu_atexit_registered{false};
+      if (!fu_atexit_registered.exchange(true)) {
+        atexit([]() {
+          printf("\n=== Tensor FU: OC_EX → FU breakdown ===\n");
+          printf("fu_accepted      = %12llu  (HMMA entered FU)\n", fu_accepted.load());
+          printf("fu_ocex_empty    = %12llu  (OC_EX had no ready inst)\n", fu_ocex_empty.load());
+          printf("fu_dispatch_busy = %12llu  (FU dispatch reg occupied)\n", fu_dispatch_busy.load());
+          printf("fu_ii_busy       = %12llu  (FU initiation interval not elapsed)\n", fu_ii_busy.load());
+        });
+      }
+      if (has_ready && m_fu[n]->can_issue(**ready_reg)) {
+        fu_accepted++;
+      } else if (!has_ready) {
+        fu_ocex_empty++;
+      } else {
+        // has_ready but can't issue
+        if (m_fu[n]->dispatch_busy())
+          fu_dispatch_busy++;
+        else
+          fu_ii_busy++;
+      }
+    }
+#endif
     if (issue_inst.has_ready(partition_issue, reg_id) &&
         m_fu[n]->can_issue(**ready_reg)) {
 #if CYCLE_LOG
@@ -4562,6 +4698,7 @@ void shader_core_ctx::cycle() {
 #endif
   writeback();
   execute();
+  tensor_bypass_cycle();
   read_operands();
   issue();
   for (unsigned int i = 0; i < m_config->inst_fetch_throughput; ++i) {
