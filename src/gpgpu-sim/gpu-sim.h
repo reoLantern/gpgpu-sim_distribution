@@ -344,6 +344,13 @@ class memory_config {
   unsigned rop_latency;
   unsigned dram_latency;
 
+  // Per-level perfect memory bypass for bottleneck isolation.
+  // 0 = disabled. >0 = bypass with N cycles fixed latency.
+  // perfmem_at_icnt: bypass at sub-partition entry (skip ROP+L2+DRAM)
+  // perfmem_at_l2: bypass DRAM on L2 miss (skip DRAM, keep L2 tag lookup)
+  unsigned perfmem_at_icnt;
+  unsigned perfmem_at_l2;
+
   // DRAM parameters
 
   unsigned tCCDL;  // column to column delay when bank groups are enabled

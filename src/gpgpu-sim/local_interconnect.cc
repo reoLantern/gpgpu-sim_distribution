@@ -119,6 +119,8 @@ void xbar_router::Advance() {
     iSLIP_Advance();
   else if (arbit_type == PERFECT)
     Perfect_Advance();
+  else if (arbit_type == NON_BLOCKING)
+    NonBlocking_Advance();
   else
     assert(0);
 }
@@ -134,6 +136,36 @@ void xbar_router::Perfect_Advance() {
     }
   }
 };
+
+// A100-style non-blocking crossbar: each input port sends up to burst_size
+// packets per cycle, no per-destination limit (only output buffer capacity).
+// Models full-bandwidth crossbar with per-SM ports (128B/cycle = 2 × 64B).
+void xbar_router::NonBlocking_Advance() {
+  unsigned reqs = 0;
+  for (unsigned node_id = 0; node_id < total_nodes; node_id++) {
+    unsigned sent = 0;
+    while (sent < burst_size && !in_buffers[node_id].empty()) {
+      Packet _packet = in_buffers[node_id].front();
+      if (Has_Buffer_Out(_packet.output_deviceID, 1)) {
+        out_buffers[_packet.output_deviceID].push(_packet);
+        in_buffers[node_id].pop();
+        sent++;
+        reqs++;
+      } else {
+        break;
+      }
+    }
+  }
+  if (reqs > 0) {
+    cycles_util++;
+    reqs_util += reqs;
+  }
+  for (unsigned i = 0; i < total_nodes; ++i) {
+    in_buffer_util += in_buffers[i].size();
+    out_buffer_util += out_buffers[i].size();
+  }
+  cycles++;
+}
 
 void xbar_router::RR_Advance() {
   bool active = false;

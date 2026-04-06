@@ -222,6 +222,7 @@ class memory_sub_partition {
     class mem_fetch *req;
   };
   std::queue<rop_delay_t> m_rop;
+  std::queue<rop_delay_t> m_icnt_bypass;  // perfmem_at_icnt delay queue
 
   // these are various FIFOs between units within a memory partition
   fifo_pipeline<mem_fetch> *m_icnt_L2_queue;

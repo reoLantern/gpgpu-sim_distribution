@@ -513,6 +513,21 @@ void memory_sub_partition::cache_cycle(unsigned cycle) {
   // prior L2 misses inserted into m_L2_dram_queue here
   if (!m_config->m_L2_config.disabled()) m_L2cache->cycle();
 
+  // perfmem_at_l2: intercept L2 misses before they go to DRAM,
+  // redirect as instant fill responses (bypass DRAM entirely)
+  if (m_config->perfmem_at_l2 > 0) {
+    while (!m_L2_dram_queue->empty()) {
+      mem_fetch *mf = m_L2_dram_queue->top();
+      if (!m_dram_L2_queue->full()) {
+        m_L2_dram_queue->pop();
+        mf->set_reply();
+        m_dram_L2_queue->push(mf);
+      } else {
+        break;
+      }
+    }
+  }
+
   // new L2 texture accesses and/or non-texture accesses
   if (!m_L2_dram_queue->full() && !m_icnt_L2_queue->empty()) {
     mem_fetch *mf = m_icnt_L2_queue->top();
@@ -593,6 +608,15 @@ void memory_sub_partition::cache_cycle(unsigned cycle) {
     m_icnt_L2_queue->push(mf);
     mf->set_status(IN_PARTITION_ICNT_TO_L2_QUEUE,
                    m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
+  }
+
+  // perfmem_at_icnt bypass: drain delay queue → response queue
+  while (!m_icnt_bypass.empty() &&
+         (cycle >= m_icnt_bypass.front().ready_cycle) &&
+         !m_L2_icnt_queue->full()) {
+    mem_fetch *mf = m_icnt_bypass.front().req;
+    m_icnt_bypass.pop();
+    m_L2_icnt_queue->push(mf);
   }
 }
 
@@ -795,6 +819,20 @@ void memory_sub_partition::push(mem_fetch *m_req, unsigned long long cycle) {
     for (unsigned i = 0; i < reqs.size(); ++i) {
       mem_fetch *req = reqs[i];
       m_request_tracker.insert(req);
+
+      // perfmem_at_icnt: bypass ROP+L2+DRAM, queue response with fixed latency
+      if (m_config->perfmem_at_icnt > 0) {
+        req->set_reply();
+        req->set_status(IN_PARTITION_L2_TO_ICNT_QUEUE,
+                        m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
+        // Use a delay: store in m_icnt_bypass_queue (reuse rop_delay_t)
+        rop_delay_t r;
+        r.req = req;
+        r.ready_cycle = cycle + m_config->perfmem_at_icnt;
+        m_icnt_bypass.push(r);
+        continue;
+      }
+
       if (req->istexture()) {
         m_icnt_L2_queue->push(req);
         req->set_status(IN_PARTITION_ICNT_TO_L2_QUEUE,

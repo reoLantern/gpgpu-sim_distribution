@@ -40,7 +40,8 @@ enum Interconnect_type { REQ_NET = 0, REPLY_NET = 1 };
 enum Arbiteration_type {
   NAIVE_RR = 0,  //
   iSLIP,
-  PERFECT
+  PERFECT,
+  NON_BLOCKING  // A100-style: each input sends up to burst_size packets/cycle, no HoL
 };
 
 struct inct_config {
@@ -86,6 +87,7 @@ class xbar_router {
   void iSLIP_Advance();
   void RR_Advance();
   void Perfect_Advance();
+  void NonBlocking_Advance();
 
   struct Packet {
     Packet(void* m_data, unsigned m_output_deviceID) {
