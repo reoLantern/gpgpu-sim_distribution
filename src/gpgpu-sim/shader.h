@@ -81,7 +81,7 @@
 #endif
 
 #ifndef ENABLE_TENSOR_PROFILING
-#define ENABLE_TENSOR_PROFILING 0
+#define ENABLE_TENSOR_PROFILING 1
 #endif
 
 class gpgpu_context;
@@ -2652,6 +2652,12 @@ class shader_core_ctx : public core_t {
   bool m_tensor_scoreboard_block;
   bool m_tensor_oc_block;
   bool m_tensor_inst_issued_this_sched_cycle;
+
+  // Per-scheduler debug state for tensor idle analysis (SM0 only)
+  // T=tensor_issued, S=tensor_scoreboard, O=tensor_oc_full, I=non_tensor_issued
+  // b=barrier, w=waiting_ldgsts, e=ibuffer_empty, s=non_tensor_scoreboard, .=unknown
+  char m_sched_tensor_state[8];  // up to 8 schedulers
+  char m_sched_idle_detail[8][48]; // detail for 's' state: "wN:op:Rreg"
 
   // Tensor OC bypass pipeline: per-subcore fixed-latency shift register.
   // Replaces OC (ID_OC→CU→OC_EX) with a fixed-depth pipeline for tensor ops.

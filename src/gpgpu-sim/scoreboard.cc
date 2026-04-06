@@ -63,6 +63,11 @@ void Scoreboard::reserveRegister(unsigned wid, unsigned regnum) {
         m_sid, wid, regnum);
     abort();
   }
+#if ENABLE_TENSOR_PROFILING
+  if (m_sid == 0 && regnum == 0) {
+    printf("[SB_DEBUG] SM0 warp%u RESERVE R0\n", wid);
+  }
+#endif
   SHADER_DPRINTF(SCOREBOARD, "Reserved Register - warp:%d, reg: %d\n", wid,
                  regnum);
   reg_table[wid].insert(regnum);
@@ -170,6 +175,16 @@ void Scoreboard::findCollisionRegs(unsigned wid, const class inst_t* inst,
       regs.push_back(*it);
     }
   }
+#if ENABLE_TENSOR_PROFILING
+  if (m_sid == 0 && !regs.empty() && regs[0] == 0) {
+    printf("[SB_COLLISION] SM0 w%u op=%d collision R0 | inst_regs={",
+           wid, (int)inst->op);
+    for (auto r : inst_regs) printf("%d,", r);
+    printf("} reg_table={");
+    for (auto r : reg_table[wid]) printf("%d,", r);
+    printf("}\n");
+  }
+#endif
 }
 
 bool Scoreboard::pendingWrites(unsigned wid) const {

@@ -1366,6 +1366,35 @@ void shader_core_ctx::issue() {
     }
   }
 
+  // Per-scheduler tensor debug log for SM0
+#if ENABLE_TENSOR_PROFILING
+  if (m_sid == 0) {
+    // Write one line per cycle: cycle s0 s1 s2 s3 [op0 op1 op2 op3]
+    // Status chars: T=tensor_issued S=scoreboard O=oc_full N=no_tensor
+    //               I=non_tensor_issued X=tensor_present_not_issued .=idle
+    static FILE *tlog = nullptr;
+    if (!tlog) {
+      tlog = fopen("tensor_debug_sm0.log", "w");
+      fprintf(tlog, "# cycle s0 s1 s2 s3 [detail for 's' states: warp:op:blocked_reg]\n");
+      fprintf(tlog, "# T=tensor_issued S=tensor_scoreboard O=tensor_oc_full I=non_tensor_issued\n");
+      fprintf(tlog, "# b=barrier w=waiting_ldgsts e=ibuffer_empty s=non_tensor_scoreboard .=unknown\n");
+    }
+    unsigned n = m_config->gpgpu_num_sched_per_core;
+    fprintf(tlog, "%llu", issue_cycle);
+    for (unsigned s = 0; s < n; s++)
+      fprintf(tlog, " %c", m_sched_tensor_state[s]);
+    // Append detail for any 's' scheduler
+    bool has_detail = false;
+    for (unsigned s = 0; s < n; s++) {
+      if (m_sched_tensor_state[s] == 's' && m_sched_idle_detail[s][0]) {
+        if (!has_detail) { fprintf(tlog, " |"); has_detail = true; }
+        fprintf(tlog, " s%u=%s", s, m_sched_idle_detail[s]);
+      }
+    }
+    fprintf(tlog, "\n");
+  }
+#endif
+
   // really is issue;
   // for (unsigned i = 0; i < schedulers.size(); i++) {
   //    schedulers[i]->cycle();
@@ -2021,6 +2050,51 @@ void scheduler_unit::cycle() {
   else if (!issued_inst)
     m_stats->shader_cycle_distro[2]++;  // pipeline stalled
 
+
+  // Record per-scheduler tensor state for SM0 debug log
+  if (m_shader->get_sid() == 0 && m_id < 8) {
+    char state;
+    if (m_shader->m_tensor_inst_issued_this_sched_cycle) state = 'T';
+    else if (m_shader->m_tensor_scoreboard_block) state = 'S';
+    else if (m_shader->m_tensor_oc_block) state = 'O';
+    else if (m_shader->m_tensor_inst_in_ibuffer) state = 'X';
+    else if (issued_inst) state = 'I';  // non-tensor issued
+    else {
+      // Nothing issued - find out WHY for the first warp in priority order
+      // b=barrier w=waiting_ldgsts e=ibuffer_empty s=scoreboard(non-tensor) d=done .=unknown
+      state = '.';
+      m_shader->m_sched_idle_detail[m_id][0] = '\0';
+      for (auto iter = m_next_cycle_prioritized_warps.begin();
+           iter != m_next_cycle_prioritized_warps.end(); iter++) {
+        if (*iter == NULL || (*iter)->done_exit()) continue;
+        unsigned wid = (*iter)->get_warp_id();
+        if (m_shader->warp_waiting_at_barrier(wid)) { state = 'b'; break; }
+        if ((*iter)->m_waiting_ldgsts) { state = 'w'; break; }
+        if (warp(wid).ibuffer_empty()) { state = 'e'; break; }
+        // has instruction but not issued = scoreboard on non-tensor
+        {
+          const warp_inst_t *pI = warp(wid).ibuffer_next_inst();
+          if (pI) {
+            // Find colliding register (call now while scoreboard state is current)
+            std::vector<unsigned> col_regs;
+            m_scoreboard->findCollisionRegs(wid, pI, col_regs);
+            if (!col_regs.empty()) {
+              snprintf(m_shader->m_sched_idle_detail[m_id], 48,
+                       "w%u:%d:R%u", wid, (int)pI->op, col_regs[0]);
+            } else {
+              // Scoreboard collision detected earlier but regs already released
+              // (timed release between checkCollision and findCollisionRegs)
+              snprintf(m_shader->m_sched_idle_detail[m_id], 48,
+                       "w%u:%d:released", wid, (int)pI->op);
+            }
+          }
+        }
+        state = 's';
+        break;
+      }
+    }
+    m_shader->m_sched_tensor_state[m_id] = state;
+  }
 
 #if ENABLE_TENSOR_PROFILING
   // Tensor core utilization profiling (per scheduler per cycle).
