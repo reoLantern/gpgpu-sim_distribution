@@ -81,6 +81,8 @@ void xbar_router::Push(unsigned input_deviceID, unsigned output_deviceID,
                        void* data, unsigned int size) {
   assert(input_deviceID < total_nodes);
   in_buffers[input_deviceID].push(Packet(data, output_deviceID));
+  // May be called in parallel from different input_deviceIDs.
+#pragma omp atomic
   packets_num++;
 }
 
@@ -102,7 +104,10 @@ bool xbar_router::Has_Buffer_In(unsigned input_deviceID, unsigned size,
 
   bool has_buffer =
       (in_buffers[input_deviceID].size() + size <= in_buffer_limit);
-  if (update_counter && !has_buffer) in_buffer_full++;
+  if (update_counter && !has_buffer) {
+#pragma omp atomic
+    in_buffer_full++;
+  }
 
   return has_buffer;
 }
@@ -370,6 +375,11 @@ void* LocalInterconnect::Pop(unsigned ouput_deviceID) {
 }
 
 void LocalInterconnect::Advance() {
+  // The 2 subnets (request and reply networks) share no state — their
+  // in_buffers, out_buffers, and arbiter state are fully independent.
+  // Parallelize to cut icnt_transfer wall time roughly in half on large
+  // GPUs where iSLIP's O(N^2) arbitration dominates.
+#pragma omp parallel for if (n_subnets > 1)
   for (unsigned i = 0; i < n_subnets; ++i) {
     net[i]->Advance();
   }

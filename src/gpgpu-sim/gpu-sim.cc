@@ -2045,14 +2045,20 @@ void gpgpu_sim::cycle() {
   unsigned partiton_replys_in_parallel_per_cycle = 0;
   if (clock_mask & ICNT) {
     PROF_TIC;
-    // pop from memory controller to interconnect
+    // pop from memory controller to interconnect.
+    // Each iteration operates on its own sub-partition and its own
+    // interconnect input port (per-input-deviceID), so different i values
+    // write disjoint state. Shared counters (gpu_stall_icnt2sh,
+    // in_buffer_full, packets_num) are protected with omp atomic.
+    unsigned long long local_stall_icnt2sh = 0;
+#pragma omp parallel for reduction(+ : partiton_replys_in_parallel_per_cycle) \
+    reduction(+ : local_stall_icnt2sh)
     for (unsigned i = 0; i < m_memory_config->m_n_mem_sub_partition; i++) {
       mem_fetch *mf = m_memory_sub_partition[i]->top();
       if (mf) {
         unsigned response_size =
             mf->get_is_write() ? mf->get_ctrl_size() : mf->size();
         if (::icnt_has_buffer(m_shader_config->mem2device(i), response_size)) {
-          // if (!mf->get_is_write())
           mf->set_return_timestamp(gpu_sim_cycle + gpu_tot_sim_cycle);
           mf->set_status(IN_ICNT_TO_SHADER, gpu_sim_cycle + gpu_tot_sim_cycle);
           ::icnt_push(m_shader_config->mem2device(i), mf->get_tpc(), mf,
@@ -2060,12 +2066,13 @@ void gpgpu_sim::cycle() {
           m_memory_sub_partition[i]->pop();
           partiton_replys_in_parallel_per_cycle++;
         } else {
-          gpu_stall_icnt2sh++;
+          local_stall_icnt2sh++;
         }
       } else {
         m_memory_sub_partition[i]->pop();
       }
     }
+    gpu_stall_icnt2sh += local_stall_icnt2sh;
     PROF_TOC(g_prof_s2_icnt_reply);
   }
   partiton_replys_in_parallel += partiton_replys_in_parallel_per_cycle;
@@ -2104,17 +2111,23 @@ void gpgpu_sim::cycle() {
   unsigned partiton_reqs_in_parallel_per_cycle = 0;
   if (clock_mask & L2) {
     PROF_TIC;
-    // Phase 1 (serial): pop from ICNT and push into sub-partition.
-    // Uses global interconnect state — cannot parallelize.
+    // Phase 1 (parallel): pop from ICNT and push into sub-partition.
+    // icnt_pop(output_deviceID) reads only out_buffers[output_deviceID]
+    // (per-port); push to sub-partition is per-partition. Shared counter
+    // gpu_stall_dramfull is accumulated via reduction.
+    unsigned long long local_stall_dramfull = 0;
+#pragma omp parallel for reduction(+ : partiton_reqs_in_parallel_per_cycle) \
+    reduction(+ : local_stall_dramfull)
     for (unsigned i = 0; i < m_memory_config->m_n_mem_sub_partition; i++) {
       if (m_memory_sub_partition[i]->full(SECTOR_CHUNCK_SIZE)) {
-        gpu_stall_dramfull++;
+        local_stall_dramfull++;
       } else {
         mem_fetch *mf = (mem_fetch *)icnt_pop(m_shader_config->mem2device(i));
         m_memory_sub_partition[i]->push(mf, gpu_sim_cycle + gpu_tot_sim_cycle);
         if (mf) partiton_reqs_in_parallel_per_cycle++;
       }
     }
+    gpu_stall_dramfull += local_stall_dramfull;
     PROF_TOC(g_prof_s3_l2_phase1);
     // Phase 2 (parallel): each sub-partition's cache_cycle works on its own
     // per-partition queues (m_L2cache, m_L2_icnt_queue, m_L2_dram_queue,
