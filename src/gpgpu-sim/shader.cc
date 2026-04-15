@@ -895,26 +895,26 @@ void shader_core_ctx::decode() {
     if (pI1) {
       m_warp[m_inst_fetch_buffer.m_warp_id]->ibuffer_fill(0, pI1);
       m_warp[m_inst_fetch_buffer.m_warp_id]->inc_inst_in_pipeline();
-      m_stats->m_num_decoded_insn[m_sid]++;
+      m_local_stats.m_num_decoded_insn++;
       if ((pI1->oprnd_type == INT_OP) ||
           (pI1->oprnd_type == UN_OP)) {  // these counters get added up in mcPat
                                          // to compute scheduler power
-        m_stats->m_num_INTdecoded_insn[m_sid]++;
+        m_local_stats.m_num_INTdecoded_insn++;
       } else if (pI1->oprnd_type == FP_OP) {
-        m_stats->m_num_FPdecoded_insn[m_sid]++;
+        m_local_stats.m_num_FPdecoded_insn++;
       }
       const warp_inst_t *pI2 =
           get_next_inst(m_inst_fetch_buffer.m_warp_id, pc + pI1->isize);
       if (pI2) {
         m_warp[m_inst_fetch_buffer.m_warp_id]->ibuffer_fill(1, pI2);
         m_warp[m_inst_fetch_buffer.m_warp_id]->inc_inst_in_pipeline();
-        m_stats->m_num_decoded_insn[m_sid]++;
+        m_local_stats.m_num_decoded_insn++;
         if ((pI1->oprnd_type == INT_OP) ||
             (pI1->oprnd_type == UN_OP)) {  // these counters get added up in
                                            // mcPat to compute scheduler power
-          m_stats->m_num_INTdecoded_insn[m_sid]++;
+          m_local_stats.m_num_INTdecoded_insn++;
         } else if (pI2->oprnd_type == FP_OP) {
-          m_stats->m_num_FPdecoded_insn[m_sid]++;
+          m_local_stats.m_num_FPdecoded_insn++;
         }
       }
     }
@@ -1912,18 +1912,18 @@ void shader_core_ctx::warp_inst_complete(const warp_inst_t &inst) {
              inst.get_uid(), m_sid, inst.warp_id(), inst.pc,  m_gpu->gpu_tot_sim_cycle +  m_gpu->gpu_sim_cycle);
 #endif
   if (inst.op_pipe == SP__OP)
-    m_stats->m_num_sp_committed[m_sid]++;
+    m_local_stats.m_num_sp_committed++;
   else if (inst.op_pipe == SFU__OP)
-    m_stats->m_num_sfu_committed[m_sid]++;
+    m_local_stats.m_num_sfu_committed++;
   else if (inst.op_pipe == MEM__OP)
-    m_stats->m_num_mem_committed[m_sid]++;
+    m_local_stats.m_num_mem_committed++;
 
   if (m_config->gpgpu_clock_gated_lanes == false)
-    m_stats->m_num_sim_insn[m_sid] += m_config->warp_size;
+    m_local_stats.m_num_sim_insn += m_config->warp_size;
   else
-    m_stats->m_num_sim_insn[m_sid] += inst.active_count();
+    m_local_stats.m_num_sim_insn += inst.active_count();
 
-  m_stats->m_num_sim_winsn[m_sid]++;
+  m_local_stats.m_num_sim_winsn++;
   m_local_stats.gpu_sim_insn += inst.active_count();
   inst.completed(m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle);
 }
@@ -1932,13 +1932,16 @@ void shader_core_ctx::writeback() {
   unsigned max_committed_thread_instructions =
       m_config->warp_size *
       (m_config->pipe_widths[EX_WB]);  // from the functional units
+  // Duty cycle delta computed from local counters. Both m_num_sim_insn and
+  // m_last_num_sim_insn reset to 0 in flush_local_stats at end of cycle;
+  // writeback during the parallel region reads current-cycle increment.
   m_stats->m_pipeline_duty_cycle[m_sid] =
-      ((float)(m_stats->m_num_sim_insn[m_sid] -
-               m_stats->m_last_num_sim_insn[m_sid])) /
+      ((float)(m_local_stats.m_num_sim_insn -
+               m_local_stats.m_last_num_sim_insn)) /
       max_committed_thread_instructions;
 
-  m_stats->m_last_num_sim_insn[m_sid] = m_stats->m_num_sim_insn[m_sid];
-  m_stats->m_last_num_sim_winsn[m_sid] = m_stats->m_num_sim_winsn[m_sid];
+  m_local_stats.m_last_num_sim_insn = m_local_stats.m_num_sim_insn;
+  m_local_stats.m_last_num_sim_winsn = m_local_stats.m_num_sim_winsn;
 
   warp_inst_t **preg = m_pipeline_reg[EX_WB].get_ready();
   warp_inst_t *pipe_reg = (preg == NULL) ? NULL : *preg;
@@ -4681,16 +4684,37 @@ void simt_core_cluster::update_icnt_stats(class mem_fetch *mf) {
 }
 
 void simt_core_cluster::flush_local_stats() {
-  // Flush per-SM gpu_sim_insn to global
+  // Flush per-SM stats to global arrays / counters
   for (unsigned i = 0; i < m_config->n_simt_cores_per_cluster; i++) {
     auto &ls = m_core[i]->m_local_stats;
+    unsigned sid = m_core[i]->get_sid();
     if (ls.gpu_sim_insn > 0) {
       m_core[i]->get_gpu()->gpu_sim_insn += ls.gpu_sim_insn;
-      m_core[i]->get_gpu()->gpu_sim_insn_last_update_sid = m_core[i]->get_sid();
+      m_core[i]->get_gpu()->gpu_sim_insn_last_update_sid = sid;
       m_core[i]->get_gpu()->gpu_sim_insn_last_update =
           m_core[i]->get_gpu()->gpu_sim_cycle;
       ls.gpu_sim_insn = 0;
     }
+    // Flush hot per-SM instruction counters (reset local to 0 so writeback
+    // duty-cycle delta computation starts fresh each cycle).
+    m_stats->m_num_sim_insn[sid] += ls.m_num_sim_insn;
+    m_stats->m_num_sim_winsn[sid] += ls.m_num_sim_winsn;
+    m_stats->m_num_decoded_insn[sid] += ls.m_num_decoded_insn;
+    m_stats->m_num_INTdecoded_insn[sid] += ls.m_num_INTdecoded_insn;
+    m_stats->m_num_FPdecoded_insn[sid] += ls.m_num_FPdecoded_insn;
+    m_stats->m_num_sp_committed[sid] += ls.m_num_sp_committed;
+    m_stats->m_num_sfu_committed[sid] += ls.m_num_sfu_committed;
+    m_stats->m_num_mem_committed[sid] += ls.m_num_mem_committed;
+    ls.m_num_sim_insn = 0;
+    ls.m_num_sim_winsn = 0;
+    ls.m_last_num_sim_insn = 0;
+    ls.m_last_num_sim_winsn = 0;
+    ls.m_num_decoded_insn = 0;
+    ls.m_num_INTdecoded_insn = 0;
+    ls.m_num_FPdecoded_insn = 0;
+    ls.m_num_sp_committed = 0;
+    ls.m_num_sfu_committed = 0;
+    ls.m_num_mem_committed = 0;
   }
   // Flush per-cluster icnt stats to global
   auto &is = m_local_icnt_stats;

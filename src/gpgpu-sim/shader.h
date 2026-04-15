@@ -2060,7 +2060,8 @@ class shader_core_mem_fetch_allocator : public mem_fetch_allocator {
 
 // Per-SM local stats for OpenMP parallelization.
 // Accumulated locally during parallel region, flushed to globals in serial.
-struct per_sm_local_stats {
+// Aligned to cache line to avoid false sharing between SMs.
+struct alignas(64) per_sm_local_stats {
   unsigned long long gpu_sim_insn = 0;
   unsigned made_write_mfs = 0;
   unsigned made_read_mfs = 0;
@@ -2074,6 +2075,18 @@ struct per_sm_local_stats {
   int gpgpu_n_mem_l2_writeback = 0;
   int gpgpu_n_mem_l1_write_allocate = 0;
   int gpgpu_n_mem_l2_write_allocate = 0;
+  // Per-SM instruction counters (moved from shared arrays to avoid
+  // false sharing between adjacent SM ids).
+  unsigned m_num_sim_insn = 0;
+  unsigned m_num_sim_winsn = 0;
+  unsigned m_last_num_sim_insn = 0;
+  unsigned m_last_num_sim_winsn = 0;
+  unsigned m_num_decoded_insn = 0;
+  unsigned m_num_INTdecoded_insn = 0;
+  unsigned m_num_FPdecoded_insn = 0;
+  unsigned m_num_sp_committed = 0;
+  unsigned m_num_sfu_committed = 0;
+  unsigned m_num_mem_committed = 0;
 };
 
 class shader_core_ctx : public core_t {
