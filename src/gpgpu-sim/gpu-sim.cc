@@ -1974,16 +1974,77 @@ void gpgpu_sim::issue_block2core() {
 unsigned long long g_single_step =
     0;  // set this in gdb to single step the pipeline
 
+// Per-cycle-section wall-clock time profiling. Enabled via env var
+// GPGPU_PROFILE_CYCLE=1. Dumped to stderr at program exit.
+// When disabled, overhead is a single load + compare per PROF_TIC/PROF_TOC.
+static const bool g_prof_enabled = [] {
+  const char* e = getenv("GPGPU_PROFILE_CYCLE");
+  return e && e[0] && e[0] != '0';
+}();
+static double g_prof_s1_icnt_cycle = 0.0;
+static double g_prof_s2_icnt_reply = 0.0;
+static double g_prof_p1_dram = 0.0;
+static double g_prof_s3_l2_phase1 = 0.0;
+static double g_prof_p2_l2_cache = 0.0;
+static double g_prof_s4_l2_stats = 0.0;
+static double g_prof_s5_icnt_transfer = 0.0;
+static double g_prof_p3_core = 0.0;
+static double g_prof_s6_flush = 0.0;
+static double g_prof_s7_occupancy = 0.0;
+static double g_prof_s8_issue = 0.0;
+static double g_prof_total = 0.0;
+static unsigned long long g_prof_cycle_count = 0;
+struct OmpProfDump {
+  ~OmpProfDump() {
+    if (!g_prof_enabled || g_prof_total <= 0) return;
+    fprintf(stderr, "\n=== OMP cycle() time breakdown (%llu cycles) ===\n",
+            g_prof_cycle_count);
+    fprintf(stderr, "  S1 icnt_cycle         : %8.2fs (%.1f%%)\n",
+            g_prof_s1_icnt_cycle, 100.0 * g_prof_s1_icnt_cycle / g_prof_total);
+    fprintf(stderr, "  S2 icnt_reply push    : %8.2fs (%.1f%%)\n",
+            g_prof_s2_icnt_reply, 100.0 * g_prof_s2_icnt_reply / g_prof_total);
+    fprintf(stderr, "  P1 DRAM (parallel)    : %8.2fs (%.1f%%)\n",
+            g_prof_p1_dram, 100.0 * g_prof_p1_dram / g_prof_total);
+    fprintf(stderr, "  S3 L2 phase1 (serial) : %8.2fs (%.1f%%)\n",
+            g_prof_s3_l2_phase1,
+            100.0 * g_prof_s3_l2_phase1 / g_prof_total);
+    fprintf(stderr, "  P2 L2 cache (parallel): %8.2fs (%.1f%%)\n",
+            g_prof_p2_l2_cache, 100.0 * g_prof_p2_l2_cache / g_prof_total);
+    fprintf(stderr, "  S4 L2 stats           : %8.2fs (%.1f%%)\n",
+            g_prof_s4_l2_stats, 100.0 * g_prof_s4_l2_stats / g_prof_total);
+    fprintf(stderr, "  S5 icnt_transfer      : %8.2fs (%.1f%%)\n",
+            g_prof_s5_icnt_transfer,
+            100.0 * g_prof_s5_icnt_transfer / g_prof_total);
+    fprintf(stderr, "  P3 CORE (parallel)    : %8.2fs (%.1f%%)\n",
+            g_prof_p3_core, 100.0 * g_prof_p3_core / g_prof_total);
+    fprintf(stderr, "  S6 flush_local_stats  : %8.2fs (%.1f%%)\n",
+            g_prof_s6_flush, 100.0 * g_prof_s6_flush / g_prof_total);
+    fprintf(stderr, "  S7 occupancy+sum      : %8.2fs (%.1f%%)\n",
+            g_prof_s7_occupancy,
+            100.0 * g_prof_s7_occupancy / g_prof_total);
+    fprintf(stderr, "  S8 issue_block2core   : %8.2fs (%.1f%%)\n",
+            g_prof_s8_issue, 100.0 * g_prof_s8_issue / g_prof_total);
+    fprintf(stderr, "  Total measured        : %8.2fs\n", g_prof_total);
+  }
+};
+static OmpProfDump g_prof_dump;
+#define PROF_TIC double __t0 = g_prof_enabled ? omp_get_wtime() : 0
+#define PROF_TOC(var) do { if (g_prof_enabled) var += omp_get_wtime() - __t0; } while(0)
+
 void gpgpu_sim::cycle() {
+  double __cycle_start = g_prof_enabled ? omp_get_wtime() : 0;
   int clock_mask = next_clock_domain();
 
   if (clock_mask & CORE) {
+    PROF_TIC;
     // shader core loading (pop from ICNT into core) follows CORE clock
     for (unsigned i = 0; i < m_shader_config->n_simt_clusters; i++)
       m_cluster[i]->icnt_cycle();
+    PROF_TOC(g_prof_s1_icnt_cycle);
   }
   unsigned partiton_replys_in_parallel_per_cycle = 0;
   if (clock_mask & ICNT) {
+    PROF_TIC;
     // pop from memory controller to interconnect
     for (unsigned i = 0; i < m_memory_config->m_n_mem_sub_partition; i++) {
       mem_fetch *mf = m_memory_sub_partition[i]->top();
@@ -2005,10 +2066,12 @@ void gpgpu_sim::cycle() {
         m_memory_sub_partition[i]->pop();
       }
     }
+    PROF_TOC(g_prof_s2_icnt_reply);
   }
   partiton_replys_in_parallel += partiton_replys_in_parallel_per_cycle;
 
   if (clock_mask & DRAM) {
+    PROF_TIC;
 #pragma omp parallel for
     for (unsigned i = 0; i < m_memory_config->m_n_mem; i++) {
       if (m_memory_config->simple_dram_model)
@@ -2034,11 +2097,13 @@ void gpgpu_sim::cycle() {
             m_power_stats->pwr_mem_stat->n_req[CURRENT_STAT_IDX][i]);
       }
     }
+    PROF_TOC(g_prof_p1_dram);
   }
 
   // L2 operations follow L2 clock domain
   unsigned partiton_reqs_in_parallel_per_cycle = 0;
   if (clock_mask & L2) {
+    PROF_TIC;
     // Phase 1 (serial): pop from ICNT and push into sub-partition.
     // Uses global interconnect state — cannot parallelize.
     for (unsigned i = 0; i < m_memory_config->m_n_mem_sub_partition; i++) {
@@ -2050,23 +2115,28 @@ void gpgpu_sim::cycle() {
         if (mf) partiton_reqs_in_parallel_per_cycle++;
       }
     }
+    PROF_TOC(g_prof_s3_l2_phase1);
     // Phase 2 (parallel): each sub-partition's cache_cycle works on its own
     // per-partition queues (m_L2cache, m_L2_icnt_queue, m_L2_dram_queue,
     // m_icnt_L2_queue). No shared writes.
+    double __t_p2 = g_prof_enabled ? omp_get_wtime() : 0;
 #pragma omp parallel for
     for (unsigned i = 0; i < m_memory_config->m_n_mem_sub_partition; i++) {
       m_memory_sub_partition[i]->cache_cycle(gpu_sim_cycle + gpu_tot_sim_cycle);
     }
+    if (g_prof_enabled) g_prof_p2_l2_cache += omp_get_wtime() - __t_p2;
     // Phase 3 (serial): stats accumulation writes to shared l2_cache_stats.
     if (m_config.g_power_simulation_enabled &&
         (((gpu_tot_sim_cycle + gpu_sim_cycle) + 1) %
              m_config.gpu_stat_sample_freq ==
          0)) {
+      double __t_s4 = g_prof_enabled ? omp_get_wtime() : 0;
       m_power_stats->pwr_mem_stat->l2_cache_stats[CURRENT_STAT_IDX].clear();
       for (unsigned i = 0; i < m_memory_config->m_n_mem_sub_partition; i++) {
         m_memory_sub_partition[i]->accumulate_L2cache_stats(
             m_power_stats->pwr_mem_stat->l2_cache_stats[CURRENT_STAT_IDX]);
       }
+      if (g_prof_enabled) g_prof_s4_l2_stats += omp_get_wtime() - __t_s4;
     }
   }
   partiton_reqs_in_parallel += partiton_reqs_in_parallel_per_cycle;
@@ -2076,10 +2146,13 @@ void gpgpu_sim::cycle() {
   }
 
   if (clock_mask & ICNT) {
+    PROF_TIC;
     icnt_transfer();
+    PROF_TOC(g_prof_s5_icnt_transfer);
   }
 
   if (clock_mask & CORE) {
+    double __t_p3 = g_prof_enabled ? omp_get_wtime() : 0;
     // L1 cache + shader core pipeline stages (parallel)
     m_active_sms_this_cycle = 0;
 #pragma omp parallel for schedule(runtime) \
@@ -2100,10 +2173,13 @@ void gpgpu_sim::cycle() {
       m_active_sms_this_cycle += m_cluster[i]->get_n_active_sms();
     }
     *active_sms += m_active_sms_this_cycle;
+    if (g_prof_enabled) g_prof_p3_core += omp_get_wtime() - __t_p3;
     // Flush per-SM/cluster local stats into global counters (serial)
+    double __t_s6 = g_prof_enabled ? omp_get_wtime() : 0;
     for (unsigned i = 0; i < m_shader_config->n_simt_clusters; i++) {
       m_cluster[i]->flush_local_stats();
     }
+    if (g_prof_enabled) g_prof_s6_flush += omp_get_wtime() - __t_s6;
     // Serial loop: collect stats that accumulate into shared structures
     if (m_config.g_power_simulation_enabled &&
         (((gpu_tot_sim_cycle + gpu_sim_cycle) + 1) %
@@ -2115,6 +2191,7 @@ void gpgpu_sim::cycle() {
             m_power_stats->pwr_mem_stat->core_cache_stats[CURRENT_STAT_IDX]);
       }
     }
+    double __t_s7 = g_prof_enabled ? omp_get_wtime() : 0;
     for (unsigned i = 0; i < m_shader_config->n_simt_clusters; i++) {
       m_cluster[i]->get_current_occupancy(
           gpu_occupancy.aggregate_warp_slot_filled,
@@ -2126,6 +2203,7 @@ void gpgpu_sim::cycle() {
     }
     temp = temp / m_shader_config->num_shader();
     *average_pipeline_duty_cycle = ((*average_pipeline_duty_cycle) + temp);
+    if (g_prof_enabled) g_prof_s7_occupancy += omp_get_wtime() - __t_s7;
     // cout<<"Average pipeline duty cycle:
     // "<<*average_pipeline_duty_cycle<<endl;
 
@@ -2149,8 +2227,14 @@ void gpgpu_sim::cycle() {
     }
 #endif
 
+    double __t_s8 = g_prof_enabled ? omp_get_wtime() : 0;
     issue_block2core();
     decrement_kernel_latency();
+    if (g_prof_enabled) {
+      g_prof_s8_issue += omp_get_wtime() - __t_s8;
+      g_prof_cycle_count++;
+      g_prof_total += omp_get_wtime() - __cycle_start;
+    }
 
     // Depending on configuration, invalidate the caches once all of threads are
     // completed.
