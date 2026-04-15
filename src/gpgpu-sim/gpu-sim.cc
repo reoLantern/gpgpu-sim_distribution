@@ -2039,12 +2039,9 @@ void gpgpu_sim::cycle() {
   // L2 operations follow L2 clock domain
   unsigned partiton_reqs_in_parallel_per_cycle = 0;
   if (clock_mask & L2) {
-    m_power_stats->pwr_mem_stat->l2_cache_stats[CURRENT_STAT_IDX].clear();
+    // Phase 1 (serial): pop from ICNT and push into sub-partition.
+    // Uses global interconnect state — cannot parallelize.
     for (unsigned i = 0; i < m_memory_config->m_n_mem_sub_partition; i++) {
-      // move memory request from interconnect into memory partition (if not
-      // backed up) Note:This needs to be called in DRAM clock domain if there
-      // is no L2 cache in the system In the worst case, we may need to push
-      // SECTOR_CHUNCK_SIZE requests, so ensure you have enough buffer for them
       if (m_memory_sub_partition[i]->full(SECTOR_CHUNCK_SIZE)) {
         gpu_stall_dramfull++;
       } else {
@@ -2052,8 +2049,21 @@ void gpgpu_sim::cycle() {
         m_memory_sub_partition[i]->push(mf, gpu_sim_cycle + gpu_tot_sim_cycle);
         if (mf) partiton_reqs_in_parallel_per_cycle++;
       }
+    }
+    // Phase 2 (parallel): each sub-partition's cache_cycle works on its own
+    // per-partition queues (m_L2cache, m_L2_icnt_queue, m_L2_dram_queue,
+    // m_icnt_L2_queue). No shared writes.
+#pragma omp parallel for
+    for (unsigned i = 0; i < m_memory_config->m_n_mem_sub_partition; i++) {
       m_memory_sub_partition[i]->cache_cycle(gpu_sim_cycle + gpu_tot_sim_cycle);
-      if (m_config.g_power_simulation_enabled) {
+    }
+    // Phase 3 (serial): stats accumulation writes to shared l2_cache_stats.
+    if (m_config.g_power_simulation_enabled &&
+        (((gpu_tot_sim_cycle + gpu_sim_cycle) + 1) %
+             m_config.gpu_stat_sample_freq ==
+         0)) {
+      m_power_stats->pwr_mem_stat->l2_cache_stats[CURRENT_STAT_IDX].clear();
+      for (unsigned i = 0; i < m_memory_config->m_n_mem_sub_partition; i++) {
         m_memory_sub_partition[i]->accumulate_L2cache_stats(
             m_power_stats->pwr_mem_stat->l2_cache_stats[CURRENT_STAT_IDX]);
       }
