@@ -38,6 +38,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <algorithm>
+#include <atomic>
 #include <bitset>
 #include <deque>
 #include <list>
@@ -1797,7 +1798,7 @@ struct shader_core_stats_pod {
   unsigned *single_issue_nums;
   unsigned *dual_issue_nums;
 
-  unsigned ctas_completed;
+  std::atomic<unsigned> ctas_completed;
   // memory access classification
   int gpgpu_n_mem_read_local;
   int gpgpu_n_mem_write_local;
@@ -2055,6 +2056,24 @@ class shader_core_mem_fetch_allocator : public mem_fetch_allocator {
   unsigned m_core_id;
   unsigned m_cluster_id;
   const memory_config *m_memory_config;
+};
+
+// Per-SM local stats for OpenMP parallelization.
+// Accumulated locally during parallel region, flushed to globals in serial.
+struct per_sm_local_stats {
+  unsigned long long gpu_sim_insn = 0;
+  unsigned made_write_mfs = 0;
+  unsigned made_read_mfs = 0;
+  int gpgpu_n_mem_read_local = 0;
+  int gpgpu_n_mem_write_local = 0;
+  int gpgpu_n_mem_texture = 0;
+  int gpgpu_n_mem_const = 0;
+  int gpgpu_n_mem_read_global = 0;
+  int gpgpu_n_mem_write_global = 0;
+  int gpgpu_n_mem_read_inst = 0;
+  int gpgpu_n_mem_l2_writeback = 0;
+  int gpgpu_n_mem_l1_write_allocate = 0;
+  int gpgpu_n_mem_l2_write_allocate = 0;
 };
 
 class shader_core_ctx : public core_t {
@@ -2569,6 +2588,9 @@ class shader_core_ctx : public core_t {
   void release_shader_resource_1block(unsigned hw_ctaid, kernel_info_t &kernel);
   int find_available_hwtid(unsigned int cta_size, bool occupy);
 
+  // OpenMP: per-SM local stats, flushed to globals after parallel region
+  per_sm_local_stats m_local_stats;
+
  private:
   unsigned int m_occupied_n_threads;
   unsigned int m_occupied_shmem;
@@ -2628,6 +2650,9 @@ class simt_core_cluster {
   void icnt_inject_request_packet(class mem_fetch *mf);
   void update_icnt_stats(class mem_fetch *mf);
 
+  // OpenMP: flush per-SM/cluster local stats to globals
+  void flush_local_stats();
+
   // for perfect memory interface
   bool response_queue_full() {
     return (m_response_fifo.size() >= m_config->n_simt_ejection_buffer_size);
@@ -2672,6 +2697,9 @@ class simt_core_cluster {
   unsigned m_cta_issue_next_core;
   std::list<unsigned> m_core_sim_order;
   std::list<mem_fetch *> m_response_fifo;
+
+  // OpenMP: per-cluster local icnt stats, flushed after parallel region
+  per_sm_local_stats m_local_icnt_stats;
 };
 
 class exec_simt_core_cluster : public simt_core_cluster {

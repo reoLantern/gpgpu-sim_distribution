@@ -1188,6 +1188,10 @@ bool sst_gpgpu_sim::active() {
 }
 
 void gpgpu_sim::init() {
+  // Default to single-threaded unless OMP_NUM_THREADS is explicitly set
+  if (!getenv("OMP_NUM_THREADS")) {
+    omp_set_num_threads(1);
+  }
   // run a CUDA grid on the GPU microarchitecture simulator
   gpu_sim_cycle = 0;
   gpu_sim_insn = 0;
@@ -1455,7 +1459,7 @@ void gpgpu_sim::gpu_print_stat(unsigned long long streamID) {
   printf("kernel_stream_id = %llu\n", streamID);
 
   printf("gpu_sim_cycle = %lld\n", gpu_sim_cycle);
-  printf("gpu_sim_insn = %lld\n", gpu_sim_insn);
+  printf("gpu_sim_insn = %lld\n", (long long)gpu_sim_insn);
   printf("gpu_ipc = %12.4f\n", (float)gpu_sim_insn / gpu_sim_cycle);
   printf("gpu_tot_sim_cycle = %lld\n", gpu_tot_sim_cycle + gpu_sim_cycle);
   printf("gpu_tot_sim_insn = %lld\n", gpu_tot_sim_insn + gpu_sim_insn);
@@ -2005,14 +2009,19 @@ void gpgpu_sim::cycle() {
   partiton_replys_in_parallel += partiton_replys_in_parallel_per_cycle;
 
   if (clock_mask & DRAM) {
+#pragma omp parallel for
     for (unsigned i = 0; i < m_memory_config->m_n_mem; i++) {
       if (m_memory_config->simple_dram_model)
         m_memory_partition_unit[i]->simple_dram_model_cycle();
       else
         m_memory_partition_unit[i]
             ->dram_cycle();  // Issue the dram command (scheduler + delay model)
-      // Update performance counters for DRAM
-      if (m_config.g_power_simulation_enabled) {
+      // Update performance counters for DRAM (gated by sample freq to reduce
+      // serial work)
+      if (m_config.g_power_simulation_enabled &&
+          (((gpu_tot_sim_cycle + gpu_sim_cycle) + 1) %
+               m_config.gpu_stat_sample_freq ==
+           0)) {
         m_memory_partition_unit[i]->set_dram_power_stats(
             m_power_stats->pwr_mem_stat->n_cmd[CURRENT_STAT_IDX][i],
             m_power_stats->pwr_mem_stat->n_activity[CURRENT_STAT_IDX][i],
@@ -2061,21 +2070,42 @@ void gpgpu_sim::cycle() {
   }
 
   if (clock_mask & CORE) {
-    // L1 cache + shader core pipeline stages
-    m_power_stats->pwr_mem_stat->core_cache_stats[CURRENT_STAT_IDX].clear();
+    // L1 cache + shader core pipeline stages (parallel)
+    m_active_sms_this_cycle = 0;
+#pragma omp parallel for schedule(runtime) \
+    reduction(+ : m_active_sms_this_cycle)
     for (unsigned i = 0; i < m_shader_config->n_simt_clusters; i++) {
       if (m_cluster[i]->get_not_completed() || get_more_cta_left()) {
         m_cluster[i]->core_cycle();
-        *active_sms += m_cluster[i]->get_n_active_sms();
       }
-      // Update core icnt/cache stats for AccelWattch
-      if (m_config.g_power_simulation_enabled) {
+      // Update core icnt stats for AccelWattch (per-partition, safe in parallel)
+      if (m_config.g_power_simulation_enabled &&
+          (((gpu_tot_sim_cycle + gpu_sim_cycle) + 1) %
+               m_config.gpu_stat_sample_freq ==
+           0)) {
         m_cluster[i]->get_icnt_stats(
             m_power_stats->pwr_mem_stat->n_simt_to_mem[CURRENT_STAT_IDX][i],
             m_power_stats->pwr_mem_stat->n_mem_to_simt[CURRENT_STAT_IDX][i]);
+      }
+      m_active_sms_this_cycle += m_cluster[i]->get_n_active_sms();
+    }
+    *active_sms += m_active_sms_this_cycle;
+    // Flush per-SM/cluster local stats into global counters (serial)
+    for (unsigned i = 0; i < m_shader_config->n_simt_clusters; i++) {
+      m_cluster[i]->flush_local_stats();
+    }
+    // Serial loop: collect stats that accumulate into shared structures
+    if (m_config.g_power_simulation_enabled &&
+        (((gpu_tot_sim_cycle + gpu_sim_cycle) + 1) %
+             m_config.gpu_stat_sample_freq ==
+         0)) {
+      m_power_stats->pwr_mem_stat->core_cache_stats[CURRENT_STAT_IDX].clear();
+      for (unsigned i = 0; i < m_shader_config->n_simt_clusters; i++) {
         m_cluster[i]->get_cache_stats(
             m_power_stats->pwr_mem_stat->core_cache_stats[CURRENT_STAT_IDX]);
       }
+    }
+    for (unsigned i = 0; i < m_shader_config->n_simt_clusters; i++) {
       m_cluster[i]->get_current_occupancy(
           gpu_occupancy.aggregate_warp_slot_filled,
           gpu_occupancy.aggregate_theoretical_warp_slots);
@@ -2329,6 +2359,10 @@ void sst_gpgpu_sim::SST_cycle() {
         m_power_stats->pwr_mem_stat->n_mem_to_simt[CURRENT_STAT_IDX][i]);
     m_cluster[i]->get_cache_stats(
         m_power_stats->pwr_mem_stat->core_cache_stats[CURRENT_STAT_IDX]);
+  }
+  // Flush per-SM/cluster local stats (SST path)
+  for (unsigned i = 0; i < m_shader_config->n_simt_clusters; i++) {
+    m_cluster[i]->flush_local_stats();
   }
   float temp = 0;
   for (unsigned i = 0; i < m_shader_config->num_shader(); i++) {

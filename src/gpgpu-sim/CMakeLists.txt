@@ -29,6 +29,11 @@ add_library(gpgpusim STATIC ${gpgpusim_SRC})
 target_include_directories(gpgpusim PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_include_directories(gpgpusim PUBLIC ${CUDAToolkit_INCLUDE_DIRS})
 
+# Enable OpenMP
+find_package(OpenMP REQUIRED)
+target_compile_options(gpgpusim PRIVATE ${OpenMP_CXX_FLAGS})
+target_link_libraries(gpgpusim PUBLIC OpenMP::OpenMP_CXX)
+
 if(GPGPUSIM_USE_POWER_MODEL)
 target_compile_definitions(gpgpusim PRIVATE GPGPUSIM_POWER_MODEL)
 target_include_directories(gpgpusim PRIVATE ${GPGPUSIM_POWER_MODEL})

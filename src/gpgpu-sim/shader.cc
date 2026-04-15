@@ -785,7 +785,7 @@ void shader_core_stats::visualizer_print(gzFile visualizer_file) {
   }
   gzprintf(visualizer_file, "\n");
 
-  gzprintf(visualizer_file, "ctas_completed: %d\n", ctas_completed);
+  gzprintf(visualizer_file, "ctas_completed: %d\n", ctas_completed.load());
   ctas_completed = 0;
   // warp issue breakdown
   unsigned sid = m_config->gpgpu_warp_issue_shader;
@@ -1924,7 +1924,7 @@ void shader_core_ctx::warp_inst_complete(const warp_inst_t &inst) {
     m_stats->m_num_sim_insn[m_sid] += inst.active_count();
 
   m_stats->m_num_sim_winsn[m_sid]++;
-  m_gpu->gpu_sim_insn += inst.active_count();
+  m_local_stats.gpu_sim_insn += inst.active_count();
   inst.completed(m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle);
 }
 
@@ -1965,8 +1965,7 @@ void shader_core_ctx::writeback() {
     m_scoreboard->releaseRegisters(pipe_reg);
     m_warp[warp_id]->dec_inst_in_pipeline();
     warp_inst_complete(*pipe_reg);
-    m_gpu->gpu_sim_insn_last_update_sid = m_sid;
-    m_gpu->gpu_sim_insn_last_update = m_gpu->gpu_sim_cycle;
+    // gpu_sim_insn_last_update_sid/cycle moved to serial flush_local_stats()
     m_last_inst_gpu_sim_cycle = m_gpu->gpu_sim_cycle;
     m_last_inst_gpu_tot_sim_cycle = m_gpu->gpu_tot_sim_cycle;
     pipe_reg->clear();
@@ -3018,17 +3017,17 @@ void shader_core_ctx::register_cta_thread_exit(unsigned cta_num,
 
     // Jin: for concurrent kernels on sm
     release_shader_resource_1block(cta_num, *kernel);
-    kernel->dec_running();
-    if (!m_gpu->kernel_more_cta_left(kernel)) {
-      if (!kernel->running()) {
-        SHADER_DPRINTF(LIVENESS,
-                       "GPGPU-Sim uArch: GPU detected kernel %u \'%s\' "
-                       "finished on shader %u.\n",
-                       kernel->get_uid(), kernel->name().c_str(), m_sid);
+    // Lock-free kernel completion: dec_running returns previous value.
+    // Only the thread that transitions count from 1->0 enters set_kernel_done.
+    int prev_running = kernel->dec_running();
+    if (prev_running == 1 && !m_gpu->kernel_more_cta_left(kernel)) {
+      SHADER_DPRINTF(LIVENESS,
+                     "GPGPU-Sim uArch: GPU detected kernel %u \'%s\' "
+                     "finished on shader %u.\n",
+                     kernel->get_uid(), kernel->name().c_str(), m_sid);
 
-        if (m_kernel == kernel) m_kernel = NULL;
-        m_gpu->set_kernel_done(kernel);
-      }
+      if (m_kernel == kernel) m_kernel = NULL;
+      m_gpu->set_kernel_done(kernel);
     }
   }
 }
@@ -3057,7 +3056,7 @@ void gpgpu_sim::shader_print_runtime_stat(FILE *fout) {
 
 void gpgpu_sim::shader_print_scheduler_stat(FILE *fout,
                                             bool print_dynamic_info) const {
-  fprintf(fout, "ctas_completed %d, ", m_shader_stats->ctas_completed);
+  fprintf(fout, "ctas_completed %d, ", m_shader_stats->ctas_completed.load());
   // Print out the stats from the sampling shader core
   const unsigned scheduler_sampling_core =
       m_shader_config->gpgpu_warp_issue_shader;
@@ -4637,50 +4636,77 @@ void simt_core_cluster::icnt_inject_request_packet(class mem_fetch *mf) {
 }
 
 void simt_core_cluster::update_icnt_stats(class mem_fetch *mf) {
-  // stats
+  // stats (accumulated to per-cluster local, flushed in flush_local_stats)
   if (mf->get_is_write())
-    m_stats->made_write_mfs++;
+    m_local_icnt_stats.made_write_mfs++;
   else
-    m_stats->made_read_mfs++;
+    m_local_icnt_stats.made_read_mfs++;
   switch (mf->get_access_type()) {
     case CONST_ACC_R:
-      m_stats->gpgpu_n_mem_const++;
+      m_local_icnt_stats.gpgpu_n_mem_const++;
       break;
     case TEXTURE_ACC_R:
-      m_stats->gpgpu_n_mem_texture++;
+      m_local_icnt_stats.gpgpu_n_mem_texture++;
       break;
     case GLOBAL_ACC_R:
-      m_stats->gpgpu_n_mem_read_global++;
+      m_local_icnt_stats.gpgpu_n_mem_read_global++;
       break;
-    // case GLOBAL_ACC_R: m_stats->gpgpu_n_mem_read_global++;
-    // printf("read_global%d\n",m_stats->gpgpu_n_mem_read_global); break;
     case GLOBAL_ACC_W:
-      m_stats->gpgpu_n_mem_write_global++;
+      m_local_icnt_stats.gpgpu_n_mem_write_global++;
       break;
     case LOCAL_ACC_R:
-      m_stats->gpgpu_n_mem_read_local++;
+      m_local_icnt_stats.gpgpu_n_mem_read_local++;
       break;
     case LOCAL_ACC_W:
-      m_stats->gpgpu_n_mem_write_local++;
+      m_local_icnt_stats.gpgpu_n_mem_write_local++;
       break;
     case INST_ACC_R:
-      m_stats->gpgpu_n_mem_read_inst++;
+      m_local_icnt_stats.gpgpu_n_mem_read_inst++;
       break;
     case L1_WRBK_ACC:
-      m_stats->gpgpu_n_mem_write_global++;
+      m_local_icnt_stats.gpgpu_n_mem_write_global++;
       break;
     case L2_WRBK_ACC:
-      m_stats->gpgpu_n_mem_l2_writeback++;
+      m_local_icnt_stats.gpgpu_n_mem_l2_writeback++;
       break;
     case L1_WR_ALLOC_R:
-      m_stats->gpgpu_n_mem_l1_write_allocate++;
+      m_local_icnt_stats.gpgpu_n_mem_l1_write_allocate++;
       break;
     case L2_WR_ALLOC_R:
-      m_stats->gpgpu_n_mem_l2_write_allocate++;
+      m_local_icnt_stats.gpgpu_n_mem_l2_write_allocate++;
       break;
     default:
       assert(0);
   }
+}
+
+void simt_core_cluster::flush_local_stats() {
+  // Flush per-SM gpu_sim_insn to global
+  for (unsigned i = 0; i < m_config->n_simt_cores_per_cluster; i++) {
+    auto &ls = m_core[i]->m_local_stats;
+    if (ls.gpu_sim_insn > 0) {
+      m_core[i]->get_gpu()->gpu_sim_insn += ls.gpu_sim_insn;
+      m_core[i]->get_gpu()->gpu_sim_insn_last_update_sid = m_core[i]->get_sid();
+      m_core[i]->get_gpu()->gpu_sim_insn_last_update =
+          m_core[i]->get_gpu()->gpu_sim_cycle;
+      ls.gpu_sim_insn = 0;
+    }
+  }
+  // Flush per-cluster icnt stats to global
+  auto &is = m_local_icnt_stats;
+  m_stats->made_write_mfs += is.made_write_mfs;
+  m_stats->made_read_mfs += is.made_read_mfs;
+  m_stats->gpgpu_n_mem_const += is.gpgpu_n_mem_const;
+  m_stats->gpgpu_n_mem_texture += is.gpgpu_n_mem_texture;
+  m_stats->gpgpu_n_mem_read_global += is.gpgpu_n_mem_read_global;
+  m_stats->gpgpu_n_mem_write_global += is.gpgpu_n_mem_write_global;
+  m_stats->gpgpu_n_mem_read_local += is.gpgpu_n_mem_read_local;
+  m_stats->gpgpu_n_mem_write_local += is.gpgpu_n_mem_write_local;
+  m_stats->gpgpu_n_mem_read_inst += is.gpgpu_n_mem_read_inst;
+  m_stats->gpgpu_n_mem_l2_writeback += is.gpgpu_n_mem_l2_writeback;
+  m_stats->gpgpu_n_mem_l1_write_allocate += is.gpgpu_n_mem_l1_write_allocate;
+  m_stats->gpgpu_n_mem_l2_write_allocate += is.gpgpu_n_mem_l2_write_allocate;
+  is = {};
 }
 
 void sst_simt_core_cluster::icnt_inject_request_packet_to_SST(

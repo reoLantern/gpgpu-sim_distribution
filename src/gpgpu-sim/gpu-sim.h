@@ -32,11 +32,13 @@
 #ifndef GPU_SIM_H
 #define GPU_SIM_H
 
+#include <atomic>
 #include <stdint.h>
 #include <stdio.h>
 #include <fstream>
 #include <iostream>
 #include <list>
+#include <omp.h>
 #include "../abstract_hardware_model.h"
 #include "../option_parser.h"
 #include "../trace.h"
@@ -601,7 +603,7 @@ class gpgpu_sim : public gpgpu_t {
   void print_stats(unsigned long long streamID);
   void update_stats();
   void deadlock_check();
-  void inc_completed_cta() { gpu_completed_cta++; }
+  void inc_completed_cta() { gpu_completed_cta.fetch_add(1); }
   void get_pdom_stack_top_info(unsigned sid, unsigned tid, unsigned *pc,
                                unsigned *rpc);
 
@@ -699,8 +701,9 @@ class gpgpu_sim : public gpgpu_t {
   // count.
   unsigned long long m_total_cta_launched;
   unsigned long long gpu_tot_issued_cta;
-  unsigned gpu_completed_cta;
+  std::atomic<unsigned> gpu_completed_cta;
 
+  float m_active_sms_this_cycle;
   unsigned m_last_cluster_issue;
   float *average_pipeline_duty_cycle;
   float *active_sms;
