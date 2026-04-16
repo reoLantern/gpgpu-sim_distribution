@@ -1352,11 +1352,9 @@ void scheduler_unit::cycle() {
           // from dep_state — both must pass for the instruction to issue.
           bool scoreboard_ok = !m_scoreboard->checkCollision(warp_id, pI);
           bool ctrl_bits_ok = true;
-          if (pI->get_ctrl_bits().valid()) {
-            // Phase 3 v1: only enforce stall counter + yield, skip barrier
-            // wait check until barrier lifecycle is fully debugged.
-            ctrl_bits_ok = warp(warp_id).dep_state().is_stall_ready() &&
-                           warp(warp_id).dep_state().is_yield_ready();
+          if (pI->get_ctrl_bits().valid() && !getenv("GPGPUSIM_CB_DISABLE")) {
+            ctrl_bits_ok = warp(warp_id).dep_state().is_ready(
+                pI->get_ctrl_bits().b_mask());
           }
           if (scoreboard_ok && ctrl_bits_ok) {
             SCHED_DPRINTF(
@@ -1956,6 +1954,20 @@ void shader_core_ctx::warp_inst_complete(const warp_inst_t &inst) {
   inst.completed(m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle);
 }
 
+void shader_core_ctx::retire_inst_ctrl_bits(warp_inst_t &inst) {
+  if (!inst.get_ctrl_bits().valid()) return;
+  if (inst.test_and_set_ctrl_bits_retired()) return;  // already retired
+  auto &ds = m_warp[inst.warp_id()]->dep_state();
+  // w_bar: result register written — consumers can proceed.
+  if (inst.get_ctrl_bits().has_w_bar())
+    ds.decrement_barrier(inst.get_ctrl_bits().w_bar());
+  // r_bar: read operands retired. Conservatively at same point as w_bar
+  // (true point would be end of operand-collector read, but WB is strictly
+  // later, so we only over-hold — never under-hold — a barrier).
+  if (inst.get_ctrl_bits().has_r_bar())
+    ds.decrement_barrier(inst.get_ctrl_bits().r_bar());
+}
+
 void shader_core_ctx::writeback() {
   unsigned max_committed_thread_instructions =
       m_config->warp_size *
@@ -1994,21 +2006,7 @@ void shader_core_ctx::writeback() {
     m_operand_collector.writeback(*pipe_reg);
     unsigned warp_id = pipe_reg->warp_id();
     m_scoreboard->releaseRegisters(pipe_reg);
-
-    // Decrement barriers when instruction completes writeback.
-    // w-bar: result register is written — consumers can proceed.
-    // r-bar: conservatively decremented here too (ideally at OC exit, but
-    //        writeback is safe — just holds the barrier slightly longer).
-    if (pipe_reg->get_ctrl_bits().valid()) {
-      if (pipe_reg->get_ctrl_bits().has_w_bar()) {
-        m_warp[warp_id]->dep_state().decrement_barrier(
-            pipe_reg->get_ctrl_bits().w_bar());
-      }
-      if (pipe_reg->get_ctrl_bits().has_r_bar()) {
-        m_warp[warp_id]->dep_state().decrement_barrier(
-            pipe_reg->get_ctrl_bits().r_bar());
-      }
-    }
+    retire_inst_ctrl_bits(*pipe_reg);
 
     m_warp[warp_id]->dec_inst_in_pipeline();
     warp_inst_complete(*pipe_reg);
@@ -2196,6 +2194,7 @@ void ldst_unit::L1_latency_queue_cycle() {
                 m_scoreboard->releaseRegister(mf_next->get_inst().warp_id(),
                                               mf_next->get_inst().out[r]);
                 m_core->warp_inst_complete(mf_next->get_inst());
+                m_core->retire_inst_ctrl_bits(mf_next->get_inst_mut());
               }
             }
 
@@ -2782,6 +2781,7 @@ void ldst_unit::writeback() {
         if (m_next_wb.m_is_ldgsts) {
           m_core->unset_depbar(m_next_wb);
         }
+        m_core->retire_inst_ctrl_bits(m_next_wb);
       }
 
       m_next_wb.clear();
@@ -3008,6 +3008,7 @@ void ldst_unit::cycle() {
         if (!pending_requests) {
           m_core->warp_inst_complete(*m_dispatch_reg);
           m_scoreboard->releaseRegisters(m_dispatch_reg);
+          m_core->retire_inst_ctrl_bits(*m_dispatch_reg);
 
           // release LDGSTS
           if (m_dispatch_reg->m_is_ldgsts) {
@@ -3022,9 +3023,10 @@ void ldst_unit::cycle() {
         m_dispatch_reg->clear();
       }
     } else {
-      // stores exit pipeline here
+      // stores exit pipeline here — release barriers even though no regs
       m_core->dec_inst_in_pipeline(warp_id);
       m_core->warp_inst_complete(*m_dispatch_reg);
+      m_core->retire_inst_ctrl_bits(*m_dispatch_reg);
       m_dispatch_reg->clear();
     }
   }

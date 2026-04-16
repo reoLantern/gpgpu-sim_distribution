@@ -134,8 +134,8 @@ class warp_dependency_state {
   void set_from_issued(const ctrl_bits_t &cb) {
     m_stall_counter = cb.stall();
     m_yield = cb.is_yield();
-    if (cb.has_r_bar()) m_wait_barriers[cb.r_bar()]++;
-    if (cb.has_w_bar()) m_wait_barriers[cb.w_bar()]++;
+    if (cb.has_r_bar()) { m_wait_barriers[cb.r_bar()]++; m_total_inc++; }
+    if (cb.has_w_bar()) { m_wait_barriers[cb.w_bar()]++; m_total_inc++; }
   }
 
   /* Check if warp is ready to issue (for next instruction's b-mask check). */
@@ -160,20 +160,36 @@ class warp_dependency_state {
   void increment_barrier(unsigned bar_id) {
     assert(bar_id < NUM_BARRIERS);
     m_wait_barriers[bar_id]++;
+    m_total_inc++;
   }
 
   void decrement_barrier(unsigned bar_id) {
     assert(bar_id < NUM_BARRIERS);
     assert(m_wait_barriers[bar_id] > 0);
     m_wait_barriers[bar_id]--;
+    m_total_dec++;
   }
 
   unsigned stall_counter() const { return m_stall_counter; }
+  unsigned barrier(unsigned i) const { return m_wait_barriers[i]; }
+  unsigned long long total_inc() const { return m_total_inc; }
+  unsigned long long total_dec() const { return m_total_dec; }
+
+  void dump(FILE *f, unsigned warp_id) const {
+    fprintf(f, "  warp %u dep_state: stall=%u yield=%d barriers=[",
+            warp_id, m_stall_counter, m_yield);
+    for (unsigned i = 0; i < NUM_BARRIERS; i++)
+      fprintf(f, "%u%s", m_wait_barriers[i], i < NUM_BARRIERS - 1 ? "," : "");
+    fprintf(f, "] total_inc=%llu total_dec=%llu\n",
+            m_total_inc, m_total_dec);
+  }
 
  private:
   unsigned m_stall_counter;       // linear decrement, 0 = ready
   bool m_yield;                   // forces 1 cycle of warp switch
   unsigned m_wait_barriers[NUM_BARRIERS];  // dependence counters 0-5
+  unsigned long long m_total_inc = 0;  // debug: total barrier increments
+  unsigned long long m_total_dec = 0;  // debug: total barrier decrements
 };
 
 class shd_warp_t {
@@ -2237,6 +2253,13 @@ class shader_core_ctx : public core_t {
   bool warp_waiting_at_mem_barrier(unsigned warp_id);
   void set_max_cta(const kernel_info_t &kernel);
   void warp_inst_complete(const warp_inst_t &inst);
+
+  // Central retirement hook for control-bit r/w barriers. Idempotent via
+  // warp_inst_t::test_and_set_ctrl_bits_retired(); call from every completion
+  // path that releases scoreboard state (generic WB, ldst_unit writeback,
+  // async L1 fill, fast-path dispatch). Matches MICRO 2025's single-point
+  // retirement pattern.
+  void retire_inst_ctrl_bits(warp_inst_t &inst);
 
   // accessors
   std::list<unsigned> get_regs_written(const inst_t &fvt) const;

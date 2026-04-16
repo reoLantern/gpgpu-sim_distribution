@@ -1196,6 +1196,13 @@ class warp_inst_t : public inst_t {
   bool active(unsigned thread) const { return m_warp_active_mask.test(thread); }
   unsigned active_count() const { return m_warp_active_mask.count(); }
   const ctrl_bits_t &get_ctrl_bits() const { return m_ctrl_bits; }
+  // Test-and-set: returns previous value; used to make control-bit retirement
+  // idempotent across multiple completion events (e.g. per-register release).
+  bool test_and_set_ctrl_bits_retired() {
+    bool was = m_ctrl_bits_retired;
+    m_ctrl_bits_retired = true;
+    return was;
+  }
   unsigned issued_count() const {
     assert(m_empty == false);
     return m_warp_issued_mask.count();
@@ -1255,6 +1262,7 @@ class warp_inst_t : public inst_t {
   bool should_do_atomic;
   bool m_is_printf;
   ctrl_bits_t m_ctrl_bits;  // control bits from trace header (NVBit v1.8+)
+  bool m_ctrl_bits_retired = false;  // set when r/w barriers already decremented
   unsigned m_warp_id;
   unsigned m_dynamic_warp_id;
   const core_config *m_config;

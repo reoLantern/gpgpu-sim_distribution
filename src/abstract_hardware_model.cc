@@ -64,6 +64,7 @@ void warp_inst_t::issue(const active_mask_t &mask, unsigned warp_id,
   m_cache_hit = false;
   m_empty = false;
   m_scheduler_id = sch_id;
+  m_ctrl_bits_retired = false;
 }
 
 checkpoint::checkpoint() {
