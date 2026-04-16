@@ -1122,7 +1122,17 @@ void shader_core_ctx::issue_warp(register_set &pipe_reg_set,
 
   updateSIMTStack(warp_id, *pipe_reg);
 
+  // Traditional scoreboard: still reserve for WAR/WAW tracking even with
+  // control bits (needed for variable-latency instructions whose completion
+  // time is unknown to the compiler's static stall counts).
   m_scoreboard->reserveRegisters(*pipe_reg);
+
+  // Control-bits dependency state: set stall counter, yield, and allocate
+  // r/w barriers from the just-issued instruction.
+  if ((*pipe_reg)->get_ctrl_bits().valid()) {
+    m_warp[warp_id]->dep_state().set_from_issued((*pipe_reg)->get_ctrl_bits());
+  }
+
   m_warp[warp_id]->set_next_pc(next_inst->pc + next_inst->isize);
 }
 
@@ -1266,6 +1276,12 @@ void scheduler_unit::cycle() {
                              // waiting for pending register writes
   bool issued_inst = false;  // of these we issued one
 
+  // Advance per-warp dependency state (stall counter decrement, yield clear).
+  // This runs for ALL warps managed by this scheduler, once per cycle.
+  for (auto *w : m_supervised_warps) {
+    if (w && !w->done_exit()) w->dep_state().cycle();
+  }
+
   order_warps();
   for (std::vector<shd_warp_t *>::const_iterator iter =
            m_next_cycle_prioritized_warps.begin();
@@ -1331,9 +1347,21 @@ void scheduler_unit::cycle() {
           warp(warp_id).ibuffer_flush();
         } else {
           valid_inst = true;
-          if (!m_scoreboard->checkCollision(warp_id, pI)) {
+          // Dependency check: scoreboard (register-level) is always checked.
+          // When control bits are available, ALSO check stall/yield/barriers
+          // from dep_state — both must pass for the instruction to issue.
+          bool scoreboard_ok = !m_scoreboard->checkCollision(warp_id, pI);
+          bool ctrl_bits_ok = true;
+          if (pI->get_ctrl_bits().valid()) {
+            // Phase 3 v1: only enforce stall counter + yield, skip barrier
+            // wait check until barrier lifecycle is fully debugged.
+            ctrl_bits_ok = warp(warp_id).dep_state().is_stall_ready() &&
+                           warp(warp_id).dep_state().is_yield_ready();
+          }
+          if (scoreboard_ok && ctrl_bits_ok) {
             SCHED_DPRINTF(
-                "Warp (warp_id %u, dynamic_warp_id %u) passes scoreboard\n",
+                "Warp (warp_id %u, dynamic_warp_id %u) passes dependency "
+                "check\n",
                 (*iter)->get_warp_id(), (*iter)->get_dynamic_warp_id());
             ready_inst = true;
 
@@ -1966,6 +1994,22 @@ void shader_core_ctx::writeback() {
     m_operand_collector.writeback(*pipe_reg);
     unsigned warp_id = pipe_reg->warp_id();
     m_scoreboard->releaseRegisters(pipe_reg);
+
+    // Decrement barriers when instruction completes writeback.
+    // w-bar: result register is written — consumers can proceed.
+    // r-bar: conservatively decremented here too (ideally at OC exit, but
+    //        writeback is safe — just holds the barrier slightly longer).
+    if (pipe_reg->get_ctrl_bits().valid()) {
+      if (pipe_reg->get_ctrl_bits().has_w_bar()) {
+        m_warp[warp_id]->dep_state().decrement_barrier(
+            pipe_reg->get_ctrl_bits().w_bar());
+      }
+      if (pipe_reg->get_ctrl_bits().has_r_bar()) {
+        m_warp[warp_id]->dep_state().decrement_barrier(
+            pipe_reg->get_ctrl_bits().r_bar());
+      }
+    }
+
     m_warp[warp_id]->dec_inst_in_pipeline();
     warp_inst_complete(*pipe_reg);
     // gpu_sim_insn_last_update_sid/cycle moved to serial flush_local_stats()

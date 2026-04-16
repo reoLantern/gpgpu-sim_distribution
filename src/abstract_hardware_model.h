@@ -1195,6 +1195,7 @@ class warp_inst_t : public inst_t {
   }
   bool active(unsigned thread) const { return m_warp_active_mask.test(thread); }
   unsigned active_count() const { return m_warp_active_mask.count(); }
+  const ctrl_bits_t &get_ctrl_bits() const { return m_ctrl_bits; }
   unsigned issued_count() const {
     assert(m_empty == false);
     return m_warp_issued_mask.count();
