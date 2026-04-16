@@ -1319,12 +1319,12 @@ void stream_buffer::cycle() {
     enum cache_request_status status =
         m_l0i->access(m_next_addr_to_prefetch, pmf, now, events);
     if (status == HIT) {
-      // Already cached — no point continuing the stream from here.
-      // Stay active: a future demand miss will restart with a new
-      // m_next_addr_to_prefetch via on_l0_demand_miss().
+      // Already cached — stop the stream. Continuing past warm cache
+      // lines just wastes L1I bandwidth and over-prefetches code we
+      // may never reach. Restart on the next true demand miss.
       delete pmf;
-      m_next_addr_to_prefetch += m_line_size;
-      continue;
+      m_active = false;
+      break;
     } else if (status == RESERVATION_FAIL) {
       delete pmf;
       break;  // back off, retry next cycle, don't advance cursor

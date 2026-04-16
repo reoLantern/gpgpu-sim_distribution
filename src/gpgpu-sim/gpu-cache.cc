@@ -1935,8 +1935,10 @@ enum cache_request_status l0_icache::access(
     std::list<cache_event> &events) {
   enum cache_request_status status =
       read_only_cache::access(addr, mf, time, events);
-  if (m_sb && !mf->is_prefetch() &&
-      (status == MISS || status == HIT_RESERVED || status == SECTOR_MISS)) {
+  // Only true MISS (not HIT_RESERVED — that means a previous miss is
+  // already in flight for this block, so the stream cursor must not
+  // be reset). MICRO 2025 follows the same convention.
+  if (m_sb && !mf->is_prefetch() && status == MISS) {
     m_sb->on_l0_demand_miss(m_config.block_addr(addr));
   }
   return status;
