@@ -183,6 +183,19 @@ void shader_core_ctx::create_front_pipeline() {
   m_L1I = new read_only_cache(name, m_config->m_L1I_config, m_sid,
                               get_shader_instruction_cache_id(), m_icnt,
                               IN_L1I_MISS_QUEUE, OTHER_GPU_CACHE, m_gpu);
+
+  // Phase 3 Step 3f.B.2: per-SM L0 arbiter. Subcores will register
+  // their L0 caches with it during create_schedulers(). We construct
+  // it here (after L1I) so the L0 caches can use l0_icnt as their
+  // memport at construction time.
+  if (m_config->is_L0I_enabled) {
+    // Init the L0I cache config string from -gpgpu_cache:il0.
+    m_config->m_L0I_config.init(m_config->m_L0I_config.m_config_string,
+                                FuncCachePreferNone);
+    m_l0_icnt = new l0_icnt(m_sid, m_config->gpgpu_num_sched_per_core,
+                            m_L1I, m_config->latency_L0_to_L1,
+                            m_config->latency_L1_to_L0, m_gpu);
+  }
 }
 
 void shader_core_ctx::create_schedulers() {
@@ -263,6 +276,21 @@ void shader_core_ctx::create_schedulers() {
         abort();
     };
     m_subcores.push_back(new subcore(this, i, sched));
+
+    // Phase 3 Step 3f.B.2: per-subcore L0 instruction cache.
+    // Memport = m_l0_icnt (created in create_front_pipeline). On
+    // L0 miss, l0_icache::cycle() pops the miss queue and pushes the
+    // mf to l0_icnt, which routes to L1I after latency_L0_to_L1.
+    if (m_config->is_L0I_enabled) {
+      assert(m_l0_icnt != nullptr);
+      char l0name[32];
+      snprintf(l0name, sizeof(l0name), "L0I_%03u_%u", m_sid, i);
+      l0_icache *l0i = new l0_icache(
+          l0name, m_config->m_L0I_config, m_sid, (int)i,
+          m_l0_icnt, IN_L1I_MISS_QUEUE, OTHER_GPU_CACHE, m_gpu);
+      m_subcores[i]->install_l0i(l0i);
+      m_l0_icnt->register_l0(i, l0i);
+    }
   }
 
   for (unsigned i = 0; i < m_warp.size(); i++) {
@@ -930,9 +958,20 @@ void shader_core_ctx::decode() {
 }
 
 void shader_core_ctx::fetch() {
+  // Phase 3 Step 3f.B.2: when L0 is enabled, the L1I response is no
+  // longer the source of fetch buffer fills — it has already been
+  // forwarded back to the originating subcore's L0 by l0_icnt. We
+  // poll L0_icnt for a ready inst across subcores instead.
+  // When L0 is disabled, behavior is exactly vanilla.
   if (!m_inst_fetch_buffer.m_valid) {
-    if (m_L1I->access_ready()) {
-      mem_fetch *mf = m_L1I->next_access();
+    mem_fetch *ready_mf = nullptr;
+    if (m_l0_icnt) {
+      ready_mf = m_l0_icnt->try_pop_ready_inst();
+    } else if (m_L1I->access_ready()) {
+      ready_mf = m_L1I->next_access();
+    }
+    if (ready_mf) {
+      mem_fetch *mf = ready_mf;
       m_warp[mf->get_wid()]->clear_imiss_pending();
       m_inst_fetch_buffer =
           ifetch_buffer_t(m_warp[mf->get_wid()]->get_pc(),
@@ -1036,6 +1075,12 @@ void shader_core_ctx::fetch() {
     }
   }
 
+  // Phase 3 Step 3f.B.2: order matters. Tick the L0 arbiter first so
+  // any L1I responses that arrived this cycle propagate to L0 fills,
+  // then per-subcore L0 caches drain their miss queues into L0_icnt,
+  // then L1I drains its own miss queue toward icnt as before.
+  if (m_l0_icnt) m_l0_icnt->cycle();
+  for (auto *sc : m_subcores) sc->cycle_caches();
   m_L1I->cycle();
 }
 
@@ -1169,26 +1214,32 @@ void shader_core_ctx::issue_warp(register_set &pipe_reg_set,
 // scheduler. Future steps add RFC / L0 I-cache / mem queue cycles here.
 void subcore::issue() { m_scheduler->cycle(); }
 
-// Phase 3 Step 3f.A.2: pure delegation to shared L1I (byte-identical
-// to vanilla shader_core_ctx::fetch's m_L1I->access call). Step 3f.B
-// will replace the body with: probe L0 first, fall back to L1I via
-// L0_icnt only on L0 miss.
+// Phase 3 Step 3f.B.2: route through per-subcore L0 cache when
+// installed; otherwise fall back to direct L1I access (vanilla path).
+// Stamps the mf with this subcore's id so accept_fetch_response can
+// route the response back via l0_icnt.
 enum cache_request_status subcore::try_fetch_warp(
     mem_fetch *mf, address_type ppc, std::list<cache_event> &events,
     unsigned long long now) {
+  if (m_l0i) {
+    mf->set_subcore_id((int)m_subcore_id);
+    return m_l0i->access((new_addr_type)ppc, mf, now, events);
+  }
   return m_sm->m_L1I->access((new_addr_type)ppc, mf, now, events);
 }
 
-// Phase 3 Step 3f.B.1 — l0_icnt skeleton.
+void subcore::install_l0i(l0_icache *l0i) { m_l0i = l0i; }
+
+void subcore::cycle_caches() {
+  if (m_l0i) m_l0i->cycle();  // pops L0 miss queue → l0_icnt::push
+  // Step 3f.B.3 will also tick m_streambuf here.
+}
+
+// Phase 3 Step 3f.B.2 — l0_icnt full implementation.
 //
-// Methods here are wired but the class is dormant: shader_core_ctx
-// does not instantiate m_l0_icnt unless Step 3f.B.2 is enabled, so
-// nothing in this file's actual exec path reaches l0_icnt code yet.
-// The skeleton exists to:
-//   - establish ABI / file layout for 3f.B.2/B.3
-//   - let mem_fetch carry m_subcore_id without dangling references
-//   - keep `--check-omp` byte-identical with Round 4 (since L0 path is
-//     never taken)
+// Per-SM arbiter between per-subcore L0 instruction caches and the
+// SM-shared L1I cache. Models latency in both directions and routes
+// responses by mf->get_subcore_id().
 
 l0_icnt::l0_icnt(unsigned sm_id, unsigned num_subcores,
                  read_only_cache *l1i,
@@ -1197,33 +1248,112 @@ l0_icnt::l0_icnt(unsigned sm_id, unsigned num_subcores,
     : m_sm_id(sm_id),
       m_num_subcores(num_subcores),
       m_l1i(l1i),
+      m_l0s(num_subcores, nullptr),
+      m_req(num_subcores),
+      m_resp(num_subcores),
       m_lat_L0_to_L1(latency_L0_to_L1),
       m_lat_L1_to_L0(latency_L1_to_L0),
+      m_arb_priority(0),
       m_gpu(gpu) {}
 
+void l0_icnt::register_l0(unsigned subcore_id, l0_icache *l0i) {
+  assert(subcore_id < m_l0s.size());
+  m_l0s[subcore_id] = l0i;
+}
+
 void l0_icnt::push(mem_fetch *mf) {
-  // 3f.B.1 skeleton: should not be called yet. Forwarding to L1I is
-  // the safe default if it ever is. When 3f.B.2 lands, this becomes:
-  //   insert mf into m_req_pipes[mf->get_subcore_id()][m_lat_L0_to_L1-1]
-  std::list<cache_event> dummy_events;
-  m_l1i->access(mf->get_addr(), mf, m_gpu->gpu_sim_cycle, dummy_events);
+  // Called from l0_icache::cycle() when it pops its m_miss_queue.
+  // Schedule the mf to arrive at L1I after latency_L0_to_L1 cycles.
+  int sc = mf->get_subcore_id();
+  assert(sc >= 0 && (unsigned)sc < m_num_subcores);
+  unsigned long long now = m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle;
+  m_req[sc].push({mf, now + m_lat_L0_to_L1});
 }
 
 bool l0_icnt::full(unsigned /*size*/, bool /*write*/) const {
-  // 3f.B.1: no internal queue yet, never full. 3f.B.2 returns true
-  // when every subcore's request pipe egress slot is occupied.
+  // Simple bounded model: each subcore's request pipe can hold at
+  // most latency_L0_to_L1 in-flight requests. Any tighter bound
+  // would over-stall L0; any looser would let bubbles accumulate.
+  for (auto const &q : m_req) {
+    if (q.size() >= m_lat_L0_to_L1 + 4) return true;  // small slack
+  }
   return false;
 }
 
 void l0_icnt::cycle() {
-  // 3f.B.1 skeleton: nothing to advance yet. 3f.B.2 implements the
-  // full pipeline tick described in the design doc.
+  unsigned long long now = m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle;
+
+  // 1. Drain L1I response queue (what deliver_l1_response queued via
+  //    L1I->fill). Each ready mf is routed to its originating
+  //    subcore's response pipe with response latency.
+  while (m_l1i->access_ready()) {
+    mem_fetch *mf = m_l1i->next_access();
+    int sc = mf->get_subcore_id();
+    // sc < 0 would mean a non-L0 request slipped through L1I — should
+    // not happen in 3f.B.2 (we route all instr fetches via L0 when
+    // is_L0I_enabled). Defensive: log and route to subcore 0.
+    if (sc < 0 || (unsigned)sc >= m_num_subcores) sc = 0;
+    m_resp[sc].push({mf, now + m_lat_L1_to_L0});
+  }
+
+  // 2. Egress response pipes: deliver to L0s when ready & port free.
+  for (unsigned sc = 0; sc < m_num_subcores; sc++) {
+    while (!m_resp[sc].empty() &&
+           m_resp[sc].front().ready_cycle <= now &&
+           m_l0s[sc] && m_l0s[sc]->fill_port_free()) {
+      m_l0s[sc]->fill(m_resp[sc].front().mf, now);
+      m_resp[sc].pop();
+    }
+  }
+
+  // 3. Egress request pipes: forward ready mfs to L1I.
+  for (unsigned sc = 0; sc < m_num_subcores; sc++) {
+    while (!m_req[sc].empty() && m_req[sc].front().ready_cycle <= now) {
+      mem_fetch *mf = m_req[sc].front().mf;
+      std::list<cache_event> events;
+      enum cache_request_status status =
+          m_l1i->access(mf->get_addr(), mf, now, events);
+      if (status == HIT) {
+        // L1I hit: synthesize a response into our pipe. Note: read_only
+        // cache HIT does NOT enqueue mf into L1I's response queue, so
+        // we own mf here.
+        m_resp[sc].push({mf, now + m_lat_L1_to_L0});
+        m_req[sc].pop();
+      } else if (status == MISS || status == HIT_RESERVED ||
+                 status == SECTOR_MISS) {
+        // L1I now owns mf (it's in m_miss_queue); will come back via
+        // accept_fetch_response → deliver_l1_response.
+        m_req[sc].pop();
+      } else {
+        // RESERVATION_FAIL: don't pop, retry next cycle.
+        break;
+      }
+    }
+  }
 }
 
-void l0_icnt::deliver_l1_response(mem_fetch * /*mf*/,
-                                  unsigned long long /*now*/) {
-  // 3f.B.1 stub: no L0 ever sends a request, so accept_fetch_response
-  // never reaches this. 3f.B.2 wires this to fill the originating L0.
+void l0_icnt::deliver_l1_response(mem_fetch *mf, unsigned long long now) {
+  // mf came back from L2 via interconnect; the L1I MSHR holds it
+  // pending. Forward to L1I->fill so the tag and MSHR are marked
+  // ready; cycle() (this same SM cycle, post-fetch) will then drain
+  // L1I's access_ready queue into the originating subcore's response
+  // pipe.
+  m_l1i->fill(mf, now);
+}
+
+mem_fetch *l0_icnt::try_pop_ready_inst() {
+  // Round-robin scan. m_arb_priority advances each cycle so different
+  // subcores' L0 responses get fair access to the SM-level fetch
+  // buffer (one inst per cycle, vanilla constraint).
+  for (unsigned i = 0; i < m_num_subcores; i++) {
+    unsigned sc = (m_arb_priority + i) % m_num_subcores;
+    if (m_l0s[sc] && m_l0s[sc]->access_ready()) {
+      mem_fetch *mf = m_l0s[sc]->next_access();
+      m_arb_priority = (sc + 1) % m_num_subcores;
+      return mf;
+    }
+  }
+  return nullptr;
 }
 
 void shader_core_ctx::issue() {

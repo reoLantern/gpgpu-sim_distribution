@@ -1505,6 +1505,31 @@ class read_only_cache : public baseline_cache {
                        new_tag_array) {}
 };
 
+// Phase 3 Step 3f.B.2 — per-subcore L0 instruction cache.
+//
+// Sits in front of the SM-shared L1I via an l0_icnt arbiter (its
+// memport). Inherits all of read_only_cache's MSHR + fill chain
+// machinery; only adds subcore identity (used by l0_icnt to route
+// L1I responses back to the originating L0).
+//
+// Step 3f.B.3 will override access() / cycle() to integrate stream
+// buffer prefetcher; for 3f.B.2 the class is a thin identity wrapper.
+class l0_icache : public read_only_cache {
+ public:
+  l0_icache(const char *name, cache_config &config, int sm_id,
+            int subcore_id, mem_fetch_interface *memport,
+            enum mem_fetch_status status, enum cache_gpu_level level,
+            gpgpu_sim *gpu)
+      : read_only_cache(name, config, sm_id, /*type_id*/ subcore_id,
+                        memport, status, level, gpu),
+        m_subcore_id(subcore_id) {}
+
+  unsigned subcore_id() const { return m_subcore_id; }
+
+ private:
+  unsigned m_subcore_id;
+};
+
 /// Data cache - Implements common functions for L1 and L2 data cache
 class data_cache : public baseline_cache {
  public:

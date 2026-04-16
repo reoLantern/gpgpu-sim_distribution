@@ -43,6 +43,7 @@
 #include <deque>
 #include <list>
 #include <map>
+#include <queue>
 #include <set>
 #include <utility>
 #include <vector>
@@ -763,16 +764,28 @@ class subcore {
   // shader_core_ctx::issue() in round-robin order.
   void issue();
 
-  // Phase 3 Step 3f.A.2 — fetch attachment point.
-  // For now (3f.A.2): a thin wrapper around the SM's shared L1I cache.
-  // After 3f.B: this consults a per-subcore L0 I-cache first, falling
-  // back to L1I via L0_icnt only on L0 miss. After 3f.C: prefetched
-  // lines from this subcore's stream buffer are checked between L0 and
-  // L1I. SM-level fetch keeps the warp-selection round-robin (so the
-  // sub-step is byte-identical) and only delegates the cache access.
+  // Phase 3 Step 3f — fetch attachment point.
+  //   3f.A.2 wired this as a thin wrapper around the SM's L1I.
+  //   3f.B.2 routes through m_l0i when installed (per-subcore L0 cache
+  //          backed by l0_icnt); falls back to L1I when not.
+  // The mf is stamped with this subcore's id so accept_fetch_response
+  // can route the eventual L1I response back via l0_icnt.
   enum cache_request_status try_fetch_warp(
       class mem_fetch *mf, address_type ppc,
       std::list<class cache_event> &events, unsigned long long now);
+
+  // Phase 3 Step 3f.B.2 — install per-subcore L0 cache. Called by SM
+  // setup once per subcore when is_L0I_enabled is true. Lifetime
+  // (delete) belongs to subcore.
+  void install_l0i(class l0_icache *l0i);
+
+  // Phase 3 Step 3f.B.2 — tick cache state machines owned by this
+  // subcore. Called from shader_core_ctx::fetch() once per SM cycle
+  // (after l0_icnt::cycle()). Drives l0_icache pop-from-miss-queue
+  // toward l0_icnt, and (in 3f.B.3) the stream buffer.
+  void cycle_caches();
+
+  class l0_icache *l0i() const { return m_l0i; }
 
   unsigned id() const { return m_subcore_id; }
   scheduler_unit *scheduler() const { return m_scheduler; }
@@ -783,11 +796,15 @@ class subcore {
   scheduler_unit *m_scheduler;    // owned (lifetime tied to subcore;
                                   // matches vanilla "leaks at SM dtor")
 
-  // Step 3e/3f/3h will add (commented out for now to make placement clear):
-  //   register_file_cache *m_rfc;     // Step 3e
-  //   l0_icache *m_l0i;                // Step 3f
-  //   stream_buffer *m_streambuf;      // Step 3f
-  //   per_subcore_mem_queue *m_mem_q;  // Step 3h
+  // Phase 3 Step 3f.B.2: per-subcore L0 instruction cache. nullptr
+  // when -is_L0I_enabled is 0 (vanilla path: try_fetch_warp goes
+  // straight to m_sm->m_L1I). Owned by this subcore.
+  class l0_icache *m_l0i = nullptr;
+
+  // Step 3e/3h will add:
+  //   register_file_cache *m_rfc;       // Step 3e
+  //   stream_buffer *m_streambuf;       // Step 3f.B.3
+  //   per_subcore_mem_queue *m_mem_q;   // Step 3h
 };
 
 class opndcoll_rfu_t {  // operand collector based register file unit
@@ -2998,20 +3015,27 @@ class perfect_memory_interface : public mem_fetch_interface {
   simt_core_cluster *m_cluster;
 };
 
-// Phase 3 Step 3f.B.1 — L0_icnt skeleton.
+// Phase 3 Step 3f.B — L0_icnt arbiter.
 //
-// Per-SM arbiter sitting between per-subcore L0 instruction caches and
-// the shared L1I cache. Models the latency of L0 -> L1I requests and
-// L1I -> L0 responses, and routes responses back to the originating
-// subcore via mf->get_subcore_id().
+// Per-SM mem_fetch_interface that sits between per-subcore L0
+// instruction caches (l0_icache) and the SM-shared L1I cache. It
+// models the latency of L0 -> L1I requests (latency_L0_to_L1) and
+// L1I -> L0 responses (latency_L1_to_L0), and routes responses back
+// to the originating subcore via mf->get_subcore_id().
 //
-// Step 3f.B.1 scope (this commit): skeleton only. The L0 is not yet
-// installed at any subcore (m_l0_icnt stays nullptr unless explicitly
-// constructed by a future substep), so this class is dormant code.
-// Methods are wired but exercise only the trivial pass-through path.
-//
-// Step 3f.B.2 will instantiate it with real per-subcore L0 caches and
-// non-zero latency_L0_to_L1.
+// 3f.B.1 introduced this as a dormant skeleton (no L0 installed
+// anywhere). 3f.B.2 wires up:
+//   - real latency pipelines (one queue per subcore, by ready cycle)
+//   - real request egress: dequeue when ready_cycle <= now, call
+//     m_l1i->access; on L1I HIT enqueue response with response
+//     latency, on MISS leave mf to come back through L1I's normal
+//     fill path → accept_fetch_response → deliver_l1_response
+//   - real response egress: dequeue when ready, call l0->fill
+//   - deliver_l1_response: forward mf into L1I->fill so the L1I tag
+//     and MSHR are properly updated, then drain L1I's response queue
+//     into our per-subcore response pipes (cycle() does the drain).
+class l0_icache;  // forward (full def in gpu-cache.h)
+
 class l0_icnt : public mem_fetch_interface {
  public:
   l0_icnt(unsigned sm_id, unsigned num_subcores,
@@ -3019,42 +3043,46 @@ class l0_icnt : public mem_fetch_interface {
           unsigned latency_L0_to_L1, unsigned latency_L1_to_L0,
           gpgpu_sim *gpu);
 
+  // Called once per subcore during shader_core_ctx setup so l0_icnt
+  // can route L1I responses back to the originating L0.
+  void register_l0(unsigned subcore_id, l0_icache *l0i);
+
   // mem_fetch_interface contract.
-  // push(): called by an l0_icache::cycle() when it has a miss to
-  //   forward to L1I. Inserts mf into the per-subcore request pipe at
-  //   the deepest stage (latency_L0_to_L1 - 1), so the next
-  //   m_lat_L0_to_L1 cycle()s shift it toward L1.
-  // full(): returns true if every subcore's request pipe egress slot is
-  //   occupied (back-pressures the L0 cache).
   void push(mem_fetch *mf) override;
   bool full(unsigned size, bool write) const override;
 
-  // Per-SM cycle tick. Called from shader_core_ctx::cycle() before
-  // the per-subcore caches cycle. Order:
-  //   1. drain L1I response queue (access_ready / next_access) into
-  //      response pipes (matches mf->get_subcore_id())
-  //   2. advance response pipes by 1 stage; egress entries call
-  //      target l0i->fill(mf, time)
-  //   3. advance request pipes by 1 stage; egress entries call
-  //      m_l1i->access(addr, mf, time, events). On L1I HIT: response
-  //      is synthesized immediately into target subcore's response
-  //      pipe. On L1I MISS: mf is in L1I's m_miss_queue and will come
-  //      back via accept_fetch_response (which routes back here).
+  // Per-SM cycle tick. Run BEFORE individual l0i->cycle() so any
+  // L1I responses that just landed propagate to the L0 fills before
+  // l0i drains its own miss queue this cycle.
   void cycle();
 
-  // Called by accept_fetch_response when mf->get_subcore_id() >= 0,
-  // i.e. the original demand fetch came from an L0. Equivalent to
-  // L1I->fill but routes back to the originating L0 with
-  // latency_L1_to_L0 modeled. Step 3f.B.1: no-op stub (L0 path is not
-  // active).
+  // Called by shader_core_ctx::accept_fetch_response when
+  // mf->get_subcore_id() >= 0. Forwards to L1I->fill so the L1I tag
+  // and MSHR get marked ready; cycle() then drains L1I's response
+  // queue into the appropriate subcore's response pipe.
   void deliver_l1_response(mem_fetch *mf, unsigned long long now);
 
+  // Drain helper for shader_core_ctx::fetch(): returns the next ready
+  // L0 response across all subcores in round-robin order, or nullptr
+  // if none ready. Caller is responsible for placing the inst into
+  // m_inst_fetch_buffer and deleting mf.
+  mem_fetch *try_pop_ready_inst();
+
  private:
+  struct queued_mf {
+    mem_fetch *mf;
+    unsigned long long ready_cycle;
+  };
+
   unsigned m_sm_id;
   unsigned m_num_subcores;
   read_only_cache *m_l1i;
+  std::vector<l0_icache *> m_l0s;            // by subcore_id
+  std::vector<std::queue<queued_mf>> m_req;  // L0 -> L1I, per subcore
+  std::vector<std::queue<queued_mf>> m_resp; // L1I -> L0, per subcore
   unsigned m_lat_L0_to_L1;
   unsigned m_lat_L1_to_L0;
+  unsigned m_arb_priority;  // round-robin pointer for try_pop_ready_inst
   gpgpu_sim *m_gpu;
 };
 
