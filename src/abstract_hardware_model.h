@@ -189,6 +189,7 @@ enum _memory_op_t { no_memory_op = 0, memory_load, memory_store };
 
 #include <assert.h>
 #include <atomic>
+#include <stdint.h>
 #include <stdlib.h>
 #include <algorithm>
 #include <bitset>
@@ -196,6 +197,8 @@ enum _memory_op_t { no_memory_op = 0, memory_load, memory_store };
 #include <list>
 #include <map>
 #include <vector>
+
+#include "ctrl_bits.h"
 
 #if !defined(__VECTOR_TYPES_H__)
 #include "vector_types.h"
@@ -1250,6 +1253,7 @@ class warp_inst_t : public inst_t {
   bool m_isatomic;
   bool should_do_atomic;
   bool m_is_printf;
+  ctrl_bits_t m_ctrl_bits;  // control bits from trace header (NVBit v1.8+)
   unsigned m_warp_id;
   unsigned m_dynamic_warp_id;
   const core_config *m_config;

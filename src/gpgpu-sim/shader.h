@@ -101,6 +101,81 @@ class thread_ctx_t {
   bool m_active;
 };
 
+/* Per-warp dependency state for control-bits-based dependence management.
+ * Replaces traditional scoreboard for fixed-latency instructions when
+ * control bits are available in the trace header.
+ *
+ * Lifecycle per instruction issue:
+ *   1. Check is_ready(b_mask) — stall==0 && !yield && all waited barriers==0
+ *   2. Issue → set_from_issued(cb) — set stall, yield, allocate r/w barriers
+ *   3. Each cycle: cycle() — decrement stall counter, clear yield
+ *   4. At instruction completion: decrement_barrier(bar_id) for w-bar
+ *      (r-bar decremented when read operands are ready)
+ */
+class warp_dependency_state {
+ public:
+  static constexpr unsigned NUM_BARRIERS = 6;
+
+  warp_dependency_state() { reset(); }
+
+  void reset() {
+    m_stall_counter = 0;
+    m_yield = false;
+    for (unsigned i = 0; i < NUM_BARRIERS; i++) m_wait_barriers[i] = 0;
+  }
+
+  /* Called every cycle to advance stall/yield state. */
+  void cycle() {
+    if (m_stall_counter > 0) m_stall_counter--;
+    m_yield = false;  // yield lasts exactly 1 cycle
+  }
+
+  /* Set state from the just-issued instruction's control bits. */
+  void set_from_issued(const ctrl_bits_t &cb) {
+    m_stall_counter = cb.stall();
+    m_yield = cb.is_yield();
+    if (cb.has_r_bar()) m_wait_barriers[cb.r_bar()]++;
+    if (cb.has_w_bar()) m_wait_barriers[cb.w_bar()]++;
+  }
+
+  /* Check if warp is ready to issue (for next instruction's b-mask check). */
+  bool is_stall_ready() const { return m_stall_counter == 0; }
+  bool is_yield_ready() const { return !m_yield; }
+
+  /* Check wait barriers: all bits set in b_mask must have counter == 0. */
+  bool is_barriers_ready(unsigned b_mask) const {
+    for (unsigned i = 0; i < NUM_BARRIERS; i++) {
+      if ((b_mask >> i) & 1) {
+        if (m_wait_barriers[i] > 0) return false;
+      }
+    }
+    return true;
+  }
+
+  /* Combined readiness check for issue. */
+  bool is_ready(unsigned b_mask) const {
+    return is_stall_ready() && is_yield_ready() && is_barriers_ready(b_mask);
+  }
+
+  void increment_barrier(unsigned bar_id) {
+    assert(bar_id < NUM_BARRIERS);
+    m_wait_barriers[bar_id]++;
+  }
+
+  void decrement_barrier(unsigned bar_id) {
+    assert(bar_id < NUM_BARRIERS);
+    assert(m_wait_barriers[bar_id] > 0);
+    m_wait_barriers[bar_id]--;
+  }
+
+  unsigned stall_counter() const { return m_stall_counter; }
+
+ private:
+  unsigned m_stall_counter;       // linear decrement, 0 = ready
+  bool m_yield;                   // forces 1 cycle of warp switch
+  unsigned m_wait_barriers[NUM_BARRIERS];  // dependence counters 0-5
+};
+
 class shd_warp_t {
  public:
   shd_warp_t(class shader_core_ctx *shader, unsigned warp_size)
@@ -109,12 +184,16 @@ class shd_warp_t {
     m_inst_in_pipeline = 0;
     reset();
   }
+  warp_dependency_state &dep_state() { return m_dep_state; }
+  const warp_dependency_state &dep_state() const { return m_dep_state; }
+
   void reset() {
     assert(m_stores_outstanding == 0);
     assert(m_inst_in_pipeline == 0);
     m_imiss_pending = false;
     m_warp_id = (unsigned)-1;
     m_dynamic_warp_id = (unsigned)-1;
+    m_dep_state.reset();
     n_completed = m_warp_size;
     m_n_atomic = 0;
     m_membar = false;
@@ -281,6 +360,7 @@ class shd_warp_t {
 
  private:
   static const unsigned IBUFFER_SIZE = 2;
+  warp_dependency_state m_dep_state;
   class shader_core_ctx *m_shader;
   unsigned long long m_streamID;
   unsigned m_cta_id;
