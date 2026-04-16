@@ -1122,10 +1122,26 @@ void shader_core_ctx::issue_warp(register_set &pipe_reg_set,
 
   updateSIMTStack(warp_id, *pipe_reg);
 
-  // Traditional scoreboard: still reserve for WAR/WAW tracking even with
-  // control bits (needed for variable-latency instructions whose completion
-  // time is unknown to the compiler's static stall counts).
-  m_scoreboard->reserveRegisters(*pipe_reg);
+  // Phase 3 Step 3d: when control bits are present, bypass the scoreboard
+  // entirely (don't reserve, don't release — same path as MICRO 2025's
+  // remodel mode). The compiler-inserted stall counters and barriers
+  // suffice for dependency tracking; reserving on issue causes false
+  // "already reserved" aborts when a follow-up instruction overwrites
+  // an in-flight register before that register's WB completes (e.g. LDC.64
+  // writing R2:R3 followed by IMAD.WIDE writing R2:R3 — the compiler knows
+  // this is safe via control bits, but the scoreboard's reserve invariant
+  // does not).
+  //
+  // Fallbacks (kept for diagnosis / older traces):
+  //   - GPGPUSIM_CB_DISABLE=1 forces vanilla scoreboard path
+  //   - GPGPUSIM_CB_DUAL=1 keeps reserve+release for round-2 behavior
+  //   - Trace lacks ctrl_bits → automatic vanilla fallback
+  bool ctrl_bits_present = (*pipe_reg)->get_ctrl_bits().valid() &&
+                           !getenv("GPGPUSIM_CB_DISABLE");
+  bool use_scoreboard = !ctrl_bits_present || getenv("GPGPUSIM_CB_DUAL");
+  if (use_scoreboard) {
+    m_scoreboard->reserveRegisters(*pipe_reg);
+  }
 
   // Control-bits dependency state: set stall counter, yield, and allocate
   // r/w barriers from the just-issued instruction.
@@ -1347,16 +1363,39 @@ void scheduler_unit::cycle() {
           warp(warp_id).ibuffer_flush();
         } else {
           valid_inst = true;
-          // Dependency check: scoreboard (register-level) is always checked.
-          // When control bits are available, ALSO check stall/yield/barriers
-          // from dep_state — both must pass for the instruction to issue.
-          bool scoreboard_ok = !m_scoreboard->checkCollision(warp_id, pI);
-          bool ctrl_bits_ok = true;
-          if (pI->get_ctrl_bits().valid() && !getenv("GPGPUSIM_CB_DISABLE")) {
-            ctrl_bits_ok = warp(warp_id).dep_state().is_ready(
+          // Phase 3 Step 3d: trust compiler-inserted control bits as the
+          // sole dependency source when present. The compiler encodes RAW
+          // (via stall counter + r/w-bar), WAR (via r-bar), and explicit
+          // waits (b-mask), so the conservative RAW scoreboard becomes
+          // redundant and over-stalls compute-bound kernels.
+          //
+          // Fallbacks:
+          //   - GPGPUSIM_CB_DISABLE=1 forces vanilla scoreboard-only path
+          //     (for A/B sim comparison).
+          //   - GPGPUSIM_CB_DUAL=1 keeps round-2 dual-check behavior
+          //     (scoreboard AND ctrl_bits) for regression diagnosis.
+          //   - Traces lacking ctrl_bits (older NVBit) automatically fall
+          //     back to scoreboard.
+          //
+          // Scoreboard reserve+release at issue/WB is unchanged — its
+          // state stays consistent for any code path that still queries
+          // it (legacy paths, debug), but the check is bypassed here.
+          bool ctrl_bits_present =
+              pI->get_ctrl_bits().valid() && !getenv("GPGPUSIM_CB_DISABLE");
+          bool dep_ok;
+          if (ctrl_bits_present) {
+            bool ctrl_bits_ok = warp(warp_id).dep_state().is_ready(
                 pI->get_ctrl_bits().b_mask());
+            if (getenv("GPGPUSIM_CB_DUAL")) {
+              bool scoreboard_ok = !m_scoreboard->checkCollision(warp_id, pI);
+              dep_ok = scoreboard_ok && ctrl_bits_ok;
+            } else {
+              dep_ok = ctrl_bits_ok;
+            }
+          } else {
+            dep_ok = !m_scoreboard->checkCollision(warp_id, pI);
           }
-          if (scoreboard_ok && ctrl_bits_ok) {
+          if (dep_ok) {
             SCHED_DPRINTF(
                 "Warp (warp_id %u, dynamic_warp_id %u) passes dependency "
                 "check\n",
