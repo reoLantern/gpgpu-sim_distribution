@@ -204,68 +204,75 @@ void shader_core_ctx::create_schedulers() {
           : NUM_CONCRETE_SCHEDULERS;
   assert(scheduler != NUM_CONCRETE_SCHEDULERS);
 
+
+  // Phase 3 Step 3g.1: each scheduler is wrapped in a subcore. Pure
+  // refactor — same scheduler instances, same construction args, same
+  // count (= gpgpu_num_sched_per_core).
   for (unsigned i = 0; i < m_config->gpgpu_num_sched_per_core; i++) {
+    scheduler_unit *sched = nullptr;
     switch (scheduler) {
       case CONCRETE_SCHEDULER_LRR:
-        schedulers.push_back(new lrr_scheduler(
+        sched = new lrr_scheduler(
             m_stats, this, m_scoreboard, m_simt_stack, &m_warp,
             &m_pipeline_reg[ID_OC_SP], &m_pipeline_reg[ID_OC_DP],
             &m_pipeline_reg[ID_OC_SFU], &m_pipeline_reg[ID_OC_INT],
             &m_pipeline_reg[ID_OC_TENSOR_CORE], m_specilized_dispatch_reg,
-            &m_pipeline_reg[ID_OC_MEM], i));
+            &m_pipeline_reg[ID_OC_MEM], i);
         break;
       case CONCRETE_SCHEDULER_TWO_LEVEL_ACTIVE:
-        schedulers.push_back(new two_level_active_scheduler(
+        sched = new two_level_active_scheduler(
             m_stats, this, m_scoreboard, m_simt_stack, &m_warp,
             &m_pipeline_reg[ID_OC_SP], &m_pipeline_reg[ID_OC_DP],
             &m_pipeline_reg[ID_OC_SFU], &m_pipeline_reg[ID_OC_INT],
             &m_pipeline_reg[ID_OC_TENSOR_CORE], m_specilized_dispatch_reg,
-            &m_pipeline_reg[ID_OC_MEM], i, m_config->gpgpu_scheduler_string));
+            &m_pipeline_reg[ID_OC_MEM], i, m_config->gpgpu_scheduler_string);
         break;
       case CONCRETE_SCHEDULER_GTO:
-        schedulers.push_back(new gto_scheduler(
+        sched = new gto_scheduler(
             m_stats, this, m_scoreboard, m_simt_stack, &m_warp,
             &m_pipeline_reg[ID_OC_SP], &m_pipeline_reg[ID_OC_DP],
             &m_pipeline_reg[ID_OC_SFU], &m_pipeline_reg[ID_OC_INT],
             &m_pipeline_reg[ID_OC_TENSOR_CORE], m_specilized_dispatch_reg,
-            &m_pipeline_reg[ID_OC_MEM], i));
+            &m_pipeline_reg[ID_OC_MEM], i);
         break;
       case CONCRETE_SCHEDULER_RRR:
-        schedulers.push_back(new rrr_scheduler(
+        sched = new rrr_scheduler(
             m_stats, this, m_scoreboard, m_simt_stack, &m_warp,
             &m_pipeline_reg[ID_OC_SP], &m_pipeline_reg[ID_OC_DP],
             &m_pipeline_reg[ID_OC_SFU], &m_pipeline_reg[ID_OC_INT],
             &m_pipeline_reg[ID_OC_TENSOR_CORE], m_specilized_dispatch_reg,
-            &m_pipeline_reg[ID_OC_MEM], i));
+            &m_pipeline_reg[ID_OC_MEM], i);
         break;
       case CONCRETE_SCHEDULER_OLDEST_FIRST:
-        schedulers.push_back(new oldest_scheduler(
+        sched = new oldest_scheduler(
             m_stats, this, m_scoreboard, m_simt_stack, &m_warp,
             &m_pipeline_reg[ID_OC_SP], &m_pipeline_reg[ID_OC_DP],
             &m_pipeline_reg[ID_OC_SFU], &m_pipeline_reg[ID_OC_INT],
             &m_pipeline_reg[ID_OC_TENSOR_CORE], m_specilized_dispatch_reg,
-            &m_pipeline_reg[ID_OC_MEM], i));
+            &m_pipeline_reg[ID_OC_MEM], i);
         break;
       case CONCRETE_SCHEDULER_WARP_LIMITING:
-        schedulers.push_back(new swl_scheduler(
+        sched = new swl_scheduler(
             m_stats, this, m_scoreboard, m_simt_stack, &m_warp,
             &m_pipeline_reg[ID_OC_SP], &m_pipeline_reg[ID_OC_DP],
             &m_pipeline_reg[ID_OC_SFU], &m_pipeline_reg[ID_OC_INT],
             &m_pipeline_reg[ID_OC_TENSOR_CORE], m_specilized_dispatch_reg,
-            &m_pipeline_reg[ID_OC_MEM], i, m_config->gpgpu_scheduler_string));
+            &m_pipeline_reg[ID_OC_MEM], i, m_config->gpgpu_scheduler_string);
         break;
       default:
         abort();
     };
+    m_subcores.push_back(new subcore(this, i, sched));
   }
 
   for (unsigned i = 0; i < m_warp.size(); i++) {
-    // distribute i's evenly though schedulers;
-    schedulers[i % m_config->gpgpu_num_sched_per_core]->add_supervised_warp_id(
-        i);
+    // distribute warp i's evenly through subcores' schedulers
+    m_subcores[i % m_config->gpgpu_num_sched_per_core]
+        ->scheduler()
+        ->add_supervised_warp_id(i);
   }
   for (unsigned i = 0; i < m_config->gpgpu_num_sched_per_core; ++i) {
-    schedulers[i]->done_adding_supervised_warps();
+    m_subcores[i]->scheduler()->done_adding_supervised_warps();
   }
 }
 
@@ -1152,19 +1159,17 @@ void shader_core_ctx::issue_warp(register_set &pipe_reg_set,
   m_warp[warp_id]->set_next_pc(next_inst->pc + next_inst->isize);
 }
 
-void shader_core_ctx::issue() {
-  // Ensure fair round robin issu between schedulers
-  unsigned j;
-  for (unsigned i = 0; i < schedulers.size(); i++) {
-    j = (Issue_Prio + i) % schedulers.size();
-    schedulers[j]->cycle();
-  }
-  Issue_Prio = (Issue_Prio + 1) % schedulers.size();
+// Phase 3 Step 3g.1: subcore::issue() drives one cycle of the wrapped
+// scheduler. Future steps add RFC / L0 I-cache / mem queue cycles here.
+void subcore::issue() { m_scheduler->cycle(); }
 
-  // really is issue;
-  // for (unsigned i = 0; i < schedulers.size(); i++) {
-  //    schedulers[i]->cycle();
-  //}
+void shader_core_ctx::issue() {
+  // Round-robin across subcores for fair issue priority.
+  for (unsigned i = 0; i < m_subcores.size(); i++) {
+    unsigned j = (Issue_Prio + i) % m_subcores.size();
+    m_subcores[j]->issue();
+  }
+  Issue_Prio = (Issue_Prio + 1) % m_subcores.size();
 }
 
 shd_warp_t &scheduler_unit::warp(int i) { return *((*m_warp)[i]); }

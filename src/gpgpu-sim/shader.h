@@ -734,6 +734,51 @@ class swl_scheduler : public scheduler_unit {
   unsigned m_num_warps_to_limit;
 };
 
+// Phase 3 Step 3g.1 — Subcore class.
+//
+// Vanilla Accel-Sim already has 4 sub-cores per SM at the logical level
+// (gpgpu_num_sched_per_core schedulers), but their state is scattered as
+// std::vector indexed by sched_id inside shader_core_ctx. This class makes
+// the per-sub-core ownership explicit so that future steps (3e RFC,
+// 3f L0 I-cache + stream buffer, 3h per-subcore mem queue) have a clean
+// place to attach state, instead of growing more sched_id-indexed arrays
+// on the SM class.
+//
+// Scope intentionally minimal in 3g.1: subcore owns only the
+// scheduler_unit. Behavior must be byte-identical to pre-3g.1 — Round 4
+// MAPE on the 12-kernel suite must reproduce Round 3's gpu_sim_cycle
+// counts exactly. Once verified, 3e/3f/3h add private members here.
+//
+// OpenMP scope is unchanged: subcores are serial inside an SM (matches
+// MICRO 2025 design); SMs are parallelized at cluster level. No new
+// concurrency is introduced.
+class shader_core_ctx;
+class scheduler_unit;
+class subcore {
+ public:
+  subcore(shader_core_ctx *sm, unsigned subcore_id, scheduler_unit *sched)
+      : m_sm(sm), m_subcore_id(subcore_id), m_scheduler(sched) {}
+
+  // Drives one cycle of this subcore's scheduler. Called serially from
+  // shader_core_ctx::issue() in round-robin order.
+  void issue();
+
+  unsigned id() const { return m_subcore_id; }
+  scheduler_unit *scheduler() const { return m_scheduler; }
+
+ private:
+  shader_core_ctx *m_sm;          // back-pointer to shared SM resources
+  unsigned m_subcore_id;
+  scheduler_unit *m_scheduler;    // owned (lifetime tied to subcore;
+                                  // matches vanilla "leaks at SM dtor")
+
+  // Step 3e/3f/3h will add (commented out for now to make placement clear):
+  //   register_file_cache *m_rfc;     // Step 3e
+  //   l0_icache *m_l0i;                // Step 3f
+  //   stream_buffer *m_streambuf;      // Step 3f
+  //   per_subcore_mem_queue *m_mem_q;  // Step 3h
+};
+
 class opndcoll_rfu_t {  // operand collector based register file unit
  public:
   // constructors
@@ -2671,8 +2716,11 @@ class shader_core_ctx : public core_t {
   int m_active_warps;
   std::vector<register_set *> m_specilized_dispatch_reg;
 
-  // schedule
-  std::vector<scheduler_unit *> schedulers;
+  // schedule — Phase 3 Step 3g.1: schedulers now wrapped per subcore.
+  // The subcore class owns the scheduler_unit pointer; SM iterates
+  // m_subcores[] for issue. Same number of subcores as
+  // gpgpu_num_sched_per_core (= 4 on Turing).
+  std::vector<subcore *> m_subcores;
 
   // issue
   unsigned int Issue_Prio;
