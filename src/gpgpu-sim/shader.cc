@@ -1005,10 +1005,16 @@ void shader_core_ctx::fetch() {
           if (m_config->perfect_inst_const_cache) {
             status = HIT;
             shader_cache_access_log(m_sid, INSTRUCTION, 0);
-          } else
-            status = m_L1I->access(
-                (new_addr_type)ppc, mf,
-                m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle, events);
+          } else {
+            // Phase 3 Step 3f.A.2: route through the warp's owning
+            // subcore. Currently a thin wrapper around m_L1I->access;
+            // 3f.B inserts a per-subcore L0 cache + L0_icnt arbiter
+            // between the wrapper and m_L1I.
+            unsigned sc_id = warp_id % m_config->gpgpu_num_sched_per_core;
+            status = m_subcores[sc_id]->try_fetch_warp(
+                mf, ppc, events,
+                m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
+          }
 
           if (status == MISS) {
             m_last_warp_fetched = warp_id;
@@ -1162,6 +1168,16 @@ void shader_core_ctx::issue_warp(register_set &pipe_reg_set,
 // Phase 3 Step 3g.1: subcore::issue() drives one cycle of the wrapped
 // scheduler. Future steps add RFC / L0 I-cache / mem queue cycles here.
 void subcore::issue() { m_scheduler->cycle(); }
+
+// Phase 3 Step 3f.A.2: pure delegation to shared L1I (byte-identical
+// to vanilla shader_core_ctx::fetch's m_L1I->access call). Step 3f.B
+// will replace the body with: probe L0 first, fall back to L1I via
+// L0_icnt only on L0 miss.
+enum cache_request_status subcore::try_fetch_warp(
+    mem_fetch *mf, address_type ppc, std::list<cache_event> &events,
+    unsigned long long now) {
+  return m_sm->m_L1I->access((new_addr_type)ppc, mf, now, events);
+}
 
 void shader_core_ctx::issue() {
   // Round-robin across subcores for fair issue priority.

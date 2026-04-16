@@ -763,6 +763,17 @@ class subcore {
   // shader_core_ctx::issue() in round-robin order.
   void issue();
 
+  // Phase 3 Step 3f.A.2 — fetch attachment point.
+  // For now (3f.A.2): a thin wrapper around the SM's shared L1I cache.
+  // After 3f.B: this consults a per-subcore L0 I-cache first, falling
+  // back to L1I via L0_icnt only on L0 miss. After 3f.C: prefetched
+  // lines from this subcore's stream buffer are checked between L0 and
+  // L1I. SM-level fetch keeps the warp-selection round-robin (so the
+  // sub-step is byte-identical) and only delegates the cache access.
+  enum cache_request_status try_fetch_warp(
+      class mem_fetch *mf, address_type ppc,
+      std::list<class cache_event> &events, unsigned long long now);
+
   unsigned id() const { return m_subcore_id; }
   scheduler_unit *scheduler() const { return m_scheduler; }
 
@@ -2625,6 +2636,8 @@ class shader_core_ctx : public core_t {
   friend class scheduler_unit;  // this is needed to use private issue warp.
   friend class TwoLevelScheduler;
   friend class LooseRoundRobbinScheduler;
+  friend class subcore;  // subcore::try_fetch_warp accesses m_L1I (3f.A.2);
+                         // subcore::* will own L0/RFC/mem-queue state too
   virtual void issue_warp(register_set &warp, const warp_inst_t *pI,
                           const active_mask_t &active_mask, unsigned warp_id,
                           unsigned sch_id);
