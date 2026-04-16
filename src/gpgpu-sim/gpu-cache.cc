@@ -34,6 +34,7 @@
 #include <assert.h>
 #include "gpu-sim.h"
 #include "hashing.h"
+#include "shader.h"  // for stream_buffer::on_l0_demand_miss (Phase 3 Step 3f.B.3)
 #include "stat-tool.h"
 
 // used to allocate memory that is large enough to adapt the changes in cache
@@ -1921,6 +1922,24 @@ enum cache_request_status read_only_cache::access(
                        m_stats.select_stats_status(status, cache_status),
                        mf->get_streamID());
   return cache_status;
+}
+
+// Phase 3 Step 3f.B.3 — L0 access with stream buffer notification.
+// Inherits the base read_only_cache machinery (tag probe, MSHR,
+// miss-queue-to-memport). Adds: on demand-fetch miss, kick the
+// stream buffer to extend its sequential prefetch stream from this
+// address. Prefetch mfs themselves (is_prefetch == true) skip the
+// notification so SB doesn't feedback-loop on its own prefetches.
+enum cache_request_status l0_icache::access(
+    new_addr_type addr, mem_fetch *mf, unsigned time,
+    std::list<cache_event> &events) {
+  enum cache_request_status status =
+      read_only_cache::access(addr, mf, time, events);
+  if (m_sb && !mf->is_prefetch() &&
+      (status == MISS || status == HIT_RESERVED || status == SECTOR_MISS)) {
+    m_sb->on_l0_demand_miss(m_config.block_addr(addr));
+  }
+  return status;
 }
 
 //! A general function that takes the result of a tag_array probe

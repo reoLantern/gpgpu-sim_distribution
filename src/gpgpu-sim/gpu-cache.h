@@ -1508,12 +1508,16 @@ class read_only_cache : public baseline_cache {
 // Phase 3 Step 3f.B.2 — per-subcore L0 instruction cache.
 //
 // Sits in front of the SM-shared L1I via an l0_icnt arbiter (its
-// memport). Inherits all of read_only_cache's MSHR + fill chain
-// machinery; only adds subcore identity (used by l0_icnt to route
-// L1I responses back to the originating L0).
-//
-// Step 3f.B.3 will override access() / cycle() to integrate stream
-// buffer prefetcher; for 3f.B.2 the class is a thin identity wrapper.
+// memport). Inherits read_only_cache's MSHR + fill chain machinery
+// and adds:
+//   - subcore identity (used by l0_icnt to route L1I responses back)
+//   - 3f.B.3: an optional stream_buffer hook. access() notifies the
+//     SB on demand-fetch miss so it can extend the sequential stream;
+//     SB's own cycle() (driven by subcore::cycle_caches) reissues
+//     prefetches via this same access() — coalesced naturally by L0
+//     MSHR with any subsequent demand fetch to the same line.
+class stream_buffer;  // fwd
+
 class l0_icache : public read_only_cache {
  public:
   l0_icache(const char *name, cache_config &config, int sm_id,
@@ -1526,8 +1530,21 @@ class l0_icache : public read_only_cache {
 
   unsigned subcore_id() const { return m_subcore_id; }
 
+  // Step 3f.B.3: install (after construction). nullptr means
+  // prefetcher disabled — access() takes the standard path.
+  void attach_streambuf(stream_buffer *sb) { m_sb = sb; }
+
+  // Override to add the stream-buffer notification hook on miss.
+  // Demand fetches (mf->is_prefetch() == false) trigger SB extension;
+  // SB-issued prefetches (is_prefetch == true) skip the notification
+  // to avoid an infinite stream-walk feedback loop.
+  enum cache_request_status access(new_addr_type addr, mem_fetch *mf,
+                                    unsigned time,
+                                    std::list<cache_event> &events) override;
+
  private:
   unsigned m_subcore_id;
+  stream_buffer *m_sb = nullptr;
 };
 
 /// Data cache - Implements common functions for L1 and L2 data cache

@@ -290,6 +290,18 @@ void shader_core_ctx::create_schedulers() {
           m_l0_icnt, IN_L1I_MISS_QUEUE, OTHER_GPU_CACHE, m_gpu);
       m_subcores[i]->install_l0i(l0i);
       m_l0_icnt->register_l0(i, l0i);
+
+      // Phase 3 Step 3f.B.3: optional per-L0 stream buffer prefetcher.
+      if (m_config->is_instruction_prefetching_enabled) {
+        stream_buffer *sb = new stream_buffer(
+            m_sid, m_tpc, /*subcore_id*/ i,
+            /*line_size*/ m_config->m_L0I_config.get_line_sz(),
+            /*max_in_flight*/ m_config->prefetch_per_stream_buffer_size,
+            /*max_prefetches_per_cycle*/
+            m_config->num_instruction_prefetches_per_cycle,
+            l0i, m_gpu);
+        m_subcores[i]->install_streambuf(sb);
+      }
     }
   }
 
@@ -1230,9 +1242,108 @@ enum cache_request_status subcore::try_fetch_warp(
 
 void subcore::install_l0i(l0_icache *l0i) { m_l0i = l0i; }
 
+void subcore::install_streambuf(stream_buffer *sb) {
+  m_streambuf = sb;
+  if (m_l0i) m_l0i->attach_streambuf(sb);
+}
+
 void subcore::cycle_caches() {
-  if (m_l0i) m_l0i->cycle();  // pops L0 miss queue → l0_icnt::push
-  // Step 3f.B.3 will also tick m_streambuf here.
+  // Order: SB issues prefetches BEFORE L0 drains its miss queue, so
+  // prefetches and any same-cycle demand misses can ride the same
+  // L0_icnt arbitration window. SB's accesses go through L0 first
+  // (they coalesce in L0 MSHR if a demand for same line is pending),
+  // and L0::cycle() then forwards aggregated misses to L0_icnt.
+  if (m_streambuf) m_streambuf->cycle();
+  if (m_l0i) m_l0i->cycle();
+}
+
+// Phase 3 Step 3f.B.3 — sequential stream buffer prefetcher.
+
+stream_buffer::stream_buffer(unsigned sm_id, unsigned tpc,
+                             unsigned subcore_id, unsigned line_size,
+                             unsigned max_in_flight,
+                             unsigned max_prefetches_per_cycle,
+                             l0_icache *l0i, gpgpu_sim *gpu)
+    : m_sm_id(sm_id),
+      m_tpc(tpc),
+      m_subcore_id(subcore_id),
+      m_line_size(line_size),
+      m_max_in_flight(max_in_flight),
+      m_max_prefetches_per_cycle(max_prefetches_per_cycle),
+      m_l0i(l0i),
+      m_gpu(gpu),
+      m_active(false),
+      m_next_addr_to_prefetch(0),
+      m_in_flight(0) {}
+
+void stream_buffer::on_l0_demand_miss(new_addr_type missed_addr) {
+  // Restart / extend the sequential stream from one line past the
+  // current demand miss. If we're already prefetching at exactly this
+  // address, do nothing (avoid bumping the cursor backwards or
+  // discarding in-flight prefetches that will service this demand).
+  new_addr_type next = missed_addr + m_line_size;
+  if (m_active && m_next_addr_to_prefetch == next) return;
+  m_active = true;
+  m_next_addr_to_prefetch = next;
+}
+
+mem_fetch *stream_buffer::make_prefetch_mf(new_addr_type addr,
+                                           unsigned long long now) const {
+  // Synthetic mem_fetch carrying just enough state for L0/L0_icnt/L1I
+  // to route it: INST_ACC_R access type, prefetch flag set, no real
+  // warp/PC association.
+  mem_access_t acc(INST_ACC_R, addr, m_line_size, /*write*/ false,
+                   m_gpu->gpgpu_ctx);
+  mem_fetch *mf = new mem_fetch(
+      acc, /*inst*/ nullptr,
+      /*streamID*/ 0, READ_PACKET_SIZE,
+      /*wid*/ 0, m_sm_id, m_tpc,
+      m_gpu->getMemoryConfig(), now);
+  mf->set_is_prefetch(true);
+  mf->set_subcore_id((int)m_subcore_id);
+  return mf;
+}
+
+void stream_buffer::cycle() {
+  if (!m_active || !m_l0i) return;
+  unsigned long long now = m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle;
+  // Throttle: the L0 cache itself enforces back-pressure via
+  // RESERVATION_FAIL when its MSHR or miss queue fills up. We honor
+  // m_max_prefetches_per_cycle as a per-cycle issue rate but do not
+  // maintain a separate in-flight counter (that would require
+  // decrement bookkeeping on every prefetch fill, which adds plumbing
+  // for no precision win — L0 RESERVATION_FAIL is the truer cap).
+  for (unsigned i = 0; i < m_max_prefetches_per_cycle; i++) {
+    mem_fetch *pmf = make_prefetch_mf(m_next_addr_to_prefetch, now);
+    std::list<cache_event> events;
+    enum cache_request_status status =
+        m_l0i->access(m_next_addr_to_prefetch, pmf, now, events);
+    if (status == HIT) {
+      // Already cached — no point continuing the stream from here.
+      // Stay active: a future demand miss will restart with a new
+      // m_next_addr_to_prefetch via on_l0_demand_miss().
+      delete pmf;
+      m_next_addr_to_prefetch += m_line_size;
+      continue;
+    } else if (status == RESERVATION_FAIL) {
+      delete pmf;
+      break;  // back off, retry next cycle, don't advance cursor
+    } else {
+      // MISS / HIT_RESERVED / SECTOR_MISS: pmf is in L0 MSHR / miss
+      // queue. It will be silently consumed when L0 returns it via
+      // try_pop_ready_inst (its is_prefetch flag is detected there).
+      m_next_addr_to_prefetch += m_line_size;
+    }
+  }
+  // Suppress unused-member warning while we keep m_in_flight /
+  // m_max_in_flight in the class for future MICRO 2025-style explicit
+  // throttling (not needed in 3f.B.3 minimum viable impl).
+  (void)m_in_flight;
+  (void)m_max_in_flight;
+}
+
+void stream_buffer::on_prefetch_filled() {
+  if (m_in_flight > 0) m_in_flight--;
 }
 
 // Phase 3 Step 3f.B.2 — l0_icnt full implementation.
@@ -1297,11 +1408,23 @@ void l0_icnt::cycle() {
   }
 
   // 2. Egress response pipes: deliver to L0s when ready & port free.
+  // L1I MSHR may coalesce multiple L0 requests for the same block;
+  // when L1I returns them all via next_access, only the FIRST one is
+  // tracked in the L0's m_extra_mf_fields (subsequent requests went
+  // into the L0 MSHR coalesce list directly during send_read_request).
+  // Calling L0->fill on a coalesced follower would fail an assert.
+  // Use waiting_for_fill() to filter: only fill mfs the L0 is actively
+  // waiting for; followers are released naturally via L0's own MSHR
+  // mark_ready chain when the first fill arrives.
   for (unsigned sc = 0; sc < m_num_subcores; sc++) {
     while (!m_resp[sc].empty() &&
            m_resp[sc].front().ready_cycle <= now &&
            m_l0s[sc] && m_l0s[sc]->fill_port_free()) {
-      m_l0s[sc]->fill(m_resp[sc].front().mf, now);
+      mem_fetch *mf = m_resp[sc].front().mf;
+      if (m_l0s[sc]->waiting_for_fill(mf)) {
+        m_l0s[sc]->fill(mf, now);
+      }
+      // else: coalesced follower, drained via L0::next_access later
       m_resp[sc].pop();
     }
   }
@@ -1345,13 +1468,38 @@ mem_fetch *l0_icnt::try_pop_ready_inst() {
   // Round-robin scan. m_arb_priority advances each cycle so different
   // subcores' L0 responses get fair access to the SM-level fetch
   // buffer (one inst per cycle, vanilla constraint).
-  for (unsigned i = 0; i < m_num_subcores; i++) {
-    unsigned sc = (m_arb_priority + i) % m_num_subcores;
-    if (m_l0s[sc] && m_l0s[sc]->access_ready()) {
-      mem_fetch *mf = m_l0s[sc]->next_access();
-      m_arb_priority = (sc + 1) % m_num_subcores;
-      return mf;
+  // Prefetch mfs (Step 3f.B.3) are silently consumed here: they have
+  // already done their job (their MSHR-coalesced demand fetch sees
+  // the line cached). No instruction is forwarded to the fetch buffer.
+  for (unsigned attempts = 0; attempts < m_num_subcores * 4; attempts++) {
+    bool any_ready = false;
+    for (unsigned i = 0; i < m_num_subcores; i++) {
+      unsigned sc = (m_arb_priority + i) % m_num_subcores;
+      if (m_l0s[sc] && m_l0s[sc]->access_ready()) {
+        any_ready = true;
+        mem_fetch *mf = m_l0s[sc]->next_access();
+        if (mf->is_prefetch()) {
+          // Notify the originating subcore's SB so it can keep going.
+          // We don't have a back-ref from l0_icnt to subcore — but
+          // the SB pointer can be reached via mf->get_subcore_id()
+          // -> registered l0i -> ... actually simpler: SB tracks its
+          // own counter and we just delete here.
+          // The in-flight throttle is enforced by SB seeing the
+          // m_in_flight counter; SB would fall back to a stop state
+          // until it receives the on_prefetch_filled() callback.
+          // For simplicity in 3f.B.3, we don't invoke the callback
+          // (SB's max_in_flight is a soft cap; in practice the L0
+          // MSHR width is the real limit). 3f.B.4 will revisit if
+          // throttling becomes a problem.
+          delete mf;
+          m_arb_priority = (sc + 1) % m_num_subcores;
+          continue;  // try the next subcore for a real instruction
+        }
+        m_arb_priority = (sc + 1) % m_num_subcores;
+        return mf;
+      }
     }
+    if (!any_ready) break;
   }
   return nullptr;
 }

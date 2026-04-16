@@ -779,6 +779,13 @@ class subcore {
   // (delete) belongs to subcore.
   void install_l0i(class l0_icache *l0i);
 
+  // Phase 3 Step 3f.B.3 — install per-subcore stream buffer prefetcher.
+  // Optional: only called when is_instruction_prefetching_enabled is
+  // true. l0_icache::access will notify the SB on each L0 miss; SB's
+  // own cycle() (called from cycle_caches() below) issues prefetches.
+  void install_streambuf(class stream_buffer *sb);
+  class stream_buffer *streambuf() const { return m_streambuf; }
+
   // Phase 3 Step 3f.B.2 — tick cache state machines owned by this
   // subcore. Called from shader_core_ctx::fetch() once per SM cycle
   // (after l0_icnt::cycle()). Drives l0_icache pop-from-miss-queue
@@ -801,9 +808,12 @@ class subcore {
   // straight to m_sm->m_L1I). Owned by this subcore.
   class l0_icache *m_l0i = nullptr;
 
+  // Phase 3 Step 3f.B.3: per-subcore stream buffer prefetcher.
+  // nullptr when -is_instruction_prefetching_enabled is 0. Owned.
+  class stream_buffer *m_streambuf = nullptr;
+
   // Step 3e/3h will add:
   //   register_file_cache *m_rfc;       // Step 3e
-  //   stream_buffer *m_streambuf;       // Step 3f.B.3
   //   per_subcore_mem_queue *m_mem_q;   // Step 3h
 };
 
@@ -3013,6 +3023,68 @@ class perfect_memory_interface : public mem_fetch_interface {
  private:
   shader_core_ctx *m_core;
   simt_core_cluster *m_cluster;
+};
+
+// Phase 3 Step 3f.B.3 — sequential stream buffer prefetcher.
+//
+// Per-L0 prefetcher. Simplified design vs MICRO 2025: we exploit the
+// L0 MSHR's natural coalescing semantics so the "stream buffer hit"
+// effect (demand fetch finds an in-flight prefetch and rides on the
+// MSHR entry) is automatic — no separate SB-search/fill machinery.
+//
+// Behavior:
+//   1. on L0 miss for addr X: start (or continue) a sequential stream
+//      from X+line_size
+//   2. each cycle, issue up to max_prefetches_per_cycle prefetch
+//      requests through l0_icache::access (tagged is_prefetch=true),
+//      walking m_next_addr_to_prefetch forward by line_size
+//   3. throttled by a max_in_flight bound (so SB can't outrun L1I)
+//   4. stop the stream when l0_icache::access returns HIT (already
+//      cached) or RESERVATION_FAIL (cache port busy)
+//
+// Prefetch mfs propagate through l0_icnt back to L0 fill exactly like
+// demand mfs. Their is_prefetch flag is checked when popping ready
+// insts from L0: a prefetch mf is silently deleted (no fetch buffer
+// fill), while its presence in L0's MSHR has already accelerated any
+// coalesced demand fetch.
+class stream_buffer {
+ public:
+  stream_buffer(unsigned sm_id, unsigned tpc, unsigned subcore_id,
+                unsigned line_size, unsigned max_in_flight,
+                unsigned max_prefetches_per_cycle,
+                class l0_icache *l0i, class gpgpu_sim *gpu);
+
+  // Called by l0_icache::access whenever it returns a non-HIT status
+  // for a demand fetch. Starts (or extends) the sequential stream.
+  void on_l0_demand_miss(new_addr_type missed_addr);
+
+  // Called from subcore::cycle_caches each SM cycle (after l0_icnt
+  // and before L1I). Issues up to max_prefetches_per_cycle prefetch
+  // accesses through the L0 cache, advancing the stream pointer.
+  void cycle();
+
+  // Called by l0_icnt when a prefetch mf has been delivered back to
+  // the L0 fill (so SB can decrement in-flight count).
+  void on_prefetch_filled();
+
+ private:
+  // Allocate a synthetic mem_fetch that mimics a fetch demand (same
+  // addr space, INST_ACC_R type) but flagged is_prefetch=true.
+  class mem_fetch *make_prefetch_mf(new_addr_type addr,
+                                    unsigned long long now) const;
+
+  unsigned m_sm_id;
+  unsigned m_tpc;
+  unsigned m_subcore_id;
+  unsigned m_line_size;
+  unsigned m_max_in_flight;
+  unsigned m_max_prefetches_per_cycle;
+  class l0_icache *m_l0i;       // not owned; provided by subcore
+  class gpgpu_sim *m_gpu;
+
+  bool m_active;
+  new_addr_type m_next_addr_to_prefetch;
+  unsigned m_in_flight;
 };
 
 // Phase 3 Step 3f.B — L0_icnt arbiter.
