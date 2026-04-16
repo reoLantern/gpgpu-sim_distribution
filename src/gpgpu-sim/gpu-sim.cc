@@ -350,6 +350,36 @@ void shader_core_config::reg_options(class OptionParser *opp) {
       " {<sector?>:<nsets>:<bsize>:<assoc>,<rep>:<wr>:<alloc>:<wr_"
       "alloc>:<set_index_fn>,<mshr>:<N>:<merge>,<mq>} ",
       "N:64:128:16,L:R:f:N:L,S:2:48,4");
+  // Phase 3 Step 3f: per-subcore L0 instruction cache + stream buffer.
+  // Defaults preserve vanilla behavior (L0 disabled). Names mirror MICRO
+  // 2025's config knobs for paper-level cross-reference.
+  option_parser_register(opp, "-is_L0I_enabled", OPT_BOOL,
+                         &is_L0I_enabled,
+                         "Enable per-subcore L0 instruction cache "
+                         "(Phase 3 Step 3f). Default off (vanilla path).",
+                         "0");
+  option_parser_register(
+      opp, "-gpgpu_cache:il0", OPT_CSTR, &m_L0I_config.m_config_string,
+      "Per-subcore L0 instruction cache config (only used when "
+      "-is_L0I_enabled 1) {<sector?>:<nsets>:<bsize>:<assoc>,...}",
+      "N:4:128:32,L:R:f:N:L,S:32:16,8");
+  option_parser_register(opp, "-latency_L0_to_L1", OPT_UINT32,
+                         &latency_L0_to_L1,
+                         "L0->L1I request pipeline depth (cycles)", "1");
+  option_parser_register(opp, "-latency_L1_to_L0", OPT_UINT32,
+                         &latency_L1_to_L0,
+                         "L1I->L0 response pipeline depth (cycles)", "1");
+  option_parser_register(opp, "-is_instruction_prefetching_enabled", OPT_BOOL,
+                         &is_instruction_prefetching_enabled,
+                         "Enable per-L0 sequential stream buffer prefetcher",
+                         "0");
+  option_parser_register(opp, "-prefetch_per_stream_buffer_size", OPT_UINT32,
+                         &prefetch_per_stream_buffer_size,
+                         "Stream buffer queue depth (in cache lines)", "8");
+  option_parser_register(opp, "-num_instruction_prefetches_per_cycle",
+                         OPT_UINT32,
+                         &num_instruction_prefetches_per_cycle,
+                         "Max prefetch issues per L0 cycle", "1");
   option_parser_register(opp, "-gpgpu_cache:dl1", OPT_CSTR,
                          &m_L1D_config.m_config_string,
                          "per-shader L1 data cache config "

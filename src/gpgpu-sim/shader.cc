@@ -1179,6 +1179,53 @@ enum cache_request_status subcore::try_fetch_warp(
   return m_sm->m_L1I->access((new_addr_type)ppc, mf, now, events);
 }
 
+// Phase 3 Step 3f.B.1 — l0_icnt skeleton.
+//
+// Methods here are wired but the class is dormant: shader_core_ctx
+// does not instantiate m_l0_icnt unless Step 3f.B.2 is enabled, so
+// nothing in this file's actual exec path reaches l0_icnt code yet.
+// The skeleton exists to:
+//   - establish ABI / file layout for 3f.B.2/B.3
+//   - let mem_fetch carry m_subcore_id without dangling references
+//   - keep `--check-omp` byte-identical with Round 4 (since L0 path is
+//     never taken)
+
+l0_icnt::l0_icnt(unsigned sm_id, unsigned num_subcores,
+                 read_only_cache *l1i,
+                 unsigned latency_L0_to_L1, unsigned latency_L1_to_L0,
+                 gpgpu_sim *gpu)
+    : m_sm_id(sm_id),
+      m_num_subcores(num_subcores),
+      m_l1i(l1i),
+      m_lat_L0_to_L1(latency_L0_to_L1),
+      m_lat_L1_to_L0(latency_L1_to_L0),
+      m_gpu(gpu) {}
+
+void l0_icnt::push(mem_fetch *mf) {
+  // 3f.B.1 skeleton: should not be called yet. Forwarding to L1I is
+  // the safe default if it ever is. When 3f.B.2 lands, this becomes:
+  //   insert mf into m_req_pipes[mf->get_subcore_id()][m_lat_L0_to_L1-1]
+  std::list<cache_event> dummy_events;
+  m_l1i->access(mf->get_addr(), mf, m_gpu->gpu_sim_cycle, dummy_events);
+}
+
+bool l0_icnt::full(unsigned /*size*/, bool /*write*/) const {
+  // 3f.B.1: no internal queue yet, never full. 3f.B.2 returns true
+  // when every subcore's request pipe egress slot is occupied.
+  return false;
+}
+
+void l0_icnt::cycle() {
+  // 3f.B.1 skeleton: nothing to advance yet. 3f.B.2 implements the
+  // full pipeline tick described in the design doc.
+}
+
+void l0_icnt::deliver_l1_response(mem_fetch * /*mf*/,
+                                  unsigned long long /*now*/) {
+  // 3f.B.1 stub: no L0 ever sends a request, so accept_fetch_response
+  // never reaches this. 3f.B.2 wires this to fill the originating L0.
+}
+
 void shader_core_ctx::issue() {
   // Round-robin across subcores for fair issue priority.
   for (unsigned i = 0; i < m_subcores.size(); i++) {
@@ -4136,9 +4183,17 @@ void shader_core_ctx::broadcast_barrier_reduction(unsigned cta_id,
 bool shader_core_ctx::fetch_unit_response_buffer_full() const { return false; }
 
 void shader_core_ctx::accept_fetch_response(mem_fetch *mf) {
-  mf->set_status(IN_SHADER_FETCHED,
-                 m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
-  m_L1I->fill(mf, m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
+  unsigned long long now = m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle;
+  mf->set_status(IN_SHADER_FETCHED, now);
+  // Phase 3 Step 3f.B.1: route via l0_icnt when the demand fetch came
+  // from a per-subcore L0 (m_subcore_id was stamped at issue time).
+  // Until 3f.B.2 actually instantiates m_l0_icnt + sets m_subcore_id,
+  // this branch is dormant — vanilla path runs unchanged.
+  if (m_l0_icnt && mf->get_subcore_id() >= 0) {
+    m_l0_icnt->deliver_l1_response(mf, now);
+  } else {
+    m_L1I->fill(mf, now);
+  }
 }
 
 bool shader_core_ctx::ldst_unit_response_buffer_full() const {

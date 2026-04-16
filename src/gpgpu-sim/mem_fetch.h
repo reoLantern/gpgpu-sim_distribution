@@ -132,6 +132,16 @@ class mem_fetch {
   mem_fetch *get_original_mf() { return original_mf; }
   mem_fetch *get_original_wr_mf() { return original_wr_mf; }
 
+  // Phase 3 Step 3f: routing fields for per-subcore L0 instruction
+  // cache. m_subcore_id == -1 means "not from L0 path" (vanilla
+  // direct-to-L1I requests). accept_fetch_response uses this to
+  // decide whether to route the response through l0_icnt back to a
+  // subcore's L0, or fill L1I directly as before.
+  int  get_subcore_id() const { return m_subcore_id; }
+  void set_subcore_id(int s) { m_subcore_id = s; }
+  bool is_prefetch() const { return m_is_prefetch; }
+  void set_is_prefetch(bool p) { m_is_prefetch = p; }
+
  private:
   // request source information
   unsigned m_request_uid;
@@ -180,6 +190,11 @@ class mem_fetch {
                      // size), so the pointer refers to the original request
   mem_fetch *original_wr_mf;  // this pointer refers to the original write req,
                               // when fetch-on-write policy is used
+
+  // Phase 3 Step 3f routing fields. Defaults preserve vanilla behavior
+  // (no subcore origin, not a prefetch); set explicitly by L0 path.
+  int  m_subcore_id = -1;
+  bool m_is_prefetch = false;
 };
 
 #endif

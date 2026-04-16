@@ -1495,6 +1495,7 @@ class simt_core_cluster;
 class shader_memory_interface;
 class shader_core_mem_fetch_allocator;
 class cache_t;
+class l0_icnt;  // Phase 3 Step 3f.B.1 — full def below shader_core_ctx
 
 class ldst_unit : public pipelined_simd_unit {
  public:
@@ -1791,6 +1792,18 @@ class shader_core_config : public core_config {
   mutable cache_config m_L1T_config;
   mutable cache_config m_L1C_config;
   mutable l1d_cache_config m_L1D_config;
+
+  // Phase 3 Step 3f: per-subcore L0 instruction cache + stream buffer.
+  // 3f.B.1 declares the config knobs but defaults to disabled — the
+  // L0_icnt skeleton stays dormant until 3f.B.2 instantiates real L0
+  // caches.
+  bool is_L0I_enabled = false;
+  mutable cache_config m_L0I_config;        // -gpgpu_cache:il0
+  unsigned latency_L0_to_L1 = 1;            // -latency_L0_to_L1
+  unsigned latency_L1_to_L0 = 1;            // -latency_L1_to_L0
+  bool is_instruction_prefetching_enabled = false;
+  unsigned prefetch_per_stream_buffer_size = 8;
+  unsigned num_instruction_prefetches_per_cycle = 1;
 
   bool gpgpu_dwf_reg_bankconflict;
 
@@ -2719,6 +2732,14 @@ class shader_core_ctx : public core_t {
   read_only_cache *m_L1I;  // instruction cache
   int m_last_warp_fetched;
 
+  // Phase 3 Step 3f.B.1: per-SM L0_icnt arbiter. nullptr when
+  // is_L0I_enabled is false (vanilla path: subcores call m_L1I
+  // directly in try_fetch_warp). When non-null, subcores' L0
+  // misses route through this. Lifetime tied to shader_core_ctx
+  // (constructed in create_front_pipeline if L0 enabled, deleted
+  // in dtor if needed).
+  l0_icnt *m_l0_icnt = nullptr;
+
   // decode/dispatch
   std::vector<shd_warp_t *> m_warp;  // per warp information array
   barrier_set_t m_barriers;
@@ -2975,6 +2996,66 @@ class perfect_memory_interface : public mem_fetch_interface {
  private:
   shader_core_ctx *m_core;
   simt_core_cluster *m_cluster;
+};
+
+// Phase 3 Step 3f.B.1 — L0_icnt skeleton.
+//
+// Per-SM arbiter sitting between per-subcore L0 instruction caches and
+// the shared L1I cache. Models the latency of L0 -> L1I requests and
+// L1I -> L0 responses, and routes responses back to the originating
+// subcore via mf->get_subcore_id().
+//
+// Step 3f.B.1 scope (this commit): skeleton only. The L0 is not yet
+// installed at any subcore (m_l0_icnt stays nullptr unless explicitly
+// constructed by a future substep), so this class is dormant code.
+// Methods are wired but exercise only the trivial pass-through path.
+//
+// Step 3f.B.2 will instantiate it with real per-subcore L0 caches and
+// non-zero latency_L0_to_L1.
+class l0_icnt : public mem_fetch_interface {
+ public:
+  l0_icnt(unsigned sm_id, unsigned num_subcores,
+          read_only_cache *l1i,
+          unsigned latency_L0_to_L1, unsigned latency_L1_to_L0,
+          gpgpu_sim *gpu);
+
+  // mem_fetch_interface contract.
+  // push(): called by an l0_icache::cycle() when it has a miss to
+  //   forward to L1I. Inserts mf into the per-subcore request pipe at
+  //   the deepest stage (latency_L0_to_L1 - 1), so the next
+  //   m_lat_L0_to_L1 cycle()s shift it toward L1.
+  // full(): returns true if every subcore's request pipe egress slot is
+  //   occupied (back-pressures the L0 cache).
+  void push(mem_fetch *mf) override;
+  bool full(unsigned size, bool write) const override;
+
+  // Per-SM cycle tick. Called from shader_core_ctx::cycle() before
+  // the per-subcore caches cycle. Order:
+  //   1. drain L1I response queue (access_ready / next_access) into
+  //      response pipes (matches mf->get_subcore_id())
+  //   2. advance response pipes by 1 stage; egress entries call
+  //      target l0i->fill(mf, time)
+  //   3. advance request pipes by 1 stage; egress entries call
+  //      m_l1i->access(addr, mf, time, events). On L1I HIT: response
+  //      is synthesized immediately into target subcore's response
+  //      pipe. On L1I MISS: mf is in L1I's m_miss_queue and will come
+  //      back via accept_fetch_response (which routes back here).
+  void cycle();
+
+  // Called by accept_fetch_response when mf->get_subcore_id() >= 0,
+  // i.e. the original demand fetch came from an L0. Equivalent to
+  // L1I->fill but routes back to the originating L0 with
+  // latency_L1_to_L0 modeled. Step 3f.B.1: no-op stub (L0 path is not
+  // active).
+  void deliver_l1_response(mem_fetch *mf, unsigned long long now);
+
+ private:
+  unsigned m_sm_id;
+  unsigned m_num_subcores;
+  read_only_cache *m_l1i;
+  unsigned m_lat_L0_to_L1;
+  unsigned m_lat_L1_to_L0;
+  gpgpu_sim *m_gpu;
 };
 
 /**
