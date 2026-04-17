@@ -383,7 +383,8 @@ class shd_warp_t {
   }
 
  private:
-  static const unsigned IBUFFER_SIZE = 2;
+  // Step D: MICRO 2025 uses 3-entry IBuffer (vanilla was 2).
+  static const unsigned IBUFFER_SIZE = 3;
   warp_dependency_state m_dep_state;
   class shader_core_ctx *m_shader;
   unsigned long long m_streamID;
@@ -1888,7 +1889,10 @@ class shader_core_config : public core_config {
 
   // Step C: Register File Cache.
   bool is_rf_cache_enabled = false;
-  unsigned rfc_max_entries_per_operand = 4;  // per-bank RFC depth
+  unsigned rfc_max_entries_per_operand = 4;
+
+  // Step D: Enhanced fetch/decode.
+  bool invalidate_icache_at_kernel_end = false;
 
   bool gpgpu_dwf_reg_bankconflict;
 

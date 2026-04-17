@@ -4149,7 +4149,20 @@ void shader_core_ctx::cycle() {
 
 void shader_core_ctx::cache_flush() { m_ldst_unit->flush(); }
 
-void shader_core_ctx::cache_invalidate() { m_ldst_unit->invalidate(); }
+void shader_core_ctx::cache_invalidate() {
+  m_ldst_unit->invalidate();
+  // Step D: invalidate instruction caches at kernel end so the next
+  // kernel starts with cold I-cache (matches real HW behavior where
+  // I-cache is not shared across kernel launches).
+  if (m_config->invalidate_icache_at_kernel_end) {
+    m_L1I->invalidate();
+    if (m_l0_icnt) {
+      for (auto *sc : m_subcores) {
+        if (sc->l0i()) sc->l0i()->invalidate();
+      }
+    }
+  }
+}
 
 // modifiers
 std::list<opndcoll_rfu_t::op_t> opndcoll_rfu_t::arbiter_t::allocate_reads() {

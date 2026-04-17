@@ -380,6 +380,11 @@ void shader_core_config::reg_options(class OptionParser *opp) {
                          OPT_UINT32,
                          &num_instruction_prefetches_per_cycle,
                          "Max prefetch issues per L0 cycle", "1");
+  // Step D: Enhanced fetch/decode.
+  option_parser_register(opp, "-invalidate_instruction_caches_at_kernel_end",
+                         OPT_BOOL, &invalidate_icache_at_kernel_end,
+                         "Invalidate L1I + L0I caches at kernel end "
+                         "(MICRO 2025 default 1).", "0");
   // Step C: Register File Cache.
   option_parser_register(opp, "-is_rf_cache_enabled", OPT_BOOL,
                          &is_rf_cache_enabled,
