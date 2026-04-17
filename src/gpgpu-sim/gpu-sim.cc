@@ -380,6 +380,15 @@ void shader_core_config::reg_options(class OptionParser *opp) {
                          OPT_UINT32,
                          &num_instruction_prefetches_per_cycle,
                          "Max prefetch issues per L0 cycle", "1");
+  // Step C: Register File Cache.
+  option_parser_register(opp, "-is_rf_cache_enabled", OPT_BOOL,
+                         &is_rf_cache_enabled,
+                         "Enable per-SM register file cache (Phase 3 Step C). "
+                         "Operands with RFC hit skip bank port arbitration.",
+                         "0");
+  option_parser_register(opp, "-rfc_max_entries_per_operand", OPT_UINT32,
+                         &rfc_max_entries_per_operand,
+                         "RFC entries per operand position (× num_banks)", "4");
   // Step B: stall/barrier params.
   option_parser_register(
       opp, "-num_stall_cycles_wait_after_bits_stall_0_and_yield", OPT_UINT32,

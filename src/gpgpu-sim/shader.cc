@@ -4652,6 +4652,10 @@ void opndcoll_rfu_t::add_port(port_vector_t &input, port_vector_t &output,
 void opndcoll_rfu_t::init(unsigned num_banks, shader_core_ctx *shader) {
   m_shader = shader;
   m_arbiter.init(m_cu.size(), num_banks);
+  // Step C: init RFC if enabled. Size = 4 entries/operand × num_banks.
+  if (shader->get_config()->is_rf_cache_enabled) {
+    m_rfc.init(shader->get_config()->rfc_max_entries_per_operand * num_banks);
+  }
   // for( unsigned n=0; n<m_num_ports;n++ )
   //    m_dispatch_units[m_output[n]].init( m_num_collector_units[n] );
   m_num_banks = num_banks;
@@ -4809,7 +4813,16 @@ void opndcoll_rfu_t::allocate_cu(unsigned port_num) {
 }
 
 void opndcoll_rfu_t::allocate_reads() {
-  // process read requests that do not have conflicts
+  // Step C RFC: extract operands that hit the register file cache —
+  // they skip bank port arbitration entirely (zero contention).
+  if (m_shader && m_shader->get_config()->is_rf_cache_enabled) {
+    std::list<op_t> rfc_hits = m_arbiter.extract_rfc_hits(&m_rfc);
+    for (auto &op : rfc_hits) {
+      m_cu[op.get_oc_id()]->collect_operand(op.get_operand());
+    }
+  }
+
+  // Normal bank-conflict-resolved reads for remaining operands.
   std::list<op_t> allocated = m_arbiter.allocate_reads();
   std::map<unsigned, op_t> read_ops;
   for (std::list<op_t>::iterator r = allocated.begin(); r != allocated.end();
@@ -4828,6 +4841,19 @@ void opndcoll_rfu_t::allocate_reads() {
     unsigned cu = op.get_oc_id();
     unsigned operand = op.get_operand();
     m_cu[cu]->collect_operand(operand);
+
+    // Step C RFC: insert into cache if instruction's reuse bit is set
+    // for this operand. ctrl_bits reuse field has 4 bits for 4 source
+    // operands (bit i = "cache operand i for next instruction").
+    if (m_shader->get_config()->is_rf_cache_enabled &&
+        m_cu[cu]->get_warp() &&
+        m_cu[cu]->get_warp()->get_ctrl_bits().valid() &&
+        operand < 4) {
+      unsigned reuse = m_cu[cu]->get_warp()->get_ctrl_bits().reuse();
+      if ((reuse >> operand) & 1) {
+        m_rfc.insert(op.get_wid(), op.get_reg());
+      }
+    }
     if (m_shader->get_config()->gpgpu_clock_gated_reg_file) {
       unsigned active_count = 0;
       for (unsigned i = 0; i < m_shader->get_config()->warp_size;

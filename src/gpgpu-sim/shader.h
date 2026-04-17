@@ -1008,6 +1008,29 @@ class opndcoll_rfu_t {  // operand collector based register file unit
     op_t m_op;
   };
 
+  // Step C: Register File Cache — tag-only, per-SM.
+  // Tracks (warp_id, reg_id) pairs. On hit, operand read skips bank
+  // port allocation. Populated when RF read completes AND ctrl_bits
+  // reuse bit is set. FIFO eviction when full.
+  class rfc_t {
+   public:
+    rfc_t() : m_max_size(0) {}
+    void init(unsigned max_size) { m_max_size = max_size; }
+    bool lookup(unsigned wid, unsigned reg) const {
+      return m_tags.count({wid, reg}) > 0;
+    }
+    void insert(unsigned wid, unsigned reg) {
+      if (m_max_size == 0) return;
+      if (m_tags.size() >= m_max_size) m_tags.erase(m_tags.begin());
+      m_tags.insert({wid, reg});
+    }
+    void invalidate(unsigned wid, unsigned reg) { m_tags.erase({wid, reg}); }
+
+   private:
+    std::set<std::pair<unsigned, unsigned>> m_tags;
+    unsigned m_max_size;
+  };
+
   class arbiter_t {
    public:
     // constructors
@@ -1061,6 +1084,25 @@ class opndcoll_rfu_t {  // operand collector based register file unit
 
     // modifiers
     std::list<op_t> allocate_reads();
+
+    // Step C RFC: scan bank queues, extract operands that hit RFC,
+    // remove them from queues (so normal arbiter doesn't see them).
+    std::list<op_t> extract_rfc_hits(rfc_t *rfc) {
+      std::list<op_t> hits;
+      if (!rfc) return hits;
+      for (unsigned b = 0; b < m_num_banks; b++) {
+        auto it = m_queue[b].begin();
+        while (it != m_queue[b].end()) {
+          if (rfc->lookup(it->get_wid(), it->get_reg())) {
+            hits.push_back(*it);
+            it = m_queue[b].erase(it);
+          } else {
+            ++it;
+          }
+        }
+      }
+      return hits;
+    }
 
     void add_read_requests(collector_unit_t *cu) {
       const op_t *src = cu->get_operands();
@@ -1151,6 +1193,7 @@ class opndcoll_rfu_t {  // operand collector based register file unit
     void collect_operand(unsigned op) { m_not_ready.reset(op); }
     unsigned get_num_operands() const { return m_warp->get_num_operands(); }
     unsigned get_num_regs() const { return m_warp->get_num_regs(); }
+    const warp_inst_t *get_warp() const { return m_warp; }
     void dispatch();
     bool is_free() { return m_free; }
 
@@ -1218,6 +1261,7 @@ class opndcoll_rfu_t {  // operand collector based register file unit
   unsigned m_warp_size;
   std::vector<collector_unit_t *> m_cu;
   arbiter_t m_arbiter;
+  rfc_t m_rfc;  // Step C: Register File Cache (init in shader.cc)
 
   unsigned m_num_banks_per_sched;
   unsigned m_num_warp_scheds;
@@ -1840,10 +1884,11 @@ class shader_core_config : public core_config {
   unsigned num_instruction_prefetches_per_cycle = 1;
 
   // Step B: stall/barrier params (MICRO 2025 calibration).
-  // When ctrl_bits yield=1 and stall=0, override stall to this value.
-  // MICRO 2025 default 46. Real HW apparently uses yield as a "long
-  // stall" signal when the compiler can't compute an exact count.
   unsigned yield_stall_override = 0;
+
+  // Step C: Register File Cache.
+  bool is_rf_cache_enabled = false;
+  unsigned rfc_max_entries_per_operand = 4;  // per-bank RFC depth
 
   bool gpgpu_dwf_reg_bankconflict;
 
