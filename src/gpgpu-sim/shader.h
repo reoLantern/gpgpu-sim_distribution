@@ -131,10 +131,17 @@ class warp_dependency_state {
     m_yield = false;  // yield lasts exactly 1 cycle
   }
 
-  /* Set state from the just-issued instruction's control bits. */
-  void set_from_issued(const ctrl_bits_t &cb) {
+  /* Set state from the just-issued instruction's control bits.
+   * yield_stall_override: when yield=1 AND stall=0, use this value
+   * instead of 0. MICRO 2025 sets 46 — the compiler uses yield as
+   * a "stall for a while" signal when it can't compute an exact
+   * count. 0 = disabled (vanilla behavior). */
+  void set_from_issued(const ctrl_bits_t &cb,
+                       unsigned yield_stall_override = 0) {
     m_stall_counter = cb.stall();
     m_yield = cb.is_yield();
+    if (m_yield && m_stall_counter == 0 && yield_stall_override > 0)
+      m_stall_counter = yield_stall_override;
     if (cb.has_r_bar()) { m_wait_barriers[cb.r_bar()]++; m_total_inc++; }
     if (cb.has_w_bar()) { m_wait_barriers[cb.w_bar()]++; m_total_inc++; }
   }
@@ -1831,6 +1838,12 @@ class shader_core_config : public core_config {
   bool is_instruction_prefetching_enabled = false;
   unsigned prefetch_per_stream_buffer_size = 8;
   unsigned num_instruction_prefetches_per_cycle = 1;
+
+  // Step B: stall/barrier params (MICRO 2025 calibration).
+  // When ctrl_bits yield=1 and stall=0, override stall to this value.
+  // MICRO 2025 default 46. Real HW apparently uses yield as a "long
+  // stall" signal when the compiler can't compute an exact count.
+  unsigned yield_stall_override = 0;
 
   bool gpgpu_dwf_reg_bankconflict;
 

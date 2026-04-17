@@ -1216,7 +1216,8 @@ void shader_core_ctx::issue_warp(register_set &pipe_reg_set,
   // Control-bits dependency state: set stall counter, yield, and allocate
   // r/w barriers from the just-issued instruction.
   if ((*pipe_reg)->get_ctrl_bits().valid()) {
-    m_warp[warp_id]->dep_state().set_from_issued((*pipe_reg)->get_ctrl_bits());
+    m_warp[warp_id]->dep_state().set_from_issued(
+        (*pipe_reg)->get_ctrl_bits(), m_config->yield_stall_override);
   }
 
   m_warp[warp_id]->set_next_pc(next_inst->pc + next_inst->isize);

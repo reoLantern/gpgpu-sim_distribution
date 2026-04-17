@@ -380,6 +380,12 @@ void shader_core_config::reg_options(class OptionParser *opp) {
                          OPT_UINT32,
                          &num_instruction_prefetches_per_cycle,
                          "Max prefetch issues per L0 cycle", "1");
+  // Step B: stall/barrier params.
+  option_parser_register(
+      opp, "-num_stall_cycles_wait_after_bits_stall_0_and_yield", OPT_UINT32,
+      &yield_stall_override,
+      "When ctrl_bits yield=1 and stall=0, override stall counter to "
+      "this value (MICRO 2025 default 46). 0 = disabled.", "0");
   option_parser_register(opp, "-gpgpu_cache:dl1", OPT_CSTR,
                          &m_L1D_config.m_config_string,
                          "per-shader L1 data cache config "
