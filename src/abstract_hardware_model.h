@@ -128,6 +128,14 @@ enum uarch_op_t {
   CALL_OPS,
   RET_OPS,
   EXIT_OPS,
+  // Phase 3 Step A: fine-grained instruction types from MICRO 2025.
+  // Each gets its own latency/initiation config. Routed to existing
+  // FU pipelines: HALF→SP, PREDICATE/UNIFORM/MISC→INT, BRANCH→INT.
+  HALF_OP,
+  PREDICATE_OP,
+  UNIFORM_OP,
+  MISCELLANEOUS_QUEUE_OP,
+  MISCELLANEOUS_NO_QUEUE_OP,
   SPECIALIZED_UNIT_1_OP = SPEC_UNIT_START_ID,
   SPECIALIZED_UNIT_2_OP,
   SPECIALIZED_UNIT_3_OP,
