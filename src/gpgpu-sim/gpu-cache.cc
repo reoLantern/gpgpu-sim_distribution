@@ -1924,24 +1924,65 @@ enum cache_request_status read_only_cache::access(
   return cache_status;
 }
 
-// Phase 3 Step 3f.B.3 — L0 access with stream buffer notification.
-// Inherits the base read_only_cache machinery (tag probe, MSHR,
-// miss-queue-to-memport). Adds: on demand-fetch miss, kick the
-// stream buffer to extend its sequential prefetch stream from this
-// address. Prefetch mfs themselves (is_prefetch == true) skip the
-// notification so SB doesn't feedback-loop on its own prefetches.
+// Phase 3 Step 3f.B.3 (proper) — L0 access with stream buffer probe.
+//
+// MICRO 2025 order: demand fetch → probe SB first → if SB has it,
+// short-circuit L0 tag (mark demand in SB, return MISS so fetch waits).
+// Only on SB miss: probe L0 tag (read_only_cache::access). On L0 miss
+// AND SB miss: notify SB to extend stream.
+//
+// Prefetch mfs (is_prefetch == true) skip SB search entirely — they
+// go straight to read_only_cache::access so L0 MSHR + miss queue →
+// l0_icnt → L1I path runs normally for them.
 enum cache_request_status l0_icache::access(
     new_addr_type addr, mem_fetch *mf, unsigned time,
     std::list<cache_event> &events) {
+  // Prefetches bypass stream buffer — just probe L0 tag + MSHR.
+  if (mf->is_prefetch() || !m_sb) {
+    return read_only_cache::access(addr, mf, time, events);
+  }
+
+  // Demand access: always probe L0 tag. SB works by proactively
+  // filling L0 tag from prefetch responses (via fill_tag_from_prefetch),
+  // so by the time a sequential demand arrives, the L0 tag should
+  // already have the line → HIT. On true L0 miss, extend the stream.
+  new_addr_type block_addr = m_config.block_addr(addr);
   enum cache_request_status status =
       read_only_cache::access(addr, mf, time, events);
-  // Only true MISS (not HIT_RESERVED — that means a previous miss is
-  // already in flight for this block, so the stream cursor must not
-  // be reset). MICRO 2025 follows the same convention.
-  if (m_sb && !mf->is_prefetch() && status == MISS) {
-    m_sb->on_l0_demand_miss(m_config.block_addr(addr));
+  if (status == MISS) {
+    m_sb->on_demand_miss(block_addr);
   }
   return status;
+}
+
+// Route prefetch responses to stream buffer, demand responses to L0.
+void l0_icache::fill(mem_fetch *mf, unsigned time) {
+  static unsigned s_dbg = 0;
+  if (m_sb && mf->is_prefetch()) {
+    if (s_dbg < 10) {
+      fprintf(stderr, "[SB-FILL] subcore=%d addr=0x%llx\n",
+              m_subcore_id, (unsigned long long)m_config.block_addr(mf->get_addr()));
+      s_dbg++;
+    }
+    m_sb->fill_prefetch(m_config.block_addr(mf->get_addr()));
+    delete mf;
+    return;
+  }
+  read_only_cache::fill(mf, time);
+}
+
+void l0_icache::fill_tag_from_prefetch(new_addr_type block_addr,
+                                      unsigned time) {
+  // Proactively insert prefetched block into L0 tag array. Future
+  // demand fetches for this block will HIT L0 directly (no SB
+  // short-circuit needed). No MSHR involvement — there's no pending
+  // demand to mark ready at this point.
+  mem_access_sector_mask_t sector_mask;
+  sector_mask.set();
+  mem_access_byte_mask_t byte_mask;
+  byte_mask.set();
+  m_tag_array->fill(block_addr, time, sector_mask, byte_mask,
+                    /*is_write*/ false);
 }
 
 //! A general function that takes the result of a tag_array probe

@@ -296,10 +296,12 @@ void shader_core_ctx::create_schedulers() {
         stream_buffer *sb = new stream_buffer(
             m_sid, m_tpc, /*subcore_id*/ i,
             /*line_size*/ m_config->m_L0I_config.get_line_sz(),
-            /*max_in_flight*/ m_config->prefetch_per_stream_buffer_size,
+            /*max_size*/ m_config->prefetch_per_stream_buffer_size,
             /*max_prefetches_per_cycle*/
             m_config->num_instruction_prefetches_per_cycle,
-            l0i, m_gpu);
+            l0i,
+            /*memport (-> l0_icnt)*/ m_l0_icnt,
+            m_gpu);
         m_subcores[i]->install_streambuf(sb);
       }
     }
@@ -989,9 +991,7 @@ void shader_core_ctx::fetch() {
           ifetch_buffer_t(m_warp[mf->get_wid()]->get_pc(),
                           mf->get_access_size(), mf->get_wid());
       assert(m_warp[mf->get_wid()]->get_pc() ==
-             (mf->get_addr() -
-              PROGRAM_MEM_START));  // Verify that we got the instruction we
-                                    // were expecting.
+             (mf->get_addr() - PROGRAM_MEM_START));
       m_inst_fetch_buffer.m_valid = true;
       m_warp[mf->get_wid()]->set_last_fetch(m_gpu->gpu_sim_cycle);
       delete mf;
@@ -1248,55 +1248,95 @@ void subcore::install_streambuf(stream_buffer *sb) {
 }
 
 void subcore::cycle_caches() {
-  // Order: SB issues prefetches BEFORE L0 drains its miss queue, so
-  // prefetches and any same-cycle demand misses can ride the same
-  // L0_icnt arbitration window. SB's accesses go through L0 first
-  // (they coalesce in L0 MSHR if a demand for same line is pending),
-  // and L0::cycle() then forwards aggregated misses to L0_icnt.
-  if (m_streambuf) m_streambuf->cycle();
+  unsigned long long now =
+      m_sm->get_gpu()->gpu_sim_cycle + m_sm->get_gpu()->gpu_tot_sim_cycle;
+  // Order: SB runs first (send_to_cache drains ready+demanded entries
+  // into L0 tag; do_prefetch issues new prefetches to memport).
+  // Then L0 drains its own miss queue to l0_icnt.
+  if (m_streambuf) m_streambuf->cycle(now);
   if (m_l0i) m_l0i->cycle();
 }
 
-// Phase 3 Step 3f.B.3 — sequential stream buffer prefetcher.
+// Phase 3 Step 3f.B.3 (proper) — sequential stream buffer prefetcher.
+//
+// Follows MICRO 2025 stream_buffer.cc semantics:
+//   - Maintains explicit prefetch_element per in-flight/ready entry
+//   - Prefetch responses set is_data_ready (don't touch L0)
+//   - Demand hits mark has_demand_request
+//   - send_to_cache() drains ready+demanded entries into L0 tag fill
+//   - is_full() bounds prefetch queue depth
 
 stream_buffer::stream_buffer(unsigned sm_id, unsigned tpc,
                              unsigned subcore_id, unsigned line_size,
-                             unsigned max_in_flight,
+                             unsigned max_size,
                              unsigned max_prefetches_per_cycle,
-                             l0_icache *l0i, gpgpu_sim *gpu)
+                             l0_icache *l0i,
+                             mem_fetch_interface *memport,
+                             gpgpu_sim *gpu)
     : m_sm_id(sm_id),
       m_tpc(tpc),
       m_subcore_id(subcore_id),
       m_line_size(line_size),
-      m_max_in_flight(max_in_flight),
+      m_max_size(max_size),
       m_max_prefetches_per_cycle(max_prefetches_per_cycle),
       m_l0i(l0i),
+      m_memport(memport),
       m_gpu(gpu),
       m_active(false),
-      m_next_addr_to_prefetch(0),
-      m_in_flight(0) {}
+      m_next_addr_to_prefetch(0) {}
 
-void stream_buffer::on_l0_demand_miss(new_addr_type missed_addr) {
-  // Restart / extend the sequential stream from one line past the
-  // current demand miss. If we're already prefetching at exactly this
-  // address, do nothing (avoid bumping the cursor backwards or
-  // discarding in-flight prefetches that will service this demand).
-  new_addr_type next = missed_addr + m_line_size;
+sb_search_result stream_buffer::search(new_addr_type block_addr) const {
+  auto it = m_entries.find(block_addr);
+  if (it == m_entries.end()) return {false, false};
+  return {true, it->second.is_data_ready};
+}
+
+const prefetch_element *stream_buffer::search_detail(
+    new_addr_type block_addr) const {
+  auto it = m_entries.find(block_addr);
+  return (it != m_entries.end()) ? &it->second : nullptr;
+}
+
+void stream_buffer::set_waiting_fill(new_addr_type block_addr,
+                                     new_addr_type demand_addr,
+                                     unsigned warp_id) {
+  auto it = m_entries.find(block_addr);
+  if (it == m_entries.end()) return;
+  it->second.has_demand_request = true;
+  it->second.demand_warp_id = warp_id;
+  it->second.demand_addr = demand_addr;
+}
+
+void stream_buffer::on_demand_miss(new_addr_type missed_block_addr) {
+  new_addr_type next = missed_block_addr + m_line_size;
   if (m_active && m_next_addr_to_prefetch == next) return;
   m_active = true;
   m_next_addr_to_prefetch = next;
 }
 
+void stream_buffer::fill_prefetch(new_addr_type block_addr) {
+  auto it = m_entries.find(block_addr);
+  if (it != m_entries.end()) {
+    it->second.is_data_ready = true;
+    // Proactively fill L0 tag so future demand fetches HIT directly.
+    // This is simpler than MICRO 2025's deferred fill_from_stream_buffer
+    // but avoids multi-demand tracking complexity.
+    unsigned long long now =
+        m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle;
+    m_l0i->fill_tag_from_prefetch(block_addr, now);
+    // Entry can be popped — data is now in L0, SB entry served its
+    // purpose. But queue is FIFO; we can only pop front. Mark erased
+    // and let cycle() skip it.
+    m_entries.erase(it);
+  }
+}
+
 mem_fetch *stream_buffer::make_prefetch_mf(new_addr_type addr,
                                            unsigned long long now) const {
-  // Synthetic mem_fetch carrying just enough state for L0/L0_icnt/L1I
-  // to route it: INST_ACC_R access type, prefetch flag set, no real
-  // warp/PC association.
   mem_access_t acc(INST_ACC_R, addr, m_line_size, /*write*/ false,
                    m_gpu->gpgpu_ctx);
   mem_fetch *mf = new mem_fetch(
-      acc, /*inst*/ nullptr,
-      /*streamID*/ 0, READ_PACKET_SIZE,
+      acc, /*inst*/ nullptr, /*streamID*/ 0, READ_PACKET_SIZE,
       /*wid*/ 0, m_sm_id, m_tpc,
       m_gpu->getMemoryConfig(), now);
   mf->set_is_prefetch(true);
@@ -1304,46 +1344,28 @@ mem_fetch *stream_buffer::make_prefetch_mf(new_addr_type addr,
   return mf;
 }
 
-void stream_buffer::cycle() {
-  if (!m_active || !m_l0i) return;
-  unsigned long long now = m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle;
-  // Throttle: the L0 cache itself enforces back-pressure via
-  // RESERVATION_FAIL when its MSHR or miss queue fills up. We honor
-  // m_max_prefetches_per_cycle as a per-cycle issue rate but do not
-  // maintain a separate in-flight counter (that would require
-  // decrement bookkeeping on every prefetch fill, which adds plumbing
-  // for no precision win — L0 RESERVATION_FAIL is the truer cap).
-  for (unsigned i = 0; i < m_max_prefetches_per_cycle; i++) {
-    mem_fetch *pmf = make_prefetch_mf(m_next_addr_to_prefetch, now);
-    std::list<cache_event> events;
-    enum cache_request_status status =
-        m_l0i->access(m_next_addr_to_prefetch, pmf, now, events);
-    if (status == HIT) {
-      // Already cached — stop the stream. Continuing past warm cache
-      // lines just wastes L1I bandwidth and over-prefetches code we
-      // may never reach. Restart on the next true demand miss.
-      delete pmf;
-      m_active = false;
-      break;
-    } else if (status == RESERVATION_FAIL) {
-      delete pmf;
-      break;  // back off, retry next cycle, don't advance cursor
-    } else {
-      // MISS / HIT_RESERVED / SECTOR_MISS: pmf is in L0 MSHR / miss
-      // queue. It will be silently consumed when L0 returns it via
-      // try_pop_ready_inst (its is_prefetch flag is detected there).
-      m_next_addr_to_prefetch += m_line_size;
-    }
-  }
-  // Suppress unused-member warning while we keep m_in_flight /
-  // m_max_in_flight in the class for future MICRO 2025-style explicit
-  // throttling (not needed in 3f.B.3 minimum viable impl).
-  (void)m_in_flight;
-  (void)m_max_in_flight;
-}
+void stream_buffer::cycle(unsigned long long now) {
+  // Housekeep: pop entries that fill_prefetch already erased from
+  // m_entries (data arrived, L0 tag proactively filled).
+  while (!m_queue.empty() && m_entries.find(m_queue.front()) == m_entries.end())
+    m_queue.pop();
 
-void stream_buffer::on_prefetch_filled() {
-  if (m_in_flight > 0) m_in_flight--;
+  // do_prefetch — issue new prefetches via memport (l0_icnt).
+  if (!m_active) return;
+  for (unsigned i = 0; i < m_max_prefetches_per_cycle; i++) {
+    if (is_full()) break;
+    if (m_memport->full(m_line_size, false)) break;
+    // Don't re-prefetch addresses already in SB.
+    if (m_entries.count(m_next_addr_to_prefetch)) {
+      m_next_addr_to_prefetch += m_line_size;
+      continue;
+    }
+    mem_fetch *pmf = make_prefetch_mf(m_next_addr_to_prefetch, now);
+    m_memport->push(pmf);
+    m_entries[m_next_addr_to_prefetch] = prefetch_element();
+    m_queue.push(m_next_addr_to_prefetch);
+    m_next_addr_to_prefetch += m_line_size;
+  }
 }
 
 // Phase 3 Step 3f.B.2 — l0_icnt full implementation.
@@ -1421,10 +1443,15 @@ void l0_icnt::cycle() {
            m_resp[sc].front().ready_cycle <= now &&
            m_l0s[sc] && m_l0s[sc]->fill_port_free()) {
       mem_fetch *mf = m_resp[sc].front().mf;
-      if (m_l0s[sc]->waiting_for_fill(mf)) {
+      // Prefetch mfs bypass the waiting_for_fill check because they
+      // were issued directly to l0_icnt (not through L0::access), so
+      // L0's m_extra_mf_fields doesn't have them. l0_icache::fill
+      // will route prefetch responses to stream_buffer::fill_prefetch.
+      // Demand mfs still need the guard to avoid asserting on
+      // coalesced MSHR followers (3f.B.2 fix).
+      if (mf->is_prefetch() || m_l0s[sc]->waiting_for_fill(mf)) {
         m_l0s[sc]->fill(mf, now);
       }
-      // else: coalesced follower, drained via L0::next_access later
       m_resp[sc].pop();
     }
   }

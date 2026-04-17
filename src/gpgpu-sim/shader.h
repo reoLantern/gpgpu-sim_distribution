@@ -3027,64 +3027,105 @@ class perfect_memory_interface : public mem_fetch_interface {
 
 // Phase 3 Step 3f.B.3 — sequential stream buffer prefetcher.
 //
-// Per-L0 prefetcher. Simplified design vs MICRO 2025: we exploit the
-// L0 MSHR's natural coalescing semantics so the "stream buffer hit"
-// effect (demand fetch finds an in-flight prefetch and rides on the
-// MSHR entry) is automatic — no separate SB-search/fill machinery.
+// Per-L0 sequential stream buffer prefetcher (proper MICRO 2025 version).
 //
-// Behavior:
-//   1. on L0 miss for addr X: start (or continue) a sequential stream
-//      from X+line_size
-//   2. each cycle, issue up to max_prefetches_per_cycle prefetch
-//      requests through l0_icache::access (tagged is_prefetch=true),
-//      walking m_next_addr_to_prefetch forward by line_size
-//   3. throttled by a max_in_flight bound (so SB can't outrun L1I)
-//   4. stop the stream when l0_icache::access returns HIT (already
-//      cached) or RESERVATION_FAIL (cache port busy)
+// Key semantics matching MICRO 2025 first_level_instruction_cache.cc +
+// stream_buffer.cc:
 //
-// Prefetch mfs propagate through l0_icnt back to L0 fill exactly like
-// demand mfs. Their is_prefetch flag is checked when popping ready
-// insts from L0: a prefetch mf is silently deleted (no fetch buffer
-// fill), while its presence in L0's MSHR has already accelerated any
-// coalesced demand fetch.
+//   1. Stream buffer is a LOOKUP STRUCTURE — l0_icache::access probes
+//      it BEFORE the L0 tag array. On hit, the demand is served
+//      directly from the stream buffer (no L0 MSHR allocation needed).
+//
+//   2. Prefetch responses from L1I route to stream_buffer::fill_prefetch
+//      (NOT to L0::fill). Data sits in the stream buffer as "ready"
+//      entries until a demand fetch hits them. Only THEN does
+//      send_to_cache() transfer the line into L0 tag+MSHR. This prevents
+//      L0 LRU pollution by unused prefetches.
+//
+//   3. Queue depth is bounded by m_max_size (= prefetch_per_stream_buffer
+//      _size config). New prefetches stop when is_full().
+//
+// Refs: MICRO 2025 stream_buffer.{h,cc}, first_level_instruction_cache.cc
+
+struct prefetch_element {
+  bool is_data_ready;        // true once L1I response arrived
+  bool has_demand_request;   // true once a demand fetch hit this entry
+  unsigned demand_warp_id;   // warp waiting for this line (if demanded)
+  new_addr_type demand_addr; // exact address (if demanded)
+
+  prefetch_element()
+      : is_data_ready(false),
+        has_demand_request(false),
+        demand_warp_id(0),
+        demand_addr(0) {}
+};
+
+struct sb_search_result {
+  bool found;      // block address exists in stream buffer entries
+  bool is_ready;   // data has arrived from L1I
+};
+
 class stream_buffer {
  public:
   stream_buffer(unsigned sm_id, unsigned tpc, unsigned subcore_id,
-                unsigned line_size, unsigned max_in_flight,
+                unsigned line_size, unsigned max_size,
                 unsigned max_prefetches_per_cycle,
-                class l0_icache *l0i, class gpgpu_sim *gpu);
+                class l0_icache *l0i,
+                mem_fetch_interface *memport,  // -> l0_icnt
+                class gpgpu_sim *gpu);
 
-  // Called by l0_icache::access whenever it returns a non-HIT status
-  // for a demand fetch. Starts (or extends) the sequential stream.
-  void on_l0_demand_miss(new_addr_type missed_addr);
+  // Probed by l0_icache::access BEFORE L0 tag array.
+  sb_search_result search(new_addr_type block_addr) const;
 
-  // Called from subcore::cycle_caches each SM cycle (after l0_icnt
-  // and before L1I). Issues up to max_prefetches_per_cycle prefetch
-  // accesses through the L0 cache, advancing the stream pointer.
-  void cycle();
+  // Returns pointer to entry (for checking has_demand_request before
+  // committing to the SB path). nullptr if not found.
+  const prefetch_element *search_detail(new_addr_type block_addr) const;
 
-  // Called by l0_icnt when a prefetch mf has been delivered back to
-  // the L0 fill (so SB can decrement in-flight count).
-  void on_prefetch_filled();
+  // Called by l0_icache::access on stream buffer hit for a demand
+  // fetch. Marks the entry as demand-requested; send_to_cache() will
+  // transfer it to L0 once data arrives.
+  void set_waiting_fill(new_addr_type block_addr,
+                        new_addr_type demand_addr, unsigned warp_id);
+
+  // Called when demand misses BOTH stream buffer AND L0 tag. Starts
+  // or extends the sequential prefetch stream.
+  void on_demand_miss(new_addr_type missed_block_addr);
+
+  // Called when a prefetch response arrives from L1I (routed by
+  // l0_icache::fill when mf->is_prefetch()). Sets is_data_ready.
+  // Does NOT touch L0 tag/MSHR.
+  void fill_prefetch(new_addr_type block_addr);
+
+  // Called from subcore::cycle_caches each SM cycle.
+  //   Phase 1: send_to_cache — drain entries that are both ready AND
+  //     demanded into L0 via l0_icache tag fill.
+  //   Phase 2: do_prefetch — issue up to max_prefetches_per_cycle new
+  //     prefetch mfs via memport (= l0_icnt), bounded by is_full().
+  void cycle(unsigned long long now);
+
+  bool is_full() const { return m_entries.size() >= m_max_size; }
 
  private:
-  // Allocate a synthetic mem_fetch that mimics a fetch demand (same
-  // addr space, INST_ACC_R type) but flagged is_prefetch=true.
-  class mem_fetch *make_prefetch_mf(new_addr_type addr,
-                                    unsigned long long now) const;
+  mem_fetch *make_prefetch_mf(new_addr_type addr,
+                              unsigned long long now) const;
 
   unsigned m_sm_id;
   unsigned m_tpc;
   unsigned m_subcore_id;
   unsigned m_line_size;
-  unsigned m_max_in_flight;
+  unsigned m_max_size;                     // queue depth cap
   unsigned m_max_prefetches_per_cycle;
-  class l0_icache *m_l0i;       // not owned; provided by subcore
+  class l0_icache *m_l0i;                 // not owned
+  mem_fetch_interface *m_memport;          // -> l0_icnt (not owned)
   class gpgpu_sim *m_gpu;
 
   bool m_active;
   new_addr_type m_next_addr_to_prefetch;
-  unsigned m_in_flight;
+
+  // FIFO-ordered queue of prefetched block addresses.
+  std::queue<new_addr_type> m_queue;
+  // Per-block prefetch state (keyed by block addr).
+  std::map<new_addr_type, prefetch_element> m_entries;
 };
 
 // Phase 3 Step 3f.B — L0_icnt arbiter.

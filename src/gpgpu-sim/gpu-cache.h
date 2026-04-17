@@ -1534,13 +1534,34 @@ class l0_icache : public read_only_cache {
   // prefetcher disabled — access() takes the standard path.
   void attach_streambuf(stream_buffer *sb) { m_sb = sb; }
 
-  // Override to add the stream-buffer notification hook on miss.
-  // Demand fetches (mf->is_prefetch() == false) trigger SB extension;
-  // SB-issued prefetches (is_prefetch == true) skip the notification
-  // to avoid an infinite stream-walk feedback loop.
+  // Override access: for demand fetches, probe stream buffer FIRST
+  // (before L0 tag array). On SB hit with data ready, mark demanded
+  // and return MISS (fetch sets imiss_pending; SB→L0 fill will mark
+  // MSHR ready next cycle). On SB hit without data, same. On SB miss,
+  // fall through to read_only_cache::access (L0 tag probe + MSHR).
+  // Prefetch mfs (is_prefetch == true) skip the SB search to avoid
+  // feedback loop.
   enum cache_request_status access(new_addr_type addr, mem_fetch *mf,
                                     unsigned time,
                                     std::list<cache_event> &events) override;
+
+  // Hides baseline_cache::fill (non-virtual). Routes prefetch
+  // responses to stream_buffer; demand responses to parent fill.
+  // Call sites use l0_icache* so this version is called (not
+  // baseline_cache's), matching MICRO 2025's routing in fill().
+  void fill(mem_fetch *mf, unsigned time);
+
+  // Proactively insert a prefetched block into L0 tag array so future
+  // demand fetches HIT. Called by stream_buffer::fill_prefetch when
+  // prefetch data returns from L1I. Skips L0 MSHR (there's no
+  // pending demand mf to mark ready — the demand will arrive later
+  // and find the tag already valid).
+  //
+  // This is simpler than MICRO 2025's deferred fill_from_stream_buffer
+  // (which requires multi-demand tracking per SB entry). Tradeoff:
+  // L0 LRU may be polluted by prefetched lines never demanded; for
+  // instruction caches with sequential access this is benign.
+  void fill_tag_from_prefetch(new_addr_type block_addr, unsigned time);
 
  private:
   unsigned m_subcore_id;
