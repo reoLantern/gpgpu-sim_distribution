@@ -43,7 +43,7 @@
 #include "ldst_unit_sm.h"
 #include "register_file.h"
 
-#include "../../../../../util/traces_enhanced/src/traced_instruction.h"
+#include "../trace_data/traced_instruction.h" // v2: moved under trace_data/
 
 
 

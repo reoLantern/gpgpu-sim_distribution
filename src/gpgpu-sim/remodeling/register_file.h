@@ -33,7 +33,7 @@
 #include <memory>
 #include <set>
 
-#include "../../../../../util/traces_enhanced/src/traced_constants.h"
+#include "../trace_data/traced_constants.h"   // v2: moved under trace_data/
 
 
 class shader_core_stats;

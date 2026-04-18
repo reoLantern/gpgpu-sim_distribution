@@ -39,8 +39,10 @@
 #include "JSONBase.h"
 #include "JSONIncludes.h"
 
-#include "../../../gpu-simulator/gpgpu-sim/src/operation_type.h"
-#include "../../../gpu-simulator/ISA_Def/trace_opcode.h"
+// Paths adjusted for v2 layout (files moved from util/traces_enhanced/src/
+// to gpgpu-sim/src/gpgpu-sim/trace_data/).
+#include "../../operation_type.h"
+#include "../../../../ISA_Def/trace_opcode.h"
 
 
 enum membar_traced_type {

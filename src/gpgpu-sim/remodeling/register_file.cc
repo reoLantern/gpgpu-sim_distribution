@@ -34,8 +34,8 @@
 #include "subcore.h"
 #include "sm.h"
 
-#include "../../../../../util/traces_enhanced/src/traced_operand.h"
-#include "../../../../../util/traces_enhanced/src/traced_instruction.h"
+#include "../trace_data/traced_operand.h"     // v2: moved under trace_data/
+#include "../trace_data/traced_instruction.h"
 #include "../../abstract_hardware_model.h"
 #include "../shader.h"
 

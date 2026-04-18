@@ -29,13 +29,15 @@
 #include "traced_instruction.h"
 #include "string_utilities.h"
 
-#include "../../../gpu-simulator/trace-parser/trace_parser.h"
-#include "../../../gpu-simulator/ISA_Def/ampere_opcode.h"
-#include "../../../gpu-simulator/ISA_Def/blackwell_opcode.h"
-#include "../../../gpu-simulator/ISA_Def/pascal_opcode.h"
-#include "../../../gpu-simulator/ISA_Def/turing_opcode.h"
-#include "../../../gpu-simulator/ISA_Def/volta_opcode.h"
-#include "../../../gpu-simulator/ISA_Def/kepler_opcode.h"
+// Paths adjusted for v2 layout.  blackwell_opcode.h intentionally skipped:
+// v2's ISA_Def/ does not ship it (not needed for 2070S / 3060Ti / A100).
+#include "../../../../trace-parser/trace_parser.h"
+#include "../../../../ISA_Def/ampere_opcode.h"
+// #include "../../../../ISA_Def/blackwell_opcode.h"  // not in v2
+#include "../../../../ISA_Def/pascal_opcode.h"
+#include "../../../../ISA_Def/turing_opcode.h"
+#include "../../../../ISA_Def/volta_opcode.h"
+#include "../../../../ISA_Def/kepler_opcode.h"
 
 #include <iostream>
 #include <regex>
