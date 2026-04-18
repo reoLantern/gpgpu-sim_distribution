@@ -15,6 +15,7 @@ list(APPEND gpgpusim_SRC addrdec.cc
     power_interface.cc
     power_stat.cc
     scoreboard.cc
+    scoreboard_reads.cc   # MICRO 2025 port: WAR scoreboard (Stage 1c.4.4)
     shader.cc
     stack.cc
     stat-tool.cc

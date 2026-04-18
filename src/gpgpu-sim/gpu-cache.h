@@ -53,7 +53,8 @@ enum cache_request_status {
   RESERVATION_FAIL,
   SECTOR_MISS,
   MSHR_HIT,
-  NUM_CACHE_REQUEST_STATUS
+  NUM_CACHE_REQUEST_STATUS,
+  NOT_INITIALIZED   // MICRO 2025 port: sentinel used by l0_icnt before access() is called
 };
 
 enum cache_reservation_fail_reason {

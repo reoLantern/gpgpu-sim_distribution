@@ -395,6 +395,12 @@ class kernel_info_t {
 
   unsigned m_kernel_TB_latency;  // this used for any CPU-GPU kernel latency and
                                  // counted in the gpu_cycle
+
+  // MICRO 2025 port: set by the tracer-v2 adapter (Stage 1d) when the kernel
+  // is_captured_from_binary == kernel was traced from a real binary (vs. ptx).
+  // Default false; remodeling code gates "traditional scoreboarding" on the
+  // negation of this flag, so defaulting false keeps it in "traditional" mode.
+  bool is_captured_from_binary = false;
 };
 
 class core_config {
@@ -937,6 +943,7 @@ class mem_fetch;
 
 class mem_fetch_interface {
  public:
+  virtual ~mem_fetch_interface() = default;  // MICRO 2025 port: L0_icnt derives, marks ~ override
   virtual bool full(unsigned size, bool write) const = 0;
   virtual void push(mem_fetch *mf) = 0;
 };
@@ -981,7 +988,10 @@ class inst_t {
     m_decoded = false;
     pc = (address_type)-1;
     reconvergence_pc = (address_type)-1;
+    next_traced_pc = (address_type)-1;                   // MICRO 2025 port
+    m_has_the_instruction_been_traced = false;           // MICRO 2025 port
     m_is_tensor_core_op_with_4_registers_per_op = false;  // MICRO 2025 port
+    latency_extra_predicate_op = 0;                      // MICRO 2025 port
     op = NO_OP;
     bar_type = NOT_BAR;
     red_type = NOT_RED;
@@ -1102,6 +1112,15 @@ class inst_t {
   // use 4 regs per operand (e.g., wgmma variants).  Default false.
   bool m_is_tensor_core_op_with_4_registers_per_op;
 
+  // MICRO 2025 port: PC of the next traced instruction + whether this one
+  // was produced by the traced path (vs ptx).  IBuffer_Remodeled uses both.
+  address_type next_traced_pc;
+  bool m_has_the_instruction_been_traced;
+
+  // MICRO 2025 port: predicate-mode latency override added when the decoded
+  // op is PREDICATE_OP (from ctrl_bits).  Functional_unit gates dispatch on it.
+  unsigned int latency_extra_predicate_op;
+
  protected:
   bool m_decoded;
   virtual void pre_decode() {}
@@ -1130,6 +1149,7 @@ class warp_inst_t : public inst_t {
     // MICRO 2025 port additions
     m_extra_trace_instruction_info = nullptr;
     m_num_cycles_to_wait_to_free_WAR = 0;
+    m_has_wb_from_sm_struct_to_subcore = false;
   }
   warp_inst_t(const core_config *config) {
     m_uid = 0;
@@ -1155,6 +1175,7 @@ class warp_inst_t : public inst_t {
     // MICRO 2025 port additions
     m_extra_trace_instruction_info = nullptr;
     m_num_cycles_to_wait_to_free_WAR = 0;
+    m_has_wb_from_sm_struct_to_subcore = false;
   }
   virtual ~warp_inst_t() {}
 
@@ -1366,6 +1387,7 @@ class warp_inst_t : public inst_t {
 
   std::shared_ptr<traced_instruction> m_extra_trace_instruction_info;
   unsigned int m_num_cycles_to_wait_to_free_WAR;
+  bool m_has_wb_from_sm_struct_to_subcore;
 };
 
 void move_warp(warp_inst_t *&dst, warp_inst_t *&src);

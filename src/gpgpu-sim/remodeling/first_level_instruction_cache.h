@@ -86,17 +86,19 @@ class first_level_instruction_cache : public read_only_cache {
   
   new_addr_type get_base_line_of_address(new_addr_type addr);
 
-  void cycle() override;
+  // v2: base class methods are non-virtual in our read_only_cache (upstream drift),
+  // so drop `override` — these methods shadow rather than override.
+  void cycle();
 
-  bool fill(mem_fetch *mf, unsigned time) override;
+  bool fill(mem_fetch *mf, unsigned time);
 
   bool fill_from_stream_buffer(new_addr_type prefetch_addr, unsigned time, prefetch_element &pending_information);
 
-  bool waiting_for_fill(mem_fetch *mf) override;
+  bool waiting_for_fill(mem_fetch *mf);
 
   void printMapKeysMFFields();
-    
-  void invalidate() override;
+
+  void invalidate();
 
   bool is_first_access_ready();
 

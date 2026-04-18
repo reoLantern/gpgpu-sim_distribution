@@ -333,6 +333,19 @@ class shd_warp_t {
   unsigned int m_depbar_group;
   bool m_waiting_ldgsts;  // Ni: Whether the warp is waiting for the LDGSTS
                           // instrs to finish
+
+  // MICRO 2025 port additions: per-warp dependency state + remodeled IBuffer.
+  // In vanilla (is_SM_remodeling_enabled=0) path these stay nullptr and are
+  // never dereferenced; in Stage 1e the MICRO 2025 SM ctor will allocate them.
+ public:
+  class IBuffer_Remodeled *get_IBuffer_remodeled() { return m_IBuffer_remodeled; }
+  class Dependency_State  *get_dependency_state() { return m_dependency_state; }
+
+  class Subcore *m_subcore = nullptr;  // MICRO 2025: Subcore owning this warp
+
+ private:
+  class IBuffer_Remodeled *m_IBuffer_remodeled = nullptr;
+  class Dependency_State  *m_dependency_state  = nullptr;
 };
 
 inline unsigned hw_tid_from_wid(unsigned wid, unsigned warp_size, unsigned i) {
@@ -1718,6 +1731,98 @@ class shader_core_config : public core_config {
   char *specialized_unit_string[SPECIALIZED_UNIT_NUM];
   mutable std::vector<specialized_unit_params> m_specialized_unit;
   unsigned m_specialized_unit_num;
+
+  // ============================================================================
+  // MICRO 2025 port additions (Stage 1c.4.2).
+  //
+  // Default-inert values.  When is_SM_remodeling_enabled=0 (default in v2),
+  // none of these fields are read and the vanilla path behaves exactly as before.
+  // Stage 1e will wire option_parser registrations so values can be driven from
+  // gpgpusim.config when the MICRO 2025 path is enabled.
+  // ============================================================================
+
+  // Instruction-type latencies (MICRO 2025 Step A parity)
+  unsigned branch_latency = 1;
+  unsigned predicate_latency = 1;
+  unsigned sfu_latency = 1;
+  unsigned tensor_latency = 1;
+  unsigned uniform_latency = 1;
+  unsigned miscellaneous_no_queue_latency = 1;
+  unsigned miscellaneous_queue_latency = 1;
+  unsigned miscellaneous_queue_size = 1;
+
+  // Feature toggles
+  bool is_trace_mode = false;
+  bool is_loog_enabled = false;
+  bool is_rf_cache_enabled = false;
+  bool is_ibuffer_remodeled_enabled = false;
+  bool is_interwarp_coalescing_enabled = false;
+  bool is_remodeling_scoreboarding_enabled = false;
+  bool is_dp_pipeline_shared_for_subcores = false;
+  bool is_fp32_and_int_unified_pipeline = false;
+  bool is_fp32ops_allowed_in_int_pipeline = false;
+  bool is_instruction_prefetching_enabled = false;
+  bool ibuffer_coalescing = false;
+  bool invalidate_instruction_caches_at_kernel_end = false;
+  bool perfect_instruction_cache = false;
+  bool perfect_constant_cache = false;
+
+  // Fetch / decode / IBuffer
+  unsigned fetch_decode_width = 1;
+  unsigned ibuffer_remodeled_size = 0;
+  unsigned num_wait_barriers_per_warp = 0;
+
+  // Register-file-cache / RF sizing
+  unsigned max_operands_regular_register_file = 0;
+  unsigned max_latency_regular_register_file_latency = 0;
+  unsigned num_regular_register_file_read_ports_per_bank = 0;
+  unsigned num_regular_register_file_write_ports_per_bank = 0;
+  unsigned max_size_register_file_write_queue_for_fixed_latency_instructions = 0;
+  unsigned max_pops_per_cycle_register_file_write_queue_for_fixed_latency_instructions = 0;
+  unsigned num_threads_granularity_read_regular_register_file_mem_inst = 32;
+  unsigned num_threads_granularity_read_regular_register_file_dp_inst = 32;
+  unsigned num_threads_granularity_read_regular_register_file_sfu_inst = 32;
+  unsigned num_threads_granularity_read_regular_register_file_other_inst = 32;
+  unsigned num_cycles_needed_to_write_a_reg_from_sm_struct_to_subcore = 1;
+
+  // InterWarp coalescing + PRT selection policies
+  InterWarpCoalescingSelectionPolicies interwarp_coalescing_selection_policy = IWCOAL_OLDEST;
+
+  // Per-subcore memory pipeline
+  unsigned memory_subcore_queue_size = 0;
+  unsigned memory_intermidiate_stages_subcore_unit = 0;
+  unsigned memory_sm_prt_size = 0;
+
+  // DP shared pipeline across subcores
+  unsigned dp_subcore_queue_size = 0;
+  unsigned dp_subcore_max_latency = 0;
+  unsigned dp_shared_intermidiate_stages = 0;
+  unsigned num_cycles_to_wait_to_dispatch_another_inst_from_subcore_to_sm_shared_pipeline_when_is_mem_inst = 0;
+  unsigned num_cycles_to_wait_to_dispatch_another_inst_from_subcore_to_sm_shared_pipeline_when_is_dp_inst = 0;
+
+  // SM-level stalls (MICRO 2025 Step B)
+  unsigned num_cycles_to_stall_SM_at_gpu_memory_barrier = 0;
+  unsigned num_cycles_to_stall_SM_at_system_memory_barrier = 0;
+  unsigned num_cycles_to_stall_SM_at_cta_memory_barrier = 0;
+  unsigned num_cycles_issue_port_busy_after_imadwide = 0;
+  unsigned num_stall_cycles_wait_after_bits_stall_0_and_yield = 0;
+  unsigned num_const_cache_cycle_misses_before_switch_to_other_warp = 0;
+
+  // L0 caches + prefetch
+  unsigned latency_L0_to_L1 = 0;
+  unsigned latency_L1_to_L0 = 0;
+  unsigned num_instruction_prefetches_per_cycle = 0;
+  unsigned prefetch_per_stream_buffer_size = 0;
+  unsigned prefetch_num_stream_buffers = 0;
+  unsigned max_request_allowed_to_L1I = 0;
+  unsigned max_reply_allowed_from_L1I = 0;
+  mutable cache_config m_L0I_config;
+  mutable cache_config m_L0C_config;
+  mutable cache_config m_L1I_L1_half_C_cache_config;
+
+  // WAR scoreboard (MICRO 2025 Step F)
+  char *scoreboard_war_reads_mode = nullptr;
+  unsigned scoreboard_war_max_uses_per_reg = 0;
 };
 
 struct shader_core_stats_pod {
@@ -2021,6 +2126,12 @@ class shader_core_stats : public shader_core_stats_pod {
   friend class scheduler_unit;
   friend class TwoLevelScheduler;
   friend class LooseRoundRobbinScheduler;
+
+  // MICRO 2025 port: per-kernel stat-array index used by SM::cycle() to bump
+  // shader_cycles_per_kernel[m_current_kernel_pos][sid].  v2 never updates it
+  // (vanilla stats use a different shape), so default 0 is harmless.
+ public:
+  unsigned m_current_kernel_pos = 0;
 };
 
 class memory_config;

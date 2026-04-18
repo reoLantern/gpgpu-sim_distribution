@@ -27,6 +27,7 @@
 
 MF_TUP_BEGIN( mem_fetch_status )
     MF_TUP( MEM_FETCH_INITIALIZED ),
+    MF_TUP( IN_L0_MISS_QUEUE ),  // MICRO 2025 port
     MF_TUP( IN_L1I_MISS_QUEUE ),
     MF_TUP( IN_L1D_MISS_QUEUE ),
     MF_TUP( IN_L1T_MISS_QUEUE ),
@@ -53,5 +54,6 @@ MF_TUP_BEGIN( mem_fetch_status )
     MF_TUP( IN_SHADER_FETCHED ),
     MF_TUP( IN_SHADER_L1T_ROB ),
     MF_TUP( MEM_FETCH_DELETED ),
-    MF_TUP( NUM_MEM_REQ_STAT )
+    MF_TUP( NUM_MEM_REQ_STAT ),
+    MF_TUP( IN_L0_FILL_QUEUE )  // MICRO 2025 port
 MF_TUP_END( mem_fetch_status )

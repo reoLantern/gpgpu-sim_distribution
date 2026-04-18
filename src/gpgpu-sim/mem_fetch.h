@@ -179,6 +179,37 @@ class mem_fetch {
                      // size), so the pointer refers to the original request
   mem_fetch *original_wr_mf;  // this pointer refers to the original write req,
                               // when fetch-on-write policy is used
+
+  // ==========================================================================
+  // MICRO 2025 port additions (Stage 1c.4.3).  L0 I-cache + stream buffer
+  // prefetcher tagging.  Default false/0 — vanilla path never reads these.
+  // ==========================================================================
+ public:
+  mem_access_t &get_access() { return m_access; }
+  const mem_access_t &get_access() const { return m_access; }
+  addr_t get_access_address() const { return m_access.get_addr(); }
+
+  int  get_subcore() const          { return m_subcore; }
+  void set_subcore(int subcore)     { m_subcore = subcore; }
+
+  bool get_is_filling_L0() const    { return m_is_filling_L0; }
+  void set_is_filling_L0(bool v)    { m_is_filling_L0 = v; }
+
+  bool get_is_prefetch() const      { return m_is_prefetch; }
+  void set_is_prefetch(bool v)      { m_is_prefetch = v; }
+
+  unsigned get_stream_buffer_id() const   { return m_stream_buffer_id; }
+  void set_stream_buffer_id(unsigned id)  { m_stream_buffer_id = id; }
+
+  unsigned int get_unique_function_id() const      { return m_unique_function_id; }
+  void set_unique_function_id(unsigned int id)     { m_unique_function_id = id; }
+
+ private:
+  int      m_subcore            = -1;
+  bool     m_is_filling_L0      = false;
+  bool     m_is_prefetch        = false;
+  unsigned m_stream_buffer_id   = 0;
+  unsigned m_unique_function_id = 0;
 };
 
 #endif

@@ -38,6 +38,8 @@
 #include "../../constants.h"
 #include "../shader.h"
 #include "register_file.h"
+#include "warp_dependency_state.h"  // v2: Wait_Barrier_Checking, Wait_Barrier_Type
+#include "ibuffer_remodeled.h"      // v2: IBuffer_Entry
 
 class read_only_cache;
 class functional_unit;
