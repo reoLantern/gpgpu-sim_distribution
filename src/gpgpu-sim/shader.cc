@@ -51,6 +51,12 @@
 #include "stat-tool.h"
 #include "traffic_breakdown.h"
 #include "visualizer.h"
+// MICRO 2025 port (Stage 1c.7.1): wrapper-ctor bodies for shd_warp_t are
+// defined below; they need the full definitions of IBuffer_Remodeled +
+// Dependency_State + shader_core_ctx_wrapper.
+#include "shader_core_wrapper.h"
+#include "remodeling/ibuffer_remodeled.h"
+#include "remodeling/warp_dependency_state.h"
 
 #define PRIORITIZE_MSHR_OVER_WB 1
 #define MAX(a, b) (((a) > (b)) ? (a) : (b))
@@ -3878,7 +3884,11 @@ void barrier_set_t::warp_reaches_barrier(unsigned cta_id, unsigned warp_id,
       m_bar_id_to_warps[bar_id] &= ~at_barrier;
       m_warp_at_barrier &= ~at_barrier;
       if (bar_type == RED) {
-        m_shader->broadcast_barrier_reduction(cta_id, bar_id, at_barrier);
+        // MICRO 2025 port: dispatch via whichever storage was set by ctor.
+        if (m_shader_wrapper)
+          m_shader_wrapper->broadcast_barrier_reduction(cta_id, bar_id, at_barrier);
+        else
+          m_shader->broadcast_barrier_reduction(cta_id, bar_id, at_barrier);
       }
     }
   } else {
@@ -3889,7 +3899,11 @@ void barrier_set_t::warp_reaches_barrier(unsigned cta_id, unsigned warp_id,
       m_bar_id_to_warps[bar_id] &= ~at_barrier;
       m_warp_at_barrier &= ~at_barrier;
       if (bar_type == RED) {
-        m_shader->broadcast_barrier_reduction(cta_id, bar_id, at_barrier);
+        // MICRO 2025 port: dispatch via whichever storage was set by ctor.
+        if (m_shader_wrapper)
+          m_shader_wrapper->broadcast_barrier_reduction(cta_id, bar_id, at_barrier);
+        else
+          m_shader->broadcast_barrier_reduction(cta_id, bar_id, at_barrier);
       }
     }
   }
@@ -4114,6 +4128,49 @@ bool shd_warp_t::waiting() {
     return true;
   }
   return false;
+}
+
+// MICRO 2025 port (Stage 1c.7.1): wrapper-aware ctor.  Mirrors MICRO 2025
+// shader.h:146-156 — SM (which implements shader_core_ctx_wrapper but NOT
+// shader_core_ctx) creates every physical warp via this overload, and both
+// remodeled buffers are immediately dereferenced from sm.cc / subcore.cc.
+//
+// m_shader stays null: its shader_core_ctx* type can't hold an SM*, and no
+// inlined shd_warp_t method dereferences m_shader on the remodeling path
+// (verified by grep; vanilla path does, but vanilla goes through the 2-arg
+// ctor instead).
+shd_warp_t::shd_warp_t(shader_core_ctx_wrapper *shader, unsigned warp_size,
+                       shader_core_stats *stats)
+    : m_shader(nullptr), m_warp_size(warp_size) {
+  m_stores_outstanding = 0;
+  m_inst_in_pipeline = 0;
+  m_IBuffer_remodeled = new IBuffer_Remodeled(shader->get_config(), this, stats);
+  m_dependency_state  = new Dependency_State(shader->get_config(), stats);
+  reset();
+}
+
+shd_warp_t::~shd_warp_t() {
+  // Safe against the 2-arg vanilla ctor which leaves both pointers null.
+  delete m_IBuffer_remodeled;
+  delete m_dependency_state;
+}
+
+// MICRO 2025 port (Stage 1c.7.1): out-of-line push() bodies for the two
+// memory interfaces — they need the full shader_core_ctx_wrapper class to
+// virtual-dispatch inc_simt_to_mem(), which v2 shader.h can't include
+// transitively (circular through shader_core_wrapper.h).
+void shader_memory_interface::push(mem_fetch *mf) {
+  if (m_core_wrapper) m_core_wrapper->inc_simt_to_mem(mf->get_num_flits(true));
+  else                m_core->inc_simt_to_mem(mf->get_num_flits(true));
+  m_cluster->icnt_inject_request_packet(mf);
+}
+
+void perfect_memory_interface::push(mem_fetch *mf) {
+  if (mf && mf->isatomic())
+    mf->do_atomic();  // execute atomic inside the "memory subsystem"
+  if (m_core_wrapper) m_core_wrapper->inc_simt_to_mem(mf->get_num_flits(true));
+  else                m_core->inc_simt_to_mem(mf->get_num_flits(true));
+  m_cluster->push_response_fifo(mf);
 }
 
 void shd_warp_t::print(FILE *fout) const {
