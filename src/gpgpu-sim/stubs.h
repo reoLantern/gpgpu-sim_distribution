@@ -18,6 +18,11 @@ class RRS {};
 
 // MICRO 2025 fusedMemory inter-warp coalescing stats.  Not ported in
 // Stage 1b; gather_*_stats call sites receive these as by-reference
-// parameters but never dereference them along the default path.
+// parameters but never dereference them along the default path.  Methods
+// below are no-op stubs (addStats / registerInst) sufficient for compile.
+class warp_inst_t;
 class coalescingStatsPerSm {};
-class coalescingStatsAcrossSms {};
+class coalescingStatsAcrossSms {
+ public:
+  void addStats(coalescingStatsPerSm * /*per_sm*/) {}
+};

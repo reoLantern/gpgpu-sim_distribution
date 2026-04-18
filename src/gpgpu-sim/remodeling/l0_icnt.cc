@@ -216,9 +216,11 @@ void L0_icnt::cycle() {
             assert(0);
         }
 
-        if(erase_orifinal_mf) {
-            delete mf;
-        }
+        // v2: the orig-mf erasure behavior was tied to MICRO 2025's extra `bool&`
+        // out-param on read_only_cache::access (dropped at Stage 1c.4.5).  Not
+        // freeing here is safe: the caller above (the subcore fetch path) retains
+        // ownership of mf along this path.
+
         if(inserted) {
            m_icnt_L1_TLB_to_cache.pop();
         }

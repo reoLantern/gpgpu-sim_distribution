@@ -753,7 +753,10 @@ void ldst_unit_sm::reset_is_this_l1d_bank_allocated_this_cycle() {
 void ldst_unit_sm::solve_next_missed_access(cache_t *cache, bool is_constant) {
   if(cache->access_ready()) {
     mem_fetch *mf = cache->next_access();
-    warp_inst_t &inst = mf->get_inst();
+    // v2: mem_fetch::get_inst() returns const ref; cast to non-const since
+    // remodeling code mutates in the solve-missed-access flow (MICRO 2025's
+    // get_inst was non-const).
+    warp_inst_t &inst = const_cast<warp_inst_t &>(mf->get_inst());
     if(is_constant) {
       assert(inst.is_load());
     }

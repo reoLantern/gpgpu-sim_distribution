@@ -18,13 +18,15 @@ class coalescingCycleHistory {};
 
 // Real MICRO 2025 class owns per-SM + per-warp + cycle history.
 // Stubbed to just satisfy calls from ldst_unit_sm.cc (constructor +
-// getStats() + resetHistory()).
+// getStats() + resetHistory() + registerInst()).
+class warp_inst_t;
 class coalescingAddressStats {
  public:
   coalescingAddressStats(SM * /*sm*/, const char * /*name*/,
                          _memory_space_t /*space*/) {}
   coalescingStatsPerSm *getStats() { return &m_stats; }
   void resetHistory() {}
+  void registerInst(unsigned long long /*cycle*/, warp_inst_t * /*inst*/) {}
 
  private:
   coalescingStatsPerSm m_stats;

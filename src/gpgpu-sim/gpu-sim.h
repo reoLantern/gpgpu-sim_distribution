@@ -40,6 +40,7 @@
 #include <list>
 #include <omp.h>
 #include "../abstract_hardware_model.h"
+#include "trace_data/traced_execution_stub.h"  // MICRO 2025 port: stubbed traced_execution (Stage 1d replaces)
 #include "../option_parser.h"
 #include "../trace.h"
 #include "addrdec.h"
@@ -806,6 +807,19 @@ class gpgpu_sim : public gpgpu_t {
     m_functional_sim = false;
     m_functional_sim_kernel = NULL;
   }
+
+  // MICRO 2025 port: stubbed traced_execution holder used by remodeling/sm.cc
+  // (search_function_addr, get_unique_function_id, get_kernel_by_unique_function_id).
+  // Stage 1 leaves this as a zero-effect stub; Stage 1d will wire the
+  // NVBit-v1.8-text → traced_instruction adapter behind the same accessor.
+  ::traced_execution &get_extra_trace_info() { return m_extra_trace_info; }
+
+  // MICRO 2025 port: misc helpers exposed to remodeling/ code.
+  unsigned long long get_current_gpu_cycle() { return gpu_tot_sim_cycle + gpu_sim_cycle; }
+  void decrease_num_threads_kernel(unsigned /*kernel_id*/, unsigned /*n*/) { /* no-op */ }
+
+ private:
+  ::traced_execution m_extra_trace_info;
 };
 
 class exec_gpgpu_sim : public gpgpu_sim {

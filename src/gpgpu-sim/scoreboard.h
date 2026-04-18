@@ -40,6 +40,12 @@
 class Scoreboard {
  public:
   Scoreboard(unsigned sid, unsigned n_warps, class gpgpu_t *gpu);
+  // MICRO 2025 port: 4-arg overload (is_trace_mode).  Stage 1 ignores the flag
+  // (forwards to the 3-arg form); trace-mode scoreboarding is a Phase 3.5 Step F
+  // feature that's not needed for compile.
+  Scoreboard(unsigned sid, unsigned n_warps, class gpgpu_t *gpu,
+             bool /*is_trace_mode*/)
+      : Scoreboard(sid, n_warps, gpu) {}
 
   void reserveRegisters(const warp_inst_t *inst);
   void releaseRegisters(const warp_inst_t *inst);
@@ -49,6 +55,14 @@ class Scoreboard {
   bool pendingWrites(unsigned wid) const;
   void printContents() const;
   const bool islongop(unsigned warp_id, unsigned regnum);
+
+  // MICRO 2025 port: remodeling-aware wrappers.  Stage 1 dispatches to the
+  // legacy methods (inst_t* cast).  Replace with real impl when porting Step F.
+  void reserveRegisters_remodeling(const warp_inst_t *inst) { reserveRegisters(inst); }
+  void releaseRegisters_remodeling(const warp_inst_t *inst) { releaseRegisters(inst); }
+  bool checkCollision_remodeling(unsigned wid, const warp_inst_t *inst) const {
+    return checkCollision(wid, static_cast<const inst_t *>(inst));
+  }
 
  private:
   void reserveRegister(unsigned wid, unsigned regnum);

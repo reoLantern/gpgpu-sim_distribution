@@ -54,7 +54,8 @@ enum cache_request_status {
   SECTOR_MISS,
   MSHR_HIT,
   NUM_CACHE_REQUEST_STATUS,
-  NOT_INITIALIZED   // MICRO 2025 port: sentinel used by l0_icnt before access() is called
+  NOT_INITIALIZED,        // MICRO 2025 port: sentinel used by l0_icnt before access() is called
+  IN_L0I_RESPONSE_QUEUE   // MICRO 2025 port: first_level_instruction_cache signals "deferred"
 };
 
 enum cache_reservation_fail_reason {
@@ -774,6 +775,11 @@ class cache_config {
     assert(m_valid);
     return m_line_sz;
   }
+  // MICRO 2025 port: set-associativity accessor.
+  unsigned get_assoc() const {
+    assert(m_valid);
+    return m_assoc;
+  }
   unsigned get_atom_sz() const {
     assert(m_valid);
     return m_atom_sz;
@@ -1020,6 +1026,13 @@ class tag_array {
 
   typedef tr1_hash_map<new_addr_type, unsigned> line_table;
   line_table pending_lines;
+
+  // MICRO 2025 port: InterWarp-coalescing quanta-miss ratio hooks.  Stage 1
+  // does not drive the counters (feature off by default); stubs return 0
+  // and do nothing.
+ public:
+  float quanta_miss_ratio() const { return 0.0f; }
+  void clear_quanta_stats() {}
 };
 
 class mshr_table {
@@ -1078,6 +1091,19 @@ class mshr_table {
   // it may take several cycles to process the merged requests
   bool m_current_response_ready;
   std::list<new_addr_type> m_current_response;
+
+ public:
+  // MICRO 2025 port: clean pending response queue.  Called by
+  // first_level_instruction_cache when the owning SM invalidates the L0.
+  void clean_entries() {
+    while (!m_current_response.empty()) {
+      mem_fetch *mf = next_access();
+      if (mf != nullptr) {
+        delete mf;
+        mf = nullptr;
+      }
+    }
+  }
 };
 
 /***************************************************************** Caches
@@ -1269,6 +1295,11 @@ class cache_t {
   // accessors for cache bandwidth availability
   virtual bool data_port_free() const = 0;
   virtual bool fill_port_free() const = 0;
+
+  // MICRO 2025 port: default next_access() / access_ready() return no-fill.
+  // Override in baseline_cache / tex_cache (already concrete there).
+  virtual mem_fetch *next_access() { return nullptr; }
+  virtual bool access_ready() const { return false; }
 };
 
 bool was_write_sent(const std::list<cache_event> &events);
@@ -1519,6 +1550,17 @@ class read_only_cache : public baseline_cache {
                                            unsigned time,
                                            std::list<cache_event> &events);
 
+  // MICRO 2025 port: 5-arg overload with `bool& erase_original_mf` out-param
+  // used by first_level_instruction_cache.  v2 has no such semantics; we set
+  // the flag to `false` and forward to the 4-arg version.
+  virtual enum cache_request_status access(new_addr_type addr, mem_fetch *mf,
+                                           unsigned time,
+                                           std::list<cache_event> &events,
+                                           bool &erase_original_mf) {
+    erase_original_mf = false;
+    return access(addr, mf, time, events);
+  }
+
   virtual ~read_only_cache() {}
 
  protected:
@@ -1731,6 +1773,13 @@ class l1_cache : public data_cache {
            enum cache_gpu_level level)
       : data_cache(name, config, core_id, type_id, memport, mfcreator, status,
                    L1_WR_ALLOC_R, L1_WRBK_ACC, gpu, level) {}
+
+  // MICRO 2025 port: 8-arg overload (no explicit level) used by ldst_unit_sm.
+  l1_cache(const char *name, cache_config &config, int core_id, int type_id,
+           mem_fetch_interface *memport, mem_fetch_allocator *mfcreator,
+           enum mem_fetch_status status, class gpgpu_sim *gpu)
+      : data_cache(name, config, core_id, type_id, memport, mfcreator, status,
+                   L1_WR_ALLOC_R, L1_WRBK_ACC, gpu, L1_GPU_CACHE) {}
 
   virtual ~l1_cache() {}
 

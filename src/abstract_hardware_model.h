@@ -60,8 +60,18 @@ enum _memory_space_t {
   surf_space,
   global_space,
   generic_space,
-  instruction_space
+  instruction_space,
+  miscellaneous_space   // MICRO 2025 port: target space for MISCELLANEOUS_* ops
 };
+
+// MICRO 2025 port: LDGSTS two-stage access state (load-then-store).
+enum Ldgsts_State {
+  UNITIALIZED = 0,
+  LOAD_STAGE = 1,
+  STORE_STAGE = 2
+};
+
+// ib_ooo_simt_info moved further down: declared after address_type is typedef'd.
 
 #ifndef COEFF_STRUCT
 #define COEFF_STRUCT
@@ -105,6 +115,15 @@ typedef unsigned long long new_addr_type;
 typedef unsigned long long cudaTextureObject_t;
 typedef unsigned long long address_type;
 typedef unsigned long long addr_t;
+
+// MICRO 2025 port: out-of-order IBuffer SIMT update info (reissued inst + next PC).
+struct ib_ooo_simt_info {
+  ib_ooo_simt_info()
+      : m_is_simt_updated(false), m_is_inst_reissued(false), m_next_pc(0) {}
+  bool m_is_simt_updated;
+  bool m_is_inst_reissued;
+  address_type m_next_pc;
+};
 
 // the following are operations the timing model can see
 #define SPECIALIZED_UNIT_NUM 8
@@ -778,6 +797,8 @@ class memory_space_t {
     return (m_type == local_space) || (m_type == param_space_local);
   }
   bool is_global() const { return (m_type == global_space); }
+  // MICRO 2025 port: shared-space test.
+  bool is_shared() const { return (m_type == shared_space); }
 
  private:
   enum _memory_space_t m_type;
@@ -798,6 +819,8 @@ typedef std::bitset<SECTOR_CHUNCK_SIZE> mem_access_sector_mask_t;
       MA_TUP(TEXTURE_ACC_R), MA_TUP(GLOBAL_ACC_W), MA_TUP(LOCAL_ACC_W), \
       MA_TUP(L1_WRBK_ACC), MA_TUP(L2_WRBK_ACC), MA_TUP(INST_ACC_R),     \
       MA_TUP(L1_WR_ALLOC_R), MA_TUP(L2_WR_ALLOC_R),                     \
+      MA_TUP(GRID_BARRIER_ACC),                         /* MICRO 2025 */ \
+      MA_TUP(TLB_MISS_ACC_DATA), MA_TUP(TLB_MISS_ACC_INST),             \
       MA_TUP(NUM_MEM_ACCESS_TYPE) MA_TUP_END(mem_access_type)
 
 #define MA_TUP_BEGIN(X) enum X {
@@ -966,6 +989,10 @@ class mem_access_t {
   void set_inst(warp_inst_t *inst) { m_inst = inst; }
 
   AccessCoalescingInformation &get_access_coal_info() { return m_access_coal_info; }
+  void set_size(unsigned size) { m_req_size = size; }
+  void set_write(bool w) { m_write = w; }
+  void set_type(mem_access_type t) { m_type = t; }
+  void set_sector_mask(const mem_access_sector_mask_t &m) { m_sector_mask = m; }
 
   unsigned long long get_cycle_inserted_inter_coal() const { return m_cycle_inserted_inter_coal; }
   void set_cycle_inserted_inter_coal(unsigned long long cycle) { m_cycle_inserted_inter_coal = cycle; }
@@ -1003,6 +1030,8 @@ class mem_fetch_interface {
   virtual ~mem_fetch_interface() = default;  // MICRO 2025 port: L0_icnt derives, marks ~ override
   virtual bool full(unsigned size, bool write) const = 0;
   virtual void push(mem_fetch *mf) = 0;
+  // MICRO 2025 port: cache_invalidate hook called from SM::cycle.  Default no-op.
+  virtual void flush() {}
 };
 
 class mem_fetch_allocator {
@@ -1179,7 +1208,7 @@ class inst_t {
   unsigned int latency_extra_predicate_op;
 
   // MICRO 2025 port: per-intermediate-stage cycle counter used by functional_unit.
-  unsigned int m_num_cycles_per_intermediate_stage = 0;
+  std::vector<unsigned int> m_num_cycles_per_intermediate_stage;
 
  protected:
   bool m_decoded;
@@ -1210,6 +1239,14 @@ class warp_inst_t : public inst_t {
     m_extra_trace_instruction_info = nullptr;
     m_num_cycles_to_wait_to_free_WAR = 0;
     m_has_wb_from_sm_struct_to_subcore = false;
+    m_ldgsts_state = UNITIALIZED;
+    m_latency_of_mem_operation_at_sm_structure = 0;
+    m_num_cycles_to_stall_SM = 0;
+    m_prt_assigned = false;
+    m_prt_id = 0xFFFFFFFFu;
+    unique_function_id = 0;
+    skip_wb = false;
+    m_fu_assigned = nullptr;
   }
   warp_inst_t(const core_config *config) {
     m_uid = 0;
@@ -1236,6 +1273,14 @@ class warp_inst_t : public inst_t {
     m_extra_trace_instruction_info = nullptr;
     m_num_cycles_to_wait_to_free_WAR = 0;
     m_has_wb_from_sm_struct_to_subcore = false;
+    m_ldgsts_state = UNITIALIZED;
+    m_latency_of_mem_operation_at_sm_structure = 0;
+    m_num_cycles_to_stall_SM = 0;
+    m_prt_assigned = false;
+    m_prt_id = 0xFFFFFFFFu;
+    unique_function_id = 0;
+    skip_wb = false;
+    m_fu_assigned = nullptr;
   }
   virtual ~warp_inst_t() {}
 
@@ -1448,6 +1493,111 @@ class warp_inst_t : public inst_t {
   std::shared_ptr<traced_instruction> m_extra_trace_instruction_info;
   unsigned int m_num_cycles_to_wait_to_free_WAR;
   bool m_has_wb_from_sm_struct_to_subcore;
+
+  // More MICRO 2025 port fields.  Default-inert.
+  Ldgsts_State m_ldgsts_state;
+  unsigned int m_latency_of_mem_operation_at_sm_structure;
+  unsigned int m_num_cycles_to_stall_SM;
+  bool m_prt_assigned;
+  unsigned int m_prt_id;
+  unsigned int unique_function_id;
+  bool skip_wb;
+  class functional_unit *m_fu_assigned;
+  class functional_unit *get_fu_assigned() const { return m_fu_assigned; }
+
+  // Additional MICRO 2025 methods / members called by remodeling/*
+  unsigned int m_icnt_mem_pipe_id = 0;
+  unsigned int get_mem_pipe_icnt_id() const { return m_icnt_mem_pipe_id; }
+  bool m_has_perform_control_stage = false;
+  void change_ldgsts_state() {
+    if (m_ldgsts_state == LOAD_STAGE) m_ldgsts_state = STORE_STAGE;
+    else if (m_ldgsts_state == UNITIALIZED) m_ldgsts_state = LOAD_STAGE;
+  }
+  void accessq_clear() { m_accessq.clear(); }
+  unsigned get_num_cycles() const { return cycles; }
+  unsigned int get_subcore_id() const { return m_scheduler_id; }
+
+  bool is_any_kind_of_barrier() const {
+    return (op == MEMORY_BARRIER_OP) || (op == LDGDEPBAR_OP) ||
+           (op == BARRIER_OP) || (op == GRID_BARRIER_OP);
+  }
+
+  // Extra predicate helpers used by subcore/ldst_unit_sm.
+  bool is_texture() const { return (op == TEXTURE_OP); }
+  bool is_sfu_useful() const { return (op == SFU_OP); }
+  bool is_miscellaneous_queue() const { return (op == MISCELLANEOUS_QUEUE_OP); }
+
+  // MICRO 2025 port: inert field/method stubs.
+  void set_fu_assigned(class functional_unit *fu) { m_fu_assigned = fu; }
+  bool m_has_the_constant_addr_already_calculated = false;
+  int m_cu_rrs_id = -1;          // LOOG rename id (dead path in Stage 1)
+  void ldgsts_change_to_sts_mode(class gpgpu_sim * /*gpu*/ = nullptr) {
+    m_ldgsts_state = STORE_STAGE;
+  }
+
+  // Predicate helpers.
+  bool is_memory_miscelanous() const { return (op == MEMORY_MISCELLANEOUS_OP); }
+  bool is_memory_barrier() const { return (op == MEMORY_BARRIER_OP); }
+  bool is_grid_barrier() const { return (op == GRID_BARRIER_OP); }
+
+  // VPREG / shared-wb hooks used by remodeling; Stage 1 stubs.
+  bool has_sm_shared_wb_finished() const { return m_sm_shared_wb_consumed; }
+  bool get_vpreg_need_to_reissue() const { return false; }
+  unsigned long long get_unique_inst_id() const { return m_uid; }
+
+  // MICRO 2025 port: sm_shared_wb_consumed is both a field name and a method
+  // name (overloaded).  Stage 1: always return true (no conflict modeling).
+  bool sm_shared_wb_consumed(bool /*can_write*/,
+                             unsigned /*num_cycles_to_write*/,
+                             bool & /*conflict*/) { return m_sm_shared_wb_consumed = true; }
+
+  // MICRO 2025 port: instr-latency generation hooks (no-op stubs).
+  virtual void generate_miscellaneous_queue_latencies(class gpgpu_sim * /*gpu*/) {}
+  virtual void generate_texture_latencies(class gpgpu_sim * /*gpu*/) {}
+  virtual void generate_other_mem_ops_latencies(class gpgpu_sim * /*gpu*/) {}
+  virtual void generate_tensor_core_latencies(class gpgpu_sim * /*gpu*/) {}
+  virtual void generate_mem_latencies(class gpgpu_sim * /*gpu*/) {}
+  virtual void generate_dp_latencies(class gpgpu_sim * /*gpu*/) {}
+  virtual void generate_fixed_latency_constant_accesses(class gpgpu_sim * /*gpu*/) {}
+  // MICRO 2025 port: overload taking a single absolute address.
+  virtual void generate_fixed_latency_constant_accesses(new_addr_type /*addr*/) {}
+  virtual void assign_predicate_latencies_if_needed(class gpgpu_sim * /*gpu*/) {}
+  void get_tensor_core_instruction_info() {}
+
+  // MICRO 2025 port: first valid memreqaddr + "final" dst reg (= out[]).
+  new_addr_type get_first_addr_valid() const {
+    for (unsigned n = 0; n < m_per_scalar_thread.size(); ++n) {
+      if (m_warp_active_mask.test(n)) return m_per_scalar_thread[n].memreqaddr[0];
+    }
+    return 0;
+  }
+  unsigned int get_final_dst_reg(unsigned int reg_id) const {
+    return out[reg_id];
+  }
+
+  // MICRO 2025 port: extra helpers used by remodeling/subcore.cc and
+  // ldst_unit_sm.cc.  is_dp_op and is_dp are v2-equivalent; the generated-
+  // const-accesses flag is initialised in MICRO 2025 at decode time.
+  bool is_dp_op() const { return is_dp(); }
+  bool get_generated_constant_accesses() const { return m_generated_constant_accesses; }
+  void set_generated_constant_accesses(bool v) { m_generated_constant_accesses = v; }
+  const std::list<mem_access_t> &get_mem_accesses() const { return m_accessq; }
+  bool m_generated_constant_accesses = false;
+
+  // MICRO 2025 port: extra overload of issue() whose trailing arg is the
+  // scheduler id (no streamID).  Forwards to the streamID=0 variant.
+  void issue(const active_mask_t &mask, unsigned warp_id,
+             unsigned long long cycle, int dynamic_warp_id, int sch_id) {
+    issue(mask, warp_id, cycle, dynamic_warp_id, sch_id,
+          /*streamID=*/0ULL);
+  }
+
+  // MICRO 2025 port additions.  Inert stubs / passthroughs.
+  unsigned int vpreg_virtual_out[MAX_OUTPUT_VALUES] = {0};
+  bool m_sm_shared_wb_consumed = false;  // backing field for the sm_shared_wb* helpers
+  void set_unique_inst_id(unsigned long long /*uid*/) {}
+  void set_some_warp_attributes(unsigned int /*warp_id*/,
+                                unsigned int /*dynamic_warp_id*/) {}
 };
 
 void move_warp(warp_inst_t *&dst, warp_inst_t *&src);

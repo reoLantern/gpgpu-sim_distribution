@@ -55,6 +55,7 @@
 #include "gpu-cache.h"
 #include "mem_fetch.h"
 #include "scoreboard.h"
+#include "scoreboard_reads.h"  // MICRO 2025 port: scoreboard_reads_mode enum in shader_core_config
 #include "stack.h"
 #include "stats.h"
 #include "traffic_breakdown.h"
@@ -105,6 +106,17 @@ class shd_warp_t {
  public:
   shd_warp_t(class shader_core_ctx *shader, unsigned warp_size)
       : m_shader(shader), m_warp_size(warp_size) {
+    m_stores_outstanding = 0;
+    m_inst_in_pipeline = 0;
+    reset();
+  }
+  // MICRO 2025 port: SM (from remodeling/) inherits shader_core_ctx_wrapper,
+  // NOT shader_core_ctx.  Provide an overload that accepts the abstract
+  // wrapper + stats pointer; internal m_shader stays null (vanilla methods
+  // referencing m_shader are not hit along the SM runtime path).
+  shd_warp_t(class shader_core_ctx_wrapper * /*shader*/, unsigned warp_size,
+             class shader_core_stats * /*stats*/)
+      : m_shader(nullptr), m_warp_size(warp_size) {
     m_stores_outstanding = 0;
     m_inst_in_pipeline = 0;
     reset();
@@ -341,7 +353,31 @@ class shd_warp_t {
   class IBuffer_Remodeled *get_IBuffer_remodeled() { return m_IBuffer_remodeled; }
   class Dependency_State  *get_dependency_state() { return m_dependency_state; }
 
-  class Subcore *m_subcore = nullptr;  // MICRO 2025: Subcore owning this warp
+  class Subcore *m_subcore = nullptr;          // MICRO 2025: Subcore owning this warp
+  unsigned int m_kernel_id = 0;                // MICRO 2025: per-kernel stat index
+  unsigned long long m_last_unique_inst_id = 0;  // MICRO 2025: IBuffer reuse stats
+
+  // MICRO 2025 port: function-call tracking used by Subcore for nested-call
+  // active mask tracking.  Stage 1 path never pushes (no-op).
+  void push_function_call(unsigned int /*unique_function_id*/,
+                          active_mask_t /*active_mask*/) { /* no-op stub */ }
+
+  // MICRO 2025 port: returns the currently-active unique_function_id on the
+  // function-call stack.  Stage 1 stub: we never push, so always 0.
+  unsigned int get_current_unique_function_id_call() { return 0; }
+
+  // MICRO 2025 port: function-call pop (matches push_function_call above).
+  void pop_function_call(active_mask_t /*active_mask*/) { /* no-op */ }
+
+  // MICRO 2025 port: grid-barrier tracking (stubbed).
+  bool m_gridbar = false;
+  void set_gridbar() { m_gridbar = true; }
+  void clear_gridbar() { m_gridbar = false; }
+  bool get_gridbar() const { return m_gridbar; }
+
+  // MICRO 2025 port: atomic-pending flag + active mask getter (stubs).
+  bool is_atomic_pending() const { return false; }
+  simt_mask_t get_active_mask() const { return simt_mask_t(); }
 
  private:
   class IBuffer_Remodeled *m_IBuffer_remodeled = nullptr;
@@ -1074,6 +1110,14 @@ class barrier_set_t {
   barrier_set_t(shader_core_ctx *shader, unsigned max_warps_per_core,
                 unsigned max_cta_per_core, unsigned max_barriers_per_cta,
                 unsigned warp_size);
+  // MICRO 2025 port: wrapper overload (SM from remodeling).  Delegates to
+  // the shader_core_ctx form with a nullptr (internal refs guarded).
+  barrier_set_t(shader_core_ctx_wrapper * /*shader*/,
+                unsigned max_warps_per_core, unsigned max_cta_per_core,
+                unsigned max_barriers_per_cta, unsigned warp_size)
+      : barrier_set_t(static_cast<shader_core_ctx *>(nullptr),
+                      max_warps_per_core, max_cta_per_core,
+                      max_barriers_per_cta, warp_size) {}
 
   // during cta allocation
   void allocate_barrier(unsigned cta_id, warp_set_t warps);
@@ -1787,6 +1831,16 @@ class shader_core_config : public core_config {
 
   // InterWarp coalescing + PRT selection policies
   InterWarpCoalescingSelectionPolicies interwarp_coalescing_selection_policy = IWCOAL_OLDEST;
+  PRTSelectionPolicies prt_selection_policy = OLDEST;
+  unsigned num_interwarp_coalescing_tables = 0;
+  unsigned number_of_clusters_for_prt_selection = 0;
+  unsigned max_size_interwarp_coalescing_per_table = 0;
+  unsigned interwarp_coalescing_quanta = 0;
+  float interwarp_coalescing_quanta_warppool_policy_miss_ratio_threshold = 0.0f;
+  bool measure_coalescing_potential_stats = false;
+  bool is_vpreg_enabled = false;
+  unsigned memmory_max_concurrent_requests_standard_per_sm = 0;  // typo mirrors upstream
+  unsigned memmory_max_concurrent_requests_shmem_per_sm = 0;
 
   // Per-subcore memory pipeline
   unsigned memory_subcore_queue_size = 0;
@@ -1820,14 +1874,19 @@ class shader_core_config : public core_config {
   mutable cache_config m_L0C_config;
   mutable cache_config m_L1I_L1_half_C_cache_config;
 
-  // WAR scoreboard (MICRO 2025 Step F)
-  char *scoreboard_war_reads_mode = nullptr;
+  // WAR scoreboard (MICRO 2025 Step F).  MICRO 2025 splits the string form
+  // (from config file) from the parsed enum form.
+  char *scoreboard_war_mode = nullptr;
+  scoreboard_reads_mode scoreboard_war_reads_mode = DISABLED;
   unsigned scoreboard_war_max_uses_per_reg = 0;
 
   // Memory unit per-subcore access queues (MICRO 2025 Step E)
   unsigned maximum_shared_memory_latency_at_sm_structure = 0;
   unsigned maximum_l1d_latency_at_sm_structure = 0;
+  unsigned constant_cache_latency_at_sm_structure = 0;
   unsigned memory_global_shared_latency_for_ldgsts = 0;
+  unsigned memory_l1d_max_lookups_per_cycle_per_bank = 0;
+  unsigned number_of_coalescers = 0;
   unsigned sm_memory_unit_shmem_access_queue_size = 0;
   unsigned sm_memory_unit_l1d_access_queue_size = 0;
   unsigned sm_memory_unit_l1t_access_queue_size = 0;
@@ -2143,6 +2202,19 @@ class shader_core_stats : public shader_core_stats_pod {
   // (vanilla stats use a different shape), so default 0 is harmless.
  public:
   unsigned m_current_kernel_pos = 0;
+
+  // Extra MICRO 2025 stats — empty containers are enough (Stage 1 ignores).
+  std::vector<std::vector<unsigned long long>> m_num_sim_winsn_per_shader_per_kernel;
+  std::vector<std::vector<unsigned long long>> shader_active_warps_per_kernel;
+  std::vector<std::vector<unsigned long long>> shader_maximum_theoretical_warps_per_kernel;
+  std::vector<std::vector<unsigned long long>> shader_cycles_per_kernel;
+  std::vector<unsigned long long> number_of_warps_per_kernel;
+  std::vector<unsigned long long> m_num_sim_winsn_per_shader;
+  unsigned num_scoreboard_reads_check_collision = 0;
+  unsigned num_scoreboard_reads_collision_due_to_max_uses_per_reg = 0;
+  std::vector<std::vector<unsigned long long>> l1d_accesses_per_sid_per_bank;
+  std::vector<std::vector<unsigned long long>> l1d_evals_per_sid_per_bank;
+  std::vector<std::vector<unsigned long long>> warp_issues_from_last_power_sample;
 };
 
 class memory_config;
@@ -2901,6 +2973,14 @@ class shader_memory_interface : public mem_fetch_interface {
     m_core = core;
     m_cluster = cluster;
   }
+  // MICRO 2025 port: SM (remodeling) doesn't inherit shader_core_ctx; accept
+  // the wrapper and leave m_core null (the cluster-only methods below use
+  // m_cluster, not m_core).
+  shader_memory_interface(shader_core_ctx_wrapper * /*core*/,
+                          simt_core_cluster *cluster) {
+    m_core = nullptr;
+    m_cluster = cluster;
+  }
   virtual bool full(unsigned size, bool write) const {
     return m_cluster->icnt_injection_buffer_full(size, write);
   }
@@ -2916,6 +2996,12 @@ class shader_memory_interface : public mem_fetch_interface {
 
 class perfect_memory_interface : public mem_fetch_interface {
  public:
+  // MICRO 2025 port: wrapper overload (SM from remodeling).  m_core stays null.
+  perfect_memory_interface(shader_core_ctx_wrapper * /*core*/,
+                           simt_core_cluster *cluster) {
+    m_core = nullptr;
+    m_cluster = cluster;
+  }
   perfect_memory_interface(shader_core_ctx *core, simt_core_cluster *cluster) {
     m_core = core;
     m_cluster = cluster;

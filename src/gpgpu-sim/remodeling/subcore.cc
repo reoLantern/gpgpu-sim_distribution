@@ -42,6 +42,7 @@
 #include "first_level_instruction_cache.h"
 #include "ldst_unit_sm.h"
 #include "register_file.h"
+#include "l0_icnt.h"            // v2: num_bytes_cache_req() declared here
 
 #include "../trace_data/traced_instruction.h" // v2: moved under trace_data/
 
@@ -930,11 +931,18 @@ warp_inst_t *Subcore::get_next_inst(SM *shared_sm, unsigned int warp_id, address
   assert(warp_id < m_warps_of_subcore.size());
   if (m_config->is_trace_mode) {
     // read the inst from the traces
-    trace_shd_warp_t *m_trace_warp = static_cast<trace_shd_warp_t *>(
-        m_warps_of_subcore[warp_id]);
+    // v2: const_cast needed since m_warps_of_subcore entries may be const
+    // pointers in v2's shd_warp_t typing; remodeling path mutates via
+    // get_next_trace_inst (dequeues from the warp's local trace vector).
+    trace_shd_warp_t *m_trace_warp = const_cast<trace_shd_warp_t *>(
+        static_cast<const trace_shd_warp_t *>(m_warps_of_subcore[warp_id]));
     return m_trace_warp->get_next_trace_inst(pc);
   } else {
-    return shared_sm->get_gpu()->gpgpu_ctx->ptx_fetch_inst(pc);
+    // v2: gpgpu_context::ptx_fetch_inst returns const warp_inst_t*; remodeling
+    // signature expects non-const.  Drop the qualifier — caller treats as read-
+    // only in Stage 1 path.
+    return const_cast<warp_inst_t *>(
+        shared_sm->get_gpu()->gpgpu_ctx->ptx_fetch_inst(pc));
   }
 }
 
@@ -988,12 +996,16 @@ void Subcore::fetch(SM *shared_sm) {
         // mem_fetch *mf = m_mem_fetch_allocator->alloc()
         mem_access_t acc(INST_ACC_R, global_pc_addr, nbytes, false,
                          shared_sm->get_gpu()->gpgpu_ctx);
+        // v2 mem_fetch ctor: streamID at pos 3, no trailing unique_function_id.
         mem_fetch *mf =
             new mem_fetch(acc, NULL /*we don't have an instruction yet*/,
-                          READ_PACKET_SIZE, sm_warp_id, shared_sm->get_sid(),
-                          shared_sm->get_tpc_id(), shared_sm->get_memory_config(),
+                          /*streamID=*/0, READ_PACKET_SIZE, sm_warp_id,
+                          shared_sm->get_sid(), shared_sm->get_tpc_id(),
+                          shared_sm->get_memory_config(),
                           shared_sm->get_gpu()->gpu_tot_sim_cycle +
-                              shared_sm->get_gpu()->gpu_sim_cycle, NULL, NULL, unique_function_id);
+                              shared_sm->get_gpu()->gpu_sim_cycle,
+                          NULL, NULL);
+        mf->set_unique_function_id(unique_function_id);
         mf->set_subcore(m_subcore_id);
         std::list<cache_event> events;
         enum cache_request_status status;

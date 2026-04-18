@@ -53,4 +53,20 @@ enum mem_stage_stall_type {
   N_MEM_STAGE_STALL_TYPE
 };
 
+// MICRO 2025 port: string dump helper for stat names; called by ldst_unit_sm.
+#include <string>
+inline std::string mem_stage_access_type_to_string(mem_stage_access_type type) {
+  switch (type) {
+    case C_MEM: return "C_MEM";
+    case T_MEM: return "T_MEM";
+    case S_MEM: return "S_MEM";
+    case G_MEM_LD: return "G_MEM_LD";
+    case L_MEM_LD: return "L_MEM_LD";
+    case G_MEM_ST: return "G_MEM_ST";
+    case L_MEM_ST: return "L_MEM_ST";
+    case N_MEM_STAGE_ACCESS_TYPE: return "N_MEM_STAGE_ACCESS_TYPE";
+    default: return "UNKNOWN";
+  }
+}
+
 #endif

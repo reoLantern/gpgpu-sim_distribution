@@ -204,12 +204,19 @@ class mem_fetch {
   unsigned int get_unique_function_id() const      { return m_unique_function_id; }
   void set_unique_function_id(unsigned int id)     { m_unique_function_id = id; }
 
+  unsigned int get_kernel_id() const               { return m_kernel_id; }
+  void set_kernel_id(unsigned int id)              { m_kernel_id = id; }
+  bool get_is_fixed_latency_constant_access() const { return m_is_fixed_latency_constant_access; }
+  void set_is_fixed_latency_constant_access(bool v) { m_is_fixed_latency_constant_access = v; }
+
  private:
   int      m_subcore            = -1;
   bool     m_is_filling_L0      = false;
   bool     m_is_prefetch        = false;
   unsigned m_stream_buffer_id   = 0;
   unsigned m_unique_function_id = 0;
+  unsigned m_kernel_id          = 0;
+  bool     m_is_fixed_latency_constant_access = false;
 };
 
 #endif
