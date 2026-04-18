@@ -1227,8 +1227,13 @@ void baseline_cache::cycle() {
 }
 
 /// Interface for response from lower memory level (model bandwidth restictions
-/// in caller)
-void baseline_cache::fill(mem_fetch *mf, unsigned time) {
+/// in caller).
+///
+/// Return value is the MICRO 2025 port (Stage 1c.7.3): returns whether the
+/// original mf was deleted during sector-assoc coalescing.  Callers that
+/// ignore the return (vanilla path) get the legacy void-fill semantics.
+bool baseline_cache::fill(mem_fetch *mf, unsigned time) {
+  bool res_deleted = false;  // MICRO 2025 port
   if (m_config.m_mshr_type == SECTOR_ASSOC) {
     assert(mf->get_original_mf());
     extra_mf_fields_lookup::iterator e =
@@ -1236,14 +1241,18 @@ void baseline_cache::fill(mem_fetch *mf, unsigned time) {
     assert(e != m_extra_mf_fields.end());
     e->second.pending_read--;
 
-    if (e->second.pending_read > 0) {
+    // MICRO 2025 port: add L0I fill bypass — if this is an L0 fill and
+    // pending_read > 0, do NOT delete-and-return; instead fall through so
+    // the L0 tag array gets updated too.
+    if ((e->second.pending_read > 0) && !mf->get_is_filling_L0()) {
       // wait for the other requests to come back
       delete mf;
-      return;
+      return res_deleted;
     } else {
       mem_fetch *temp = mf;
       mf = mf->get_original_mf();
       delete temp;
+      res_deleted = true;  // MICRO 2025 port
     }
   }
 
@@ -1259,7 +1268,14 @@ void baseline_cache::fill(mem_fetch *mf, unsigned time) {
   } else
     abort();
   bool has_atomic = false;
-  m_mshrs.mark_ready(e->second.m_block_addr, has_atomic);
+  // MICRO 2025 port: fixed-latency / prefetch paths take different mshr dispositions.
+  bool do_regular_access =
+      !mf->get_is_fixed_latency_constant_access() && !mf->get_is_prefetch();
+  if (do_regular_access) {
+    m_mshrs.mark_ready(e->second.m_block_addr, has_atomic);
+  } else if (!mf->get_is_prefetch()) {
+    m_mshrs.remove_entry(e->second.m_block_addr);
+  }
   if (has_atomic) {
     assert(m_config.m_alloc_policy == ON_MISS);
     cache_block_t *block = m_tag_array->get_block(e->second.m_cache_index);
@@ -1273,6 +1289,10 @@ void baseline_cache::fill(mem_fetch *mf, unsigned time) {
   }
   m_extra_mf_fields.erase(mf);
   m_bandwidth_management.use_fill_port(mf);
+  if (!do_regular_access) {
+    delete mf;
+  }
+  return res_deleted;
 }
 
 /// Checks if mf is waiting to be filled by lower memory level

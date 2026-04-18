@@ -194,10 +194,8 @@ bool first_level_instruction_cache::fill(mem_fetch *mf, unsigned time) {
     if(mf->get_is_prefetch()) {
         return m_stream_buffers->fill(mf, time);
     }else {
-        // v2 baseline_cache::fill returns void; MICRO 2025 version returns bool.
-        // Call + return true to match the caller's expectation.
-        read_only_cache::fill(mf, time);
-        return true;
+        // Stage 1c.7.3: baseline_cache::fill now returns real res_deleted.
+        return read_only_cache::fill(mf, time);
     }
 }
 

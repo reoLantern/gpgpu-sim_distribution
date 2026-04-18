@@ -1104,6 +1104,14 @@ class mshr_table {
       }
     }
   }
+  // MICRO 2025 port: remove an entry without marking it ready (used by
+  // baseline_cache::fill on prefetch responses).
+  void remove_entry(new_addr_type block_addr) {
+    table::iterator a = m_data.find(block_addr);
+    assert(a != m_data.end());
+    m_data[block_addr].m_list.pop_front();
+    m_data.erase(a);
+  }
 };
 
 /***************************************************************** Caches
@@ -1347,8 +1355,11 @@ class baseline_cache : public cache_t {
   /// Sends next request to lower level of memory
   void cycle();
   /// Interface for response from lower memory level (model bandwidth
-  /// restictions in caller)
-  void fill(mem_fetch *mf, unsigned time);
+  /// restictions in caller).
+  /// MICRO 2025 port: returns whether the original mf was deleted during
+  /// sector-assoc coalescing (used by the L0I fill path in
+  /// first_level_instruction_cache).
+  bool fill(mem_fetch *mf, unsigned time);
   /// Checks if mf is waiting to be filled by lower memory level
   bool waiting_for_fill(mem_fetch *mf);
   /// Are any (accepted) accesses that had to wait for memory now ready? (does
