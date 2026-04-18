@@ -47,7 +47,8 @@ typedef void *yyscan_t;
 
 #define STR_SIZE 1024
 
-const ptx_instruction *gpgpu_context::pc_to_instruction(unsigned pc) {
+// MICRO 2025 port (Stage 1c.7.4): returns mutable pointer — see gpgpu_context.h.
+ptx_instruction *gpgpu_context::pc_to_instruction(unsigned pc) {
   if (pc < s_g_pc_to_insn.size())
     return s_g_pc_to_insn[pc];
   else

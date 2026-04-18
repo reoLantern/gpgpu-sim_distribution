@@ -931,18 +931,12 @@ warp_inst_t *Subcore::get_next_inst(SM *shared_sm, unsigned int warp_id, address
   assert(warp_id < m_warps_of_subcore.size());
   if (m_config->is_trace_mode) {
     // read the inst from the traces
-    // v2: const_cast needed since m_warps_of_subcore entries may be const
-    // pointers in v2's shd_warp_t typing; remodeling path mutates via
-    // get_next_trace_inst (dequeues from the warp's local trace vector).
-    trace_shd_warp_t *m_trace_warp = const_cast<trace_shd_warp_t *>(
-        static_cast<const trace_shd_warp_t *>(m_warps_of_subcore[warp_id]));
+    trace_shd_warp_t *m_trace_warp =
+        static_cast<trace_shd_warp_t *>(m_warps_of_subcore[warp_id]);
     return m_trace_warp->get_next_trace_inst(pc);
   } else {
-    // v2: gpgpu_context::ptx_fetch_inst returns const warp_inst_t*; remodeling
-    // signature expects non-const.  Drop the qualifier — caller treats as read-
-    // only in Stage 1 path.
-    return const_cast<warp_inst_t *>(
-        shared_sm->get_gpu()->gpgpu_ctx->ptx_fetch_inst(pc));
+    // Stage 1c.7.4: ptx_fetch_inst now returns mutable warp_inst_t*.
+    return shared_sm->get_gpu()->gpgpu_ctx->ptx_fetch_inst(pc);
   }
 }
 

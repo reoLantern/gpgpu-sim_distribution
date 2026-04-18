@@ -2055,7 +2055,8 @@ const struct gpgpu_ptx_sim_info *ptx_sim_kernel_info(
   return kernel->get_kernel_info();
 }
 
-const warp_inst_t *gpgpu_context::ptx_fetch_inst(address_type pc) {
+// MICRO 2025 port (Stage 1c.7.4): returns mutable pointer.
+warp_inst_t *gpgpu_context::ptx_fetch_inst(address_type pc) {
   return pc_to_instruction(pc);
 }
 
