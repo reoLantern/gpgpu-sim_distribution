@@ -43,13 +43,12 @@
 #include <regex>
 
 void get_opcode_map(const std::unordered_map<std::string, OpcodeChar> *&OpcodeMap, int binary_verion) {
-    if(binary_verion == BLACKWELL_RTX_BINART_VERSION)
-    OpcodeMap = &Blackwell_OpcodeMap;
-  else if (binary_verion == AMPERE_RTX_BINART_VERSION ||
+  // v2: Blackwell support not in our ISA_Def/ yet; VOLTA_JETSON variant
+  // also absent (we have VOLTA_BINART_VERSION only).  Skip those branches.
+  if (binary_verion == AMPERE_RTX_BINART_VERSION ||
       binary_verion == AMPERE_A100_BINART_VERSION)
     OpcodeMap = &Ampere_OpcodeMap;
-  else if (binary_verion == VOLTA_BINART_VERSION ||
-           binary_verion == VOLTA_JETSON_BINART_VERSION)
+  else if (binary_verion == VOLTA_BINART_VERSION)
     OpcodeMap = &Volta_OpcodeMap;
   else if (binary_verion == PASCAL_TITANX_BINART_VERSION ||
            binary_verion == PASCAL_P100_BINART_VERSION)

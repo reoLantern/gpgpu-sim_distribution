@@ -19,7 +19,17 @@ list(APPEND gpgpusim_SRC addrdec.cc
     stack.cc
     stat-tool.cc
     traffic_breakdown.cc
-    visualizer.cc)
+    visualizer.cc
+    # MICRO 2025 port: traced_* data classes (Stage 1c.3).  rapidjson
+    # is vendored header-only under trace_data/rapidjson/ and resolved via
+    # JSONIncludes.h relative includes (no extra -I needed).
+    trace_data/control_bits.cc
+    trace_data/JSONBase.cc
+    trace_data/register_usage.cc
+    trace_data/string_utilities.cc
+    trace_data/traced_instruction.cc
+    trace_data/traced_kernel.cc
+    trace_data/traced_operand.cc)
 if(NOT GPGPUSIM_USE_POWER_MODEL)
     list(REMOVE_ITEM ${gpgpusim_SRC} power_interface.cc)
 endif()
@@ -28,6 +38,10 @@ endif()
 add_library(gpgpusim STATIC ${gpgpusim_SRC})
 target_include_directories(gpgpusim PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_include_directories(gpgpusim PUBLIC ${CUDAToolkit_INCLUDE_DIRS})
+# MICRO 2025 port: traced_instruction.cc transitively includes
+# ISA_Def/trace_opcode.h, which itself does bare `#include "abstract_hardware_model.h"`.
+# Add src/ so that unqualified include resolves.
+target_include_directories(gpgpusim PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/..)
 
 # Enable OpenMP
 find_package(OpenMP REQUIRED)
