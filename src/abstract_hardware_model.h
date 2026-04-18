@@ -36,6 +36,7 @@
 class gpgpu_sim;
 class kernel_info_t;
 class gpgpu_context;
+class traced_instruction;  // MICRO 2025 port: warp_inst_t carries a shared_ptr to a traced_instruction
 
 // Set a hard limit of 32 CTAs per shader [cuda only has 8]
 #define MAX_CTA_PER_SHADER 32
@@ -208,6 +209,7 @@ enum _memory_op_t { no_memory_op = 0, memory_load, memory_store };
 #include <deque>
 #include <list>
 #include <map>
+#include <memory>   // MICRO 2025 port: std::unique_ptr / shared_ptr
 #include <vector>
 
 #if !defined(__VECTOR_TYPES_H__)
@@ -822,6 +824,29 @@ enum cache_operator_type {
   CACHE_WRITE_THROUGH  // .wt
 };
 
+// MICRO 2025 port: selection policies referenced by shader_core_config
+// fields registered in gpu-sim.cc and consumed by ldst_unit_sm / InterWarp
+// coalescing code.  Value ordering matches MICRO 2025 exactly.
+enum InterWarpCoalescingSelectionPolicies {
+  IWCOAL_OLDEST = 0,
+  GTL_WARPID,
+  SAME_LAST_LEADER_INST_PC_THEN_OLDEST,
+  WARPPOOL_HYBRID,
+  DEP_COUNT_WAIT_OLDEST_INST_IBUFFER_GENERIC,
+  DEP_COUNT_WAIT_OLDEST_INST_IBUFFER_CHECKING_WARP_ID,
+  DEP_COUNT_WAIT_DETECTED_AT_DECODE_GENERIC,
+  DEP_COUNT_WAIT_DETECTED_AT_DECODE_CHECKING_WARP_ID,
+};
+
+enum PRTSelectionPolicies {
+  OLDEST = 0,
+  SAME_LAST_WARP_ID_THEN_OLDEST,
+  SAME_LAST_INST_PC_THEN_OLDEST,
+  WARPID_N_CLUSTERS_WITH_OLDEST,
+  DEP_COUNT_WAIT_GENERIC_THEN_OLDEST,
+  DEP_COUNT_WAIT_CHECKING_WARP_ID_THEN_OLDEST,
+};
+
 class mem_access_t {
  public:
   mem_access_t(gpgpu_context *ctx) { init(ctx); }
@@ -956,6 +981,7 @@ class inst_t {
     m_decoded = false;
     pc = (address_type)-1;
     reconvergence_pc = (address_type)-1;
+    m_is_tensor_core_op_with_4_registers_per_op = false;  // MICRO 2025 port
     op = NO_OP;
     bar_type = NOT_BAR;
     red_type = NOT_RED;
@@ -1012,6 +1038,13 @@ class inst_t {
   }
   bool is_alu() const { return (sp_op == INT__OP); }
 
+  // MICRO 2025 port: referenced by remodeling/subcore.cc when classifying
+  // tensor-core instructions with 4-register operand tuples (wgmma etc).
+  bool is_tensor_core_op() const { return (op == TENSOR_CORE_OP); }
+  bool is_tensor_core_op_with_4_registers_per_op() const {
+    return (op == TENSOR_CORE_OP) && m_is_tensor_core_op_with_4_registers_per_op;
+  }
+
   unsigned get_num_operands() const { return num_operands; }
   unsigned get_num_regs() const { return num_regs; }
   void set_num_regs(unsigned num) { num_regs = num; }
@@ -1065,6 +1098,10 @@ class inst_t {
   memory_space_t space;
   cache_operator_type cache_op;
 
+  // MICRO 2025 port: set by subcore.cc when a tensor-core op is detected to
+  // use 4 regs per operand (e.g., wgmma variants).  Default false.
+  bool m_is_tensor_core_op_with_4_registers_per_op;
+
  protected:
   bool m_decoded;
   virtual void pre_decode() {}
@@ -1089,6 +1126,10 @@ class warp_inst_t : public inst_t {
     m_is_depbar = false;
 
     m_depbar_group_no = 0;
+
+    // MICRO 2025 port additions
+    m_extra_trace_instruction_info = nullptr;
+    m_num_cycles_to_wait_to_free_WAR = 0;
   }
   warp_inst_t(const core_config *config) {
     m_uid = 0;
@@ -1110,6 +1151,10 @@ class warp_inst_t : public inst_t {
     m_is_depbar = false;
 
     m_depbar_group_no = 0;
+
+    // MICRO 2025 port additions
+    m_extra_trace_instruction_info = nullptr;
+    m_num_cycles_to_wait_to_free_WAR = 0;
   }
   virtual ~warp_inst_t() {}
 
@@ -1302,9 +1347,40 @@ class warp_inst_t : public inst_t {
   bool m_is_depbar;
 
   unsigned int m_depbar_group_no;
+
+  // MICRO 2025 port additions: extra trace metadata (populated by the
+  // Stage 1d NVBit v1.8 -> traced_instruction adapter) + WAR scoreboard
+  // free countdown used by Subcore's dep-tracking.  Default-constructed
+  // values are inert: nullptr shared_ptr, zero WAR wait.
+ public:
+  void set_extra_trace_instruction_info(
+      std::shared_ptr<traced_instruction> extra_info_trace) {
+    m_extra_trace_instruction_info = extra_info_trace;
+  }
+  traced_instruction &get_extra_trace_instruction_info() const {
+    return *m_extra_trace_instruction_info;
+  }
+  bool has_extra_trace_instruction_info() const {
+    return m_extra_trace_instruction_info != nullptr;
+  }
+
+  std::shared_ptr<traced_instruction> m_extra_trace_instruction_info;
+  unsigned int m_num_cycles_to_wait_to_free_WAR;
 };
 
 void move_warp(warp_inst_t *&dst, warp_inst_t *&src);
+
+// MICRO 2025 port: swap two warp_inst_t smart pointers by moving the content
+// from src into dst, keeping dst's previous (empty) slot reusable.  Used by
+// register_set_uniptr below.
+inline void move_warp_uniptr(std::unique_ptr<warp_inst_t>& dst,
+                             std::unique_ptr<warp_inst_t>& src) {
+  assert(dst && dst->empty());
+  std::unique_ptr<warp_inst_t> temp = std::move(dst);
+  dst = std::move(src);
+  src = std::move(temp);
+  src->clear();
+}
 
 size_t get_kernel_code_size(class function_info *entry);
 class checkpoint {
@@ -1546,6 +1622,163 @@ class register_set {
   std::vector<warp_inst_t *> regs;
   const char *m_name;
 };
+
+// ============================================================================
+// MICRO 2025 port: register_set_uniptr (+ helper) — unique_ptr-backed variant
+// of register_set used by the new Subcore / functional_unit / ldst_unit_sm
+// pipelines.  Owns warp_inst_t instances instead of reusing pointer slots.
+// Matches MICRO 2025 abstract_hardware_model.h:2007-2168 verbatim except for
+// formatting.
+// ============================================================================
+class register_set_uniptr {
+ public:
+  register_set_uniptr(unsigned num, const char *name) : m_name(name) {
+    for (unsigned i = 0; i < num; i++) {
+      regs.push_back(std::make_unique<warp_inst_t>());
+    }
+  }
+  ~register_set_uniptr() = default;
+
+  const char *get_name() { return m_name; }
+
+  bool has_free() {
+    for (auto &reg : regs) {
+      if (reg->empty()) return true;
+    }
+    return false;
+  }
+  bool has_free(bool sub_core_model, unsigned reg_id) {
+    if (!sub_core_model) return has_free();
+    assert(reg_id < regs.size());
+    return regs[reg_id]->empty();
+  }
+  bool has_ready() {
+    for (auto &reg : regs) {
+      if (!reg->empty()) return true;
+    }
+    return false;
+  }
+  bool has_ready(bool sub_core_model, unsigned reg_id) {
+    if (!sub_core_model) return has_ready();
+    assert(reg_id < regs.size());
+    return !regs[reg_id]->empty();
+  }
+
+  warp_inst_t *get_ready() {
+    warp_inst_t *ready = nullptr;
+    for (auto &reg : regs) {
+      if (!reg->empty()) {
+        if (!ready || reg->get_uid() < ready->get_uid()) {
+          ready = reg.get();
+        }
+      }
+    }
+    return ready;
+  }
+  warp_inst_t *get_ready(bool sub_core_model, unsigned reg_id) {
+    if (!sub_core_model) return get_ready();
+    assert(reg_id < regs.size());
+    return regs[reg_id]->empty() ? nullptr : regs[reg_id].get();
+  }
+
+  warp_inst_t *get_free() {
+    for (auto &reg : regs) {
+      if (reg->empty()) return reg.get();
+    }
+    assert(0 && "No free registers found");
+    return nullptr;
+  }
+  warp_inst_t *get_free(bool sub_core_model, unsigned reg_id) {
+    if (!sub_core_model) return get_free();
+    assert(reg_id < regs.size());
+    if (regs[reg_id]->empty()) return regs[reg_id].get();
+    assert(0 && "No free register found");
+    return nullptr;
+  }
+
+  void move_in(std::unique_ptr<warp_inst_t> &src) {
+    std::unique_ptr<warp_inst_t> &free_ptr = regs[get_index_of_free()];
+    move_warp_uniptr(free_ptr, src);
+  }
+  void move_in(bool sub_core_model, unsigned reg_id,
+               std::unique_ptr<warp_inst_t> &src) {
+    std::unique_ptr<warp_inst_t> &free_ptr =
+        regs[sub_core_model ? reg_id : get_index_of_free()];
+    move_warp_uniptr(free_ptr, src);
+  }
+  void move_out_to(std::unique_ptr<warp_inst_t> &dest) {
+    std::unique_ptr<warp_inst_t> &ready_ptr = regs[get_index_of_ready()];
+    move_warp_uniptr(dest, ready_ptr);
+  }
+  void move_out_to(bool sub_core_model, unsigned reg_id,
+                   std::unique_ptr<warp_inst_t> &dest) {
+    std::unique_ptr<warp_inst_t> &ready_ptr =
+        regs[sub_core_model ? reg_id : get_index_of_ready()];
+    assert(ready_ptr);
+    move_warp_uniptr(dest, ready_ptr);
+  }
+
+  unsigned get_num_ready() {
+    unsigned count = 0;
+    for (auto &reg : regs) {
+      if (!reg->empty()) count++;
+    }
+    return count;
+  }
+  unsigned get_size() { return regs.size(); }
+
+  void print(FILE *fp) const {
+    fprintf(fp, "%s : @%p\n", m_name, this);
+    for (unsigned i = 0; i < regs.size(); i++) {
+      fprintf(fp, "     ");
+      regs[i]->print(fp);
+      fprintf(fp, "\n");
+    }
+  }
+
+  std::unique_ptr<warp_inst_t> &get_ready_smartptr() {
+    return regs[get_index_of_ready()];
+  }
+  std::unique_ptr<warp_inst_t> &get_free_smartptr() {
+    return regs[get_index_of_free()];
+  }
+
+  std::vector<std::unique_ptr<warp_inst_t>> regs;
+
+ private:
+  unsigned get_index_of_free() {
+    for (unsigned i = 0; i < regs.size(); i++) {
+      if (regs[i]->empty()) return i;
+    }
+    assert(0 && "No free registers found");
+    return 0;
+  }
+  unsigned get_index_of_ready() {
+    unsigned idx = 0;
+    bool found = false;
+    for (unsigned i = 0; i < regs.size(); i++) {
+      if (!regs[i]->empty()) {
+        if (!found || regs[i]->get_uid() < regs[idx]->get_uid()) {
+          idx = i;
+          found = true;
+        }
+      }
+    }
+    assert(found && "No ready registers found");
+    return idx;
+  }
+  const char *m_name;
+};
+
+inline void move_warp_between_reg_sets(register_set_uniptr &dst_set,
+                                       unsigned dst_idx,
+                                       register_set_uniptr &src_set,
+                                       unsigned src_idx) {
+  assert(dst_idx < dst_set.get_size());
+  assert(src_idx < src_set.get_size());
+  assert(dst_set.regs[dst_idx]->empty());
+  move_warp_uniptr(dst_set.regs[dst_idx], src_set.regs[src_idx]);
+}
 
 #endif  // #ifdef __cplusplus
 

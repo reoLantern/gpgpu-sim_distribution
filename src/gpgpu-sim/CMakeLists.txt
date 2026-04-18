@@ -29,7 +29,19 @@ list(APPEND gpgpusim_SRC addrdec.cc
     trace_data/string_utilities.cc
     trace_data/traced_instruction.cc
     trace_data/traced_kernel.cc
-    trace_data/traced_operand.cc)
+    trace_data/traced_operand.cc
+    # MICRO 2025 port: remodeling/ (Stage 1c.4).  Compiled but not yet
+    # invoked at runtime (is_micro2025_arch_enabled dispatch arrives in 1e).
+    remodeling/first_level_instruction_cache.cc
+    remodeling/functional_unit.cc
+    remodeling/ibuffer_remodeled.cc
+    remodeling/l0_icnt.cc
+    remodeling/ldst_unit_sm.cc
+    remodeling/register_file.cc
+    remodeling/sm.cc
+    remodeling/stream_buffer.cc
+    remodeling/subcore.cc
+    remodeling/warp_dependency_state.cc)
 if(NOT GPGPUSIM_USE_POWER_MODEL)
     list(REMOVE_ITEM ${gpgpusim_SRC} power_interface.cc)
 endif()
