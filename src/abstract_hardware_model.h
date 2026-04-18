@@ -1531,38 +1531,49 @@ class warp_inst_t : public inst_t {
   void set_fu_assigned(class functional_unit *fu) { m_fu_assigned = fu; }
   bool m_has_the_constant_addr_already_calculated = false;
   int m_cu_rrs_id = -1;          // LOOG rename id (dead path in Stage 1)
-  void ldgsts_change_to_sts_mode(class gpgpu_sim * /*gpu*/ = nullptr) {
-    m_ldgsts_state = STORE_STAGE;
-  }
+  // MICRO 2025 port (abstract_hardware_model.cc:378): real ldgsts mode switch
+  // (swaps per-scalar-thread memref info, regenerates accesses, regenerates
+  // mem latencies).  Body in .cc file.
+  void ldgsts_change_to_sts_mode(class gpgpu_sim *gpu);
 
   // Predicate helpers.
   bool is_memory_miscelanous() const { return (op == MEMORY_MISCELLANEOUS_OP); }
   bool is_memory_barrier() const { return (op == MEMORY_BARRIER_OP); }
   bool is_grid_barrier() const { return (op == GRID_BARRIER_OP); }
 
-  // VPREG / shared-wb hooks used by remodeling; Stage 1 stubs.
-  bool has_sm_shared_wb_finished() const { return m_sm_shared_wb_consumed; }
+  // MICRO 2025 port: VPREG / shared-wb hooks.  Real bodies live in
+  // abstract_hardware_model.cc (Stage 1c.7.2) — they track a per-inst
+  // countdown rather than the Stage-1c.4.5 one-shot stub.
+  bool has_sm_shared_wb_finished();
+  bool sm_shared_wb_consumed(bool can_do_wb_this_cycle,
+                             unsigned int num_cycles_to_transfer_reg,
+                             bool &conflict_detected);
+
   bool get_vpreg_need_to_reissue() const { return false; }
   unsigned long long get_unique_inst_id() const { return m_uid; }
 
-  // MICRO 2025 port: sm_shared_wb_consumed is both a field name and a method
-  // name (overloaded).  Stage 1: always return true (no conflict modeling).
-  bool sm_shared_wb_consumed(bool /*can_write*/,
-                             unsigned /*num_cycles_to_write*/,
-                             bool & /*conflict*/) { return m_sm_shared_wb_consumed = true; }
-
-  // MICRO 2025 port: instr-latency generation hooks (no-op stubs).
-  virtual void generate_miscellaneous_queue_latencies(class gpgpu_sim * /*gpu*/) {}
-  virtual void generate_texture_latencies(class gpgpu_sim * /*gpu*/) {}
-  virtual void generate_other_mem_ops_latencies(class gpgpu_sim * /*gpu*/) {}
-  virtual void generate_tensor_core_latencies(class gpgpu_sim * /*gpu*/) {}
-  virtual void generate_mem_latencies(class gpgpu_sim * /*gpu*/) {}
-  virtual void generate_dp_latencies(class gpgpu_sim * /*gpu*/) {}
+  // MICRO 2025 port: instr-latency generation hooks.  Real bodies live in
+  // abstract_hardware_model.cc (Stage 1c.7.2, port of MICRO 2025 .cc:353-620).
+  virtual void generate_miscellaneous_queue_latencies(class gpgpu_sim *gpu);
+  virtual void generate_texture_latencies(class gpgpu_sim *gpu);
+  virtual void generate_other_mem_ops_latencies(class gpgpu_sim *gpu);
+  virtual void generate_tensor_core_latencies(class gpgpu_sim *gpu);
+  virtual void generate_mem_latencies(class gpgpu_sim *gpu);
+  virtual void generate_dp_latencies(class gpgpu_sim *gpu);
+  virtual void assign_predicate_latencies_if_needed(class gpgpu_sim *gpu);
+  void get_tensor_core_instruction_info();
+  // MICRO 2025 port: constant-access generator (abstract_hardware_model.cc:353).
+  virtual void generate_fixed_latency_constant_accesses(new_addr_type c_addr);
+  // Backward-compat no-op overload used by old stub call sites.
   virtual void generate_fixed_latency_constant_accesses(class gpgpu_sim * /*gpu*/) {}
-  // MICRO 2025 port: overload taking a single absolute address.
-  virtual void generate_fixed_latency_constant_accesses(new_addr_type /*addr*/) {}
-  virtual void assign_predicate_latencies_if_needed(class gpgpu_sim * /*gpu*/) {}
-  void get_tensor_core_instruction_info() {}
+
+  // MICRO 2025 port: Fixed LDST_Unit helper — extracts coalesced accesses
+  // that don't conflict on L1D banks or latency-queue slots.
+  std::vector<mem_access_t> granted_accesses(
+      std::vector<bool> &used_banks,
+      std::vector<std::deque<class mem_fetch *>> &l1_latency_queue,
+      unsigned int inst_latency, class l1d_cache_config &L1D_config,
+      unsigned int max_allowed_searches, bool &is_a_bank_conflict);
 
   // MICRO 2025 port: first valid memreqaddr + "final" dst reg (= out[]).
   new_addr_type get_first_addr_valid() const {
@@ -1598,6 +1609,14 @@ class warp_inst_t : public inst_t {
   void set_unique_inst_id(unsigned long long /*uid*/) {}
   void set_some_warp_attributes(unsigned int /*warp_id*/,
                                 unsigned int /*dynamic_warp_id*/) {}
+
+  // MICRO 2025 port additional fields read by the ported generate_*_latencies
+  // / sm_shared_wb_consumed / ldgsts_change_to_sts_mode methods in
+  // abstract_hardware_model.cc.
+  unsigned int m_num_pending_cycles_to_finish_wb_from_sm_struct_to_subcore = 0;
+  unsigned int m_reg_offset = 0;
+  bool m_per_scalar_thread_valid_memref2 = false;
+  std::vector<per_thread_info> m_per_scalar_thread_memref2;
 };
 
 void move_warp(warp_inst_t *&dst, warp_inst_t *&src);

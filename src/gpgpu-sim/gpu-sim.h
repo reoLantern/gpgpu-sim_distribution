@@ -477,6 +477,14 @@ class gpgpu_sim_config : public power_config,
   class gpgpu_context *gpgpu_ctx;
   bool m_valid;
   shader_core_config m_shader_config;
+
+ public:
+  // MICRO 2025 port: their ported code calls
+  // gpu->get_config().get_gpgpu_sim_config() to reach the inner
+  // shader_core_config.  Provide that accessor here.
+  const shader_core_config &get_gpgpu_sim_config() const { return m_shader_config; }
+
+ private:
   memory_config m_memory_config;
   // clock domains - frequency
   double core_freq;

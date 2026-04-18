@@ -1893,6 +1893,21 @@ class shader_core_config : public core_config {
   unsigned memory_global_shared_latency_for_ldgsts = 0;
   unsigned memory_l1d_max_lookups_per_cycle_per_bank = 0;
   unsigned number_of_coalescers = 0;
+
+  // More Step E fields (read by warp_inst_t::generate_*_latencies ported
+  // from MICRO 2025 abstract_hardware_model.cc).
+  unsigned memory_subcore_link_to_sm_byte_size = 0;
+  bool is_store_half_bandwidth_in_the_subcore_link_to_sm_enabled = false;
+  bool is_load_half_bandwidth_in_the_subcore_link_to_sm_enabled = false;
+  unsigned cycles_needed_for_address_calculation = 1;
+  unsigned memory_shared_memory_minimum_latency = 1;
+  unsigned memory_shared_memory_extra_latency_ldsm_multiple_matrix = 0;
+  unsigned memory_l1d_minimum_latency = 1;
+  unsigned memory_subcore_extra_latency_load_shared_mem = 0;
+  unsigned offset_latency_firts_stage_memory_subcore = 0;  // typo mirrors upstream
+  unsigned dp_sm_shared_queue_size = 0;
+  unsigned tensor_rate_per_cycle = 1;
+  unsigned tensor_extra_latency_16816_fp32_1688_fp32 = 0;
   unsigned sm_memory_unit_shmem_access_queue_size = 0;
   unsigned sm_memory_unit_l1d_access_queue_size = 0;
   unsigned sm_memory_unit_l1t_access_queue_size = 0;

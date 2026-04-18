@@ -64,6 +64,9 @@ class GPGPUsim_ctx {
   class gpgpu_sim_config *g_the_gpu_config;
   class gpgpu_sim *g_the_gpu;
   class stream_manager *g_stream_manager;
+  // MICRO 2025 port: trace_config wired up in main.cc (Stage 1e).  Until then
+  // stays nullptr; assign_predicate_latencies_if_needed guards on that.
+  class trace_config *g_trace_config = nullptr;
 
   struct _cuda_device_id *the_cude_device;
   struct CUctx_st *the_context;
