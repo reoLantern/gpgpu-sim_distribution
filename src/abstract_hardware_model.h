@@ -853,6 +853,25 @@ enum PRTSelectionPolicies {
   DEP_COUNT_WAIT_CHECKING_WARP_ID_THEN_OLDEST,
 };
 
+// Forward-declaration: mem_access_t carries a warp_inst_t* (full defn below).
+class warp_inst_t;
+
+// MICRO 2025 port: metadata attached to every mem_access_t describing which
+// PCs, warp IDs, dependency counters, and PRT entries are waiting on it.
+// ldst_unit_sm's inter-warp coalescing + PRT management use it.
+struct AccessCoalescingInformation {
+  AccessCoalescingInformation()
+      : m_pcs_requesting(),
+        m_dep_counters_id_requesting(),
+        m_warp_id_requesting(),
+        m_prts_requesting() {}
+
+  std::set<addr_t> m_pcs_requesting;
+  std::set<unsigned int> m_dep_counters_id_requesting;
+  std::set<unsigned int> m_warp_id_requesting;
+  std::vector<unsigned int> m_prts_requesting;
+};
+
 class mem_access_t {
  public:
   mem_access_t(gpgpu_context *ctx) { init(ctx); }
@@ -926,6 +945,34 @@ class mem_access_t {
 
   gpgpu_context *gpgpu_ctx;
 
+  // ==========================================================================
+  // MICRO 2025 port additions (Stage 1c.4.5).  Per-access metadata carried
+  // through the ldst_unit_sm pipeline.  Default-inert (all false/0/nullptr).
+  // ==========================================================================
+ public:
+  bool is_l1d_bypass() const { return m_is_l1d_bypass; }
+  void set_l1d_bypass(bool bypass) { m_is_l1d_bypass = bypass; }
+
+  bool is_last_access() const { return m_is_last_access; }
+  void set_last_access(bool last) { m_is_last_access = last; }
+
+  unsigned get_l1d_bank() const { return m_l1d_bank; }
+  void set_l1d_bank(unsigned bank) { m_l1d_bank = bank; }
+
+  memory_space_t get_space() const { return m_space; }
+  void set_space(memory_space_t space) { m_space = space; }
+
+  warp_inst_t *get_inst() const { return m_inst; }
+  void set_inst(warp_inst_t *inst) { m_inst = inst; }
+
+  AccessCoalescingInformation &get_access_coal_info() { return m_access_coal_info; }
+
+  unsigned long long get_cycle_inserted_inter_coal() const { return m_cycle_inserted_inter_coal; }
+  void set_cycle_inserted_inter_coal(unsigned long long cycle) { m_cycle_inserted_inter_coal = cycle; }
+
+  mem_access_t *get_previous_acc() const { return m_previous_acc; }
+  void set_previous_acc(mem_access_t *acc) { m_previous_acc = acc; }
+
  private:
   void init(gpgpu_context *ctx);
 
@@ -937,6 +984,16 @@ class mem_access_t {
   active_mask_t m_warp_mask;
   mem_access_byte_mask_t m_byte_mask;
   mem_access_sector_mask_t m_sector_mask;
+
+  // MICRO 2025 port additions
+  bool m_is_l1d_bypass = false;
+  bool m_is_last_access = false;
+  unsigned m_l1d_bank = 0;
+  memory_space_t m_space;
+  warp_inst_t *m_inst = nullptr;
+  AccessCoalescingInformation m_access_coal_info;
+  unsigned long long m_cycle_inserted_inter_coal = 0;
+  mem_access_t *m_previous_acc = nullptr;
 };
 
 class mem_fetch;
@@ -1120,6 +1177,9 @@ class inst_t {
   // MICRO 2025 port: predicate-mode latency override added when the decoded
   // op is PREDICATE_OP (from ctrl_bits).  Functional_unit gates dispatch on it.
   unsigned int latency_extra_predicate_op;
+
+  // MICRO 2025 port: per-intermediate-stage cycle counter used by functional_unit.
+  unsigned int m_num_cycles_per_intermediate_stage = 0;
 
  protected:
   bool m_decoded;

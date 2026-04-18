@@ -1823,6 +1823,17 @@ class shader_core_config : public core_config {
   // WAR scoreboard (MICRO 2025 Step F)
   char *scoreboard_war_reads_mode = nullptr;
   unsigned scoreboard_war_max_uses_per_reg = 0;
+
+  // Memory unit per-subcore access queues (MICRO 2025 Step E)
+  unsigned maximum_shared_memory_latency_at_sm_structure = 0;
+  unsigned maximum_l1d_latency_at_sm_structure = 0;
+  unsigned memory_global_shared_latency_for_ldgsts = 0;
+  unsigned sm_memory_unit_shmem_access_queue_size = 0;
+  unsigned sm_memory_unit_l1d_access_queue_size = 0;
+  unsigned sm_memory_unit_l1t_access_queue_size = 0;
+  unsigned sm_memory_unit_l1c_access_queue_size = 0;
+  unsigned sm_memory_unit_miscellaneous_access_queue_size = 0;
+  unsigned sm_memory_unit_bypass_l1d_directly_go_to_l2_access_queue_size = 0;
 };
 
 struct shader_core_stats_pod {

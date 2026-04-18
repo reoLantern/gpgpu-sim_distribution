@@ -1328,6 +1328,14 @@ class baseline_cache : public cache_t {
   // flash invalidate all entries in cache
   void flush() { m_tag_array->flush(); }
   void invalidate() { m_tag_array->invalidate(); }
+
+  // MICRO 2025 port: public accessors used by first_level_instruction_cache +
+  // stream_buffer.  Previously only friend classes could reach the members.
+  tag_array  *get_tag_array()    { return m_tag_array; }
+  mshr_table &get_mshr()         { return m_mshrs; }
+  cache_config &get_config()     { return m_config; }
+  // get_bw_manager() defined later (bandwidth_management is a nested class
+  // declared further down in this class body).
   void print(FILE *fp, unsigned &accesses, unsigned &misses) const;
   void display_state(FILE *fp) const;
 
@@ -1478,6 +1486,12 @@ class baseline_cache : public cache_t {
   };
 
   bandwidth_management m_bandwidth_management;
+
+ public:
+  // MICRO 2025 port: accessor used by first_level_instruction_cache to
+  // reserve a fill-port cycle.  Placed after bandwidth_management's nested
+  // class definition so its return type is complete.
+  bandwidth_management &get_bw_manager() { return m_bandwidth_management; }
 };
 
 /// Read only cache
@@ -1489,6 +1503,15 @@ class read_only_cache : public baseline_cache {
                   gpgpu_sim *gpu)
       : baseline_cache(name, config, core_id, type_id, memport, status, level,
                        gpu) {}
+
+  // MICRO 2025 port: overload used by first_level_instruction_cache
+  // (L0 I-cache).  Treats L0 as OTHER_GPU_CACHE; gpu pointer resolved by
+  // shader_core later.  Behaviour-inert w.r.t. level-sensitive stats.
+  read_only_cache(const char *name, cache_config &config, int core_id,
+                  int type_id, mem_fetch_interface *memport,
+                  enum mem_fetch_status status)
+      : baseline_cache(name, config, core_id, type_id, memport, status,
+                       OTHER_GPU_CACHE, nullptr) {}
 
   /// Access cache for read_only_cache: returns RESERVATION_FAIL if request
   /// could not be accepted (for any reason)

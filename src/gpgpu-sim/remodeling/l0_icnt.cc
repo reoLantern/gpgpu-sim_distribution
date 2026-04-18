@@ -188,8 +188,14 @@ void L0_icnt::cycle() {
         address_type addr_req = mf->get_access_address();
         unsigned nbytes = num_bytes_cache_req(m_gpu->getShaderCoreConfig()->m_L1I_L1_half_C_cache_config.get_line_sz(), addr_req);
         mem_access_t acc(mf->get_access().get_type(), addr_req, nbytes, false, m_gpu->gpgpu_ctx);
-        mem_fetch *mf_n = new mem_fetch(acc, NULL /*we don't have an instruction yet*/, READ_PACKET_SIZE,
-                mf->get_wid(), mf->get_sid(), mf->get_tpc(), mf->get_mem_config(), m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle, mf, NULL, mf->get_unique_function_id());
+        // v2 mem_fetch ctor inserts streamID at position 3; MICRO 2025's has
+        // unique_function_id as trailing arg.  Reshape args accordingly and
+        // set unique_function_id after construction.
+        mem_fetch *mf_n = new mem_fetch(acc, NULL /*we don't have an instruction yet*/,
+                mf->get_streamID(), READ_PACKET_SIZE,
+                mf->get_wid(), mf->get_sid(), mf->get_tpc(), mf->get_mem_config(),
+                m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle, mf, NULL);
+        mf_n->set_unique_function_id(mf->get_unique_function_id());
         // v2: MICRO 2025's read_only_cache::access has an extra `bool &erase_original_mf`
         // out-param; v2 vanilla does not.  Drop it (value was only used by their caller
         // to free `mf` on HIT, and in Stage 1 this path is behind is_SM_remodeling_enabled=0).
