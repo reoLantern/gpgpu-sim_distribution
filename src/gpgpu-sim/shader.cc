@@ -3862,10 +3862,14 @@ void barrier_set_t::warp_reaches_barrier(unsigned cta_id, unsigned warp_id,
   cta_to_warp_t::iterator w = m_cta_to_warps.find(cta_id);
 
   if (w == m_cta_to_warps.end()) {  // cta is active
+    // MICRO 2025 port (Stage 1c.7 round 2): dispatch via m_shader_wrapper
+    // when the remodeling wrapper ctor was used.
+    gpgpu_sim *gpu = m_shader_wrapper ? m_shader_wrapper->get_gpu()
+                                       : m_shader->get_gpu();
     printf(
         "ERROR ** cta_id %u not found in barrier set on cycle %llu+%llu...\n",
-        cta_id, m_shader->get_gpu()->gpu_tot_sim_cycle,
-        m_shader->get_gpu()->gpu_sim_cycle);
+        cta_id, gpu->gpu_tot_sim_cycle,
+        gpu->gpu_sim_cycle);
     dump();
     abort();
   }
@@ -4096,6 +4100,8 @@ void shader_core_ctx::get_icnt_power_stats(long &n_simt_to_mem,
 }
 
 kernel_info_t *shd_warp_t::get_kernel_info() const {
+  // MICRO 2025 port (Stage 1c.7 round 2): dispatch via whichever ctor set.
+  if (m_shader_wrapper) return m_shader_wrapper->get_kernel_info();
   return m_shader->get_kernel_info();
 }
 
@@ -4111,10 +4117,19 @@ bool shd_warp_t::waiting() {
   if (functional_done()) {
     // waiting to be initialized with a kernel
     return true;
-  } else if (m_shader->warp_waiting_at_barrier(m_warp_id)) {
+  }
+  // MICRO 2025 port (Stage 1c.7 round 2): dispatch via m_shader_wrapper
+  // when the remodeling wrapper ctor was used.
+  bool at_barrier = m_shader_wrapper
+                        ? m_shader_wrapper->warp_waiting_at_barrier(m_warp_id)
+                        : m_shader->warp_waiting_at_barrier(m_warp_id);
+  bool at_mem_barrier = m_shader_wrapper
+                            ? m_shader_wrapper->warp_waiting_at_mem_barrier(m_warp_id)
+                            : m_shader->warp_waiting_at_mem_barrier(m_warp_id);
+  if (at_barrier) {
     // waiting for other warps in CTA to reach barrier
     return true;
-  } else if (m_shader->warp_waiting_at_mem_barrier(m_warp_id)) {
+  } else if (at_mem_barrier) {
     // waiting for memory barrier
     return true;
   } else if (m_n_atomic > 0) {
@@ -4144,6 +4159,7 @@ shd_warp_t::shd_warp_t(shader_core_ctx_wrapper *shader, unsigned warp_size,
     : m_shader(nullptr), m_warp_size(warp_size) {
   m_stores_outstanding = 0;
   m_inst_in_pipeline = 0;
+  m_shader_wrapper = shader;  // MICRO 2025: get_kernel_info / waiting dispatch on this
   m_IBuffer_remodeled = new IBuffer_Remodeled(shader->get_config(), this, stats);
   m_dependency_state  = new Dependency_State(shader->get_config(), stats);
   reset();

@@ -1402,12 +1402,11 @@ void warp_inst_t::generate_tensor_core_latencies(gpgpu_sim *gpu) {
 void warp_inst_t::assign_predicate_latencies_if_needed(gpgpu_sim *gpu) {
   const shader_core_config &shader_config = gpu->get_config().get_gpgpu_sim_config();
   const trace_config *trace_conf = gpu->gpgpu_ctx->the_gpgpusim->g_trace_config;
-  // v2 guard: g_trace_config is wired by main.cc only when trace-driven
-  // mode starts (Stage 1e wiring).  Until then, skip the predicate-adjust
-  // branch — shader_config.predicate_latency defaults to 1 and the
-  // adjustment would underflow the unsigned subtraction.
-  if (!trace_conf) return;
   if (op == op_type::PREDICATE_OP) {
+    // v2 guard: g_trace_config is wired by main.cc only when trace-driven
+    // mode starts (Stage 1e wiring).  Scope the guard to this branch so
+    // the contains_setp branch below still runs.
+    if (!trace_conf) return;
     latency = trace_conf->get_int_latency();
     initiation_interval = trace_conf->get_int_init();
     latency_extra_predicate_op =

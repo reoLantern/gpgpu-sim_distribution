@@ -43,6 +43,7 @@
 #include <deque>
 #include <list>
 #include <map>
+#include <stack>  // MICRO 2025 port: function-call stack in shd_warp_t
 #include <set>
 #include <utility>
 #include <vector>
@@ -359,27 +360,54 @@ class shd_warp_t {
   unsigned int m_kernel_id = 0;                // MICRO 2025: per-kernel stat index
   unsigned long long m_last_unique_inst_id = 0;  // MICRO 2025: IBuffer reuse stats
 
-  // MICRO 2025 port: function-call tracking used by Subcore for nested-call
-  // active mask tracking.  Stage 1 path never pushes (no-op).
-  void push_function_call(unsigned int /*unique_function_id*/,
-                          active_mask_t /*active_mask*/) { /* no-op stub */ }
+  // MICRO 2025 port (Stage 1c.7 round 2): real function-call stack + real
+  // get_active_mask + real is_atomic_pending.  Previously stubbed, but
+  // remodeling/sm.cc actually relies on these to track active masks across
+  // CALL/RET and to gate atomics.
+  struct function_call_entry_info_t {
+    function_call_entry_info_t() : unique_function_id(0) { active_mask.reset(); }
+    unsigned int unique_function_id;
+    active_mask_t active_mask;
+  };
+  std::stack<function_call_entry_info_t> m_function_call_stack;
 
-  // MICRO 2025 port: returns the currently-active unique_function_id on the
-  // function-call stack.  Stage 1 stub: we never push, so always 0.
-  unsigned int get_current_unique_function_id_call() { return 0; }
+  void push_function_call(unsigned int unique_function_id,
+                          active_mask_t active_mask) {
+    if (active_mask.any()) {
+      function_call_entry_info_t entry;
+      entry.unique_function_id = unique_function_id;
+      entry.active_mask = active_mask;
+      m_function_call_stack.push(entry);
+    }
+  }
+  void pop_function_call(active_mask_t active_mask) {
+    if (m_function_call_stack.empty()) return;  // vanilla path never pushed
+    m_function_call_stack.top().active_mask ^= active_mask;
+    if (m_function_call_stack.top().active_mask.none()) {
+      m_function_call_stack.pop();
+    }
+  }
+  unsigned int get_current_unique_function_id_call() {
+    if (m_function_call_stack.empty()) return 0;
+    return m_function_call_stack.top().unique_function_id;
+  }
 
-  // MICRO 2025 port: function-call pop (matches push_function_call above).
-  void pop_function_call(active_mask_t /*active_mask*/) { /* no-op */ }
-
-  // MICRO 2025 port: grid-barrier tracking (stubbed).
+  // MICRO 2025 port: grid-barrier tracking (real state).
   bool m_gridbar = false;
   void set_gridbar() { m_gridbar = true; }
   void clear_gridbar() { m_gridbar = false; }
   bool get_gridbar() const { return m_gridbar; }
 
-  // MICRO 2025 port: atomic-pending flag + active mask getter (stubs).
-  bool is_atomic_pending() const { return false; }
-  simt_mask_t get_active_mask() const { return simt_mask_t(); }
+  // MICRO 2025 port (real impls).  is_atomic_pending mirrors waiting()'s
+  // m_n_atomic check.  get_active_mask returns the thread-active bitset.
+  bool is_atomic_pending() const { return m_n_atomic > 0; }
+  const active_mask_t &get_active_mask() const { return m_active_threads; }
+
+  // MICRO 2025 port (Stage 1c.7 round 2): store wrapper pointer so
+  // get_kernel_info() / waiting() / barrier lookups can dispatch via
+  // either m_shader (vanilla) or m_shader_wrapper (remodeling).  Wrapper
+  // ctor sets m_shader_wrapper in shader.cc.
+  class shader_core_ctx_wrapper *m_shader_wrapper = nullptr;
 
  private:
   class IBuffer_Remodeled *m_IBuffer_remodeled = nullptr;
