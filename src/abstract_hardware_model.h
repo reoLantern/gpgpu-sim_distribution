@@ -125,52 +125,11 @@ struct ib_ooo_simt_info {
   address_type m_next_pc;
 };
 
-// the following are operations the timing model can see
-#define SPECIALIZED_UNIT_NUM 8
-#define SPEC_UNIT_START_ID 100
-
-enum uarch_op_t {
-  NO_OP = -1,
-  ALU_OP = 1,
-  SFU_OP,
-  TENSOR_CORE_OP,
-  DP_OP,
-  SP_OP,
-  INTP_OP,
-  ALU_SFU_OP,
-  LOAD_OP,
-  TENSOR_CORE_LOAD_OP,
-  TENSOR_CORE_STORE_OP,
-  STORE_OP,
-  BRANCH_OP,
-  BARRIER_OP,
-  MEMORY_BARRIER_OP,
-  CALL_OPS,
-  RET_OPS,
-  EXIT_OPS,
-  // MICRO 2025 remodeling ops (additive; no existing code relies on
-  // numeric positions of the values above).
-  GRID_BARRIER_OP,
-  TEXTURE_OP,
-  SURFACE_OP,
-  HALF_OP,
-  UNIFORM_OP,
-  PREDICATE_OP,
-  DEPBAR_OP,
-  LDGDEPBAR_OP,
-  MEMORY_MISCELLANEOUS_OP,
-  MISCELLANEOUS_NO_QUEUE_OP,
-  MISCELLANEOUS_QUEUE_OP,
-  SPECIALIZED_UNIT_1_OP = SPEC_UNIT_START_ID,
-  SPECIALIZED_UNIT_2_OP,
-  SPECIALIZED_UNIT_3_OP,
-  SPECIALIZED_UNIT_4_OP,
-  SPECIALIZED_UNIT_5_OP,
-  SPECIALIZED_UNIT_6_OP,
-  SPECIALIZED_UNIT_7_OP,
-  SPECIALIZED_UNIT_8_OP
-};
-typedef enum uarch_op_t op_type;
+// uarch_op_t enum + SPEC_UNIT_START_ID live in operation_type.h so that
+// the MICRO 2025 tracer (util/traces_enhanced/src/traced_instruction.h)
+// can include operation_type.h without pulling in the full simulator
+// dependency chain.  Byte-identical to MICRO 2025.
+#include "operation_type.h"
 
 enum uarch_bar_t { NOT_BAR = -1, SYNC = 1, ARRIVE, RED };
 typedef enum uarch_bar_t barrier_type;

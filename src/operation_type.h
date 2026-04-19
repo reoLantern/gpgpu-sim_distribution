@@ -1,7 +1,46 @@
-// v2 shim: MICRO 2025 port code includes "operation_type.h" for the
-// uarch_op_t / op_type enum.  In our v2 layout the enum lives in
-// abstract_hardware_model.h (extended with the MICRO 2025 ops); this
-// header forwards there.  Include guards prevent double-definition.
-
 #pragma once
-#include "abstract_hardware_model.h"
+
+// the following are operations the timing model can see
+#define SPECIALIZED_UNIT_NUM 8
+#define SPEC_UNIT_START_ID 100
+
+enum uarch_op_t {
+  NO_OP = -1,
+  ALU_OP = 1,
+  SFU_OP,
+  TENSOR_CORE_OP,
+  DP_OP,
+  SP_OP,
+  INTP_OP,
+  ALU_SFU_OP,
+  LOAD_OP,
+  TENSOR_CORE_LOAD_OP,
+  TENSOR_CORE_STORE_OP,
+  STORE_OP,
+  BRANCH_OP,
+  BARRIER_OP,
+  MEMORY_BARRIER_OP,
+  GRID_BARRIER_OP,
+  CALL_OPS,
+  RET_OPS,
+  EXIT_OPS,
+  TEXTURE_OP,
+  SURFACE_OP,
+  HALF_OP,
+  UNIFORM_OP,
+  PREDICATE_OP,
+  DEPBAR_OP,
+  LDGDEPBAR_OP,
+  MEMORY_MISCELLANEOUS_OP,
+  MISCELLANEOUS_NO_QUEUE_OP,
+  MISCELLANEOUS_QUEUE_OP,
+  SPECIALIZED_UNIT_1_OP = SPEC_UNIT_START_ID,
+  SPECIALIZED_UNIT_2_OP,
+  SPECIALIZED_UNIT_3_OP,
+  SPECIALIZED_UNIT_4_OP,
+  SPECIALIZED_UNIT_5_OP,
+  SPECIALIZED_UNIT_6_OP,
+  SPECIALIZED_UNIT_7_OP,
+  SPECIALIZED_UNIT_8_OP
+};
+typedef enum uarch_op_t op_type;
