@@ -379,6 +379,11 @@ class kernel_info_t {
   // Default false; remodeling code gates "traditional scoreboarding" on the
   // negation of this flag, so defaulting false keeps it in "traditional" mode.
   bool is_captured_from_binary = false;
+  // MICRO 2025 port: per-kernel unique ID matching the static-JSON function
+  // index emitted by the tracer-v2.  Used by the new trace-parser / trace-driven
+  // (Stage 1d.4+5) to look up static traced_instruction entries via the
+  // m_extra_trace_instruction_info map.  Default 0 == "not yet assigned".
+  unsigned int function_unique_id = 0;
 };
 
 class core_config {
