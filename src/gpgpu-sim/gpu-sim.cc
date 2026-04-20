@@ -428,6 +428,34 @@ void shader_core_config::reg_options(class OptionParser *opp) {
                          "1 = trace-driven mode (default for accel-sim), "
                          "0 = pure-PTX functional sim",
                          "1");
+  // Stage 1e: master switch for MICRO 2025 remodeled SM path.  Default 0
+  // means legacy trace_shader_core_ctx; 1 activates the SM class (with its
+  // Subcore / ldst_unit_sm / PRT hierarchy).
+  option_parser_register(opp, "-is_SM_remodeling_enabled", OPT_BOOL,
+                         &is_SM_remodeling_enabled,
+                         "1 = use remodeling/SM class (MICRO 2025), "
+                         "0 = legacy trace_shader_core_ctx",
+                         "0");
+  option_parser_register(opp, "-num_subcores_in_SM", OPT_INT32,
+                         &num_subcores_in_SM,
+                         "Number of subcores per SM (Turing/Ampere default 4)",
+                         "4");
+  // Stage 1e companion toggles — MICRO 2025 parity, default off unless
+  // config opts in.
+  option_parser_register(opp, "-is_loog_enabled", OPT_BOOL, &is_loog_enabled,
+                         "1 = LOOG enabled (not ported), 0 = disabled", "0");
+  option_parser_register(opp, "-is_rf_cache_enabled", OPT_BOOL,
+                         &is_rf_cache_enabled,
+                         "1 = register-file cache (RFC) enabled", "0");
+  option_parser_register(opp, "-is_ibuffer_remodeled_enabled", OPT_BOOL,
+                         &is_ibuffer_remodeled_enabled,
+                         "1 = 3-slot IBuffer (MICRO 2025); 0 = legacy", "0");
+  option_parser_register(opp, "-is_interwarp_coalescing_enabled", OPT_BOOL,
+                         &is_interwarp_coalescing_enabled,
+                         "1 = inter-warp coalescing unit on", "0");
+  option_parser_register(opp, "-is_remodeling_scoreboarding_enabled", OPT_BOOL,
+                         &is_remodeling_scoreboarding_enabled,
+                         "1 = MICRO 2025 WAR scoreboard on", "0");
   option_parser_register(opp, "-gpgpu_n_clusters", OPT_UINT32, &n_simt_clusters,
                          "number of processing clusters", "10");
   option_parser_register(opp, "-gpgpu_n_cores_per_cluster", OPT_UINT32,
