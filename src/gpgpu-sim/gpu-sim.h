@@ -40,12 +40,18 @@
 #include <list>
 #include <omp.h>
 #include "../abstract_hardware_model.h"
-#include "trace_data/traced_execution_stub.h"  // MICRO 2025 port: stubbed traced_execution (Stage 1d replaces)
+// MICRO 2025 port: Stage 1d.4+5 — real traced_execution now lives under
+// util/traces_enhanced/src/ (shared with the tracer and the new
+// trace-parser).  Drops the temporary Stage 1b stub.
+#include "../../../../util/traces_enhanced/src/traced_execution.h"
 #include "../option_parser.h"
 #include "../trace.h"
 #include "addrdec.h"
 #include "gpu-cache.h"
 #include "shader.h"
+// MICRO 2025 port (Stage 1d.4+5): Element_stats is the gpu_per_sm stats bucket
+// used by trace_driven.cc and shader.cc total_* stats collection.
+#include "remodeling/new_stats.h"
 
 // constants for statistics printouts
 #define GPU_RSTAT_SHD_INFO 0x1
@@ -825,6 +831,13 @@ class gpgpu_sim : public gpgpu_t {
   // MICRO 2025 port: misc helpers exposed to remodeling/ code.
   unsigned long long get_current_gpu_cycle() { return gpu_tot_sim_cycle + gpu_sim_cycle; }
   void decrease_num_threads_kernel(unsigned /*kernel_id*/, unsigned /*n*/) { /* no-op */ }
+
+  // MICRO 2025 port (Stage 1d.4+5): global per-SM stats bucket.  Populated
+  // by each shader_core_ctx via create_gpu_per_sm_stats()/gather_*; read in
+  // shader.cc total_l1d_instructions/total_accesses_coalesced/etc.  Under
+  // vanilla (is_SM_remodeling_enabled=0) the stats map stays empty.
+  // Name matches MICRO 2025 gpu-sim.cc:1667 initialization.
+  Element_stats m_gpu_per_sm_stats{"GPU_per_SM_stats"};
 
  private:
   ::traced_execution m_extra_trace_info;

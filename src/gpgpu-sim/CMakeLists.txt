@@ -21,16 +21,9 @@ list(APPEND gpgpusim_SRC addrdec.cc
     stat-tool.cc
     traffic_breakdown.cc
     visualizer.cc
-    # MICRO 2025 port: traced_* data classes (Stage 1c.3).  rapidjson
-    # is vendored header-only under trace_data/rapidjson/ and resolved via
-    # JSONIncludes.h relative includes (no extra -I needed).
-    trace_data/control_bits.cc
-    trace_data/JSONBase.cc
-    trace_data/register_usage.cc
-    trace_data/string_utilities.cc
-    trace_data/traced_instruction.cc
-    trace_data/traced_kernel.cc
-    trace_data/traced_operand.cc
+    # MICRO 2025 port: Stage 1d.4+5 — traces_enhanced data classes are now
+    # compiled as part of the trace-parser static lib (outer CMakeLists).
+    # No per-sim-lib copy needed; eliminates duplicate-symbol risk.
     # MICRO 2025 port: remodeling/ (Stage 1c.4).  Compiled but not yet
     # invoked at runtime (is_micro2025_arch_enabled dispatch arrives in 1e).
     remodeling/first_level_instruction_cache.cc

@@ -256,6 +256,24 @@ void warp_inst_t::set_active(const active_mask_t &active) {
   }
 }
 
+// MICRO 2025 port (Stage 1d.4+5): overload that takes an explicit warp_size.
+// Used by trace_warp_inst_t::parse_from_trace_struct, where m_config may be
+// null because the instruction is constructed from trace before being issued
+// to a core.
+void warp_inst_t::set_active(const active_mask_t &active,
+                             unsigned int warp_size) {
+  m_warp_active_mask = active;
+  if (m_isatomic) {
+    for (unsigned i = 0; i < warp_size; i++) {
+      if (!m_warp_active_mask.test(i)) {
+        m_per_scalar_thread[i].callback.function = NULL;
+        m_per_scalar_thread[i].callback.instruction = NULL;
+        m_per_scalar_thread[i].callback.thread = NULL;
+      }
+    }
+  }
+}
+
 void warp_inst_t::do_atomic(bool forceDo) {
   do_atomic(m_warp_active_mask, forceDo);
 }
@@ -784,6 +802,39 @@ kernel_info_t::kernel_info_t(dim3 gridDim, dim3 blockDim,
   cache_config_set = false;
 }
 
+// MICRO 2025 port (Stage 1d.4+5): 3-arg ctor used by trace_kernel_info_t.
+// Mirrors MICRO 2025 abstract_hardware_model.cc:1106-1137 including the
+// entry->gpgpu_ctx==nullptr guard.  streamID defaults to 0.
+// function_unique_id / is_captured_from_binary are initialised in-class
+// (see abstract_hardware_model.h :: kernel_info_t) so they are not explicitly
+// re-initialised here.
+kernel_info_t::kernel_info_t(dim3 gridDim, dim3 blockDim,
+                             class function_info *entry) {
+  m_kernel_entry = entry;
+  m_grid_dim = gridDim;
+  m_block_dim = blockDim;
+  m_next_cta.x = 0;
+  m_next_cta.y = 0;
+  m_next_cta.z = 0;
+  m_next_tid = m_next_cta;
+  m_num_cores_running = 0;
+  m_streamID = 0;
+  m_parent_kernel = NULL;
+  m_param_mem = new memory_space_impl<8192>("param", 64 * 1024);
+  if (entry->gpgpu_ctx == nullptr) {
+    m_kernel_TB_latency = 0;
+    m_launch_latency = 0;
+    m_uid = entry->get_uid();
+  } else {
+    m_uid = (entry->gpgpu_ctx->kernel_info_m_next_uid)++;
+    m_launch_latency = entry->gpgpu_ctx->device_runtime->g_kernel_launch_latency;
+    m_kernel_TB_latency =
+        entry->gpgpu_ctx->device_runtime->g_kernel_launch_latency +
+        num_blocks() * entry->gpgpu_ctx->device_runtime->g_TB_launch_latency;
+  }
+  cache_config_set = false;
+}
+
 /*A snapshot of the texture mappings needs to be stored in the kernel's info as
 kernels should use the texture bindings seen at the time of launch and textures
  can be bound/unbound asynchronously with respect to streams. */
@@ -1269,8 +1320,8 @@ void core_t::get_pdom_stack_top_info(unsigned warpId, unsigned *pc,
 // ============================================================================
 
 #include "gpgpu-sim/gpu-cache.h"                     // l1d_cache_config
-#include "gpgpu-sim/trace_data/traced_instruction.h" // traced_instruction
-#include "gpgpu-sim/trace_data/string_utilities.h"   // endsWith
+#include "../../../util/traces_enhanced/src/traced_instruction.h" // traced_instruction (Stage 1d.4+5: moved to canonical util/ path)
+#include "../../../util/traces_enhanced/src/string_utilities.h"   // endsWith
 #include "../../trace-driven/trace_driven.h"         // trace_config class (for assign_predicate_latencies)
 
 // MOD. Begin. Fixed LDST_Unit model

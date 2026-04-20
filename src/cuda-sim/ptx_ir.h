@@ -1260,6 +1260,9 @@ class function_info {
   void set_name(const char *name) { m_name = name; }
   void set_symtab(symbol_table *symtab) { m_symtab = symtab; }
   std::string get_name() const { return m_name; }
+  // Stage 1d.4+5: tiny accessor needed by kernel_info_t's 3-arg ctor
+  // fallback path (matches MICRO 2025 function_info::get_uid()).
+  unsigned get_uid() const { return m_uid; }
   unsigned print_insn(unsigned pc, FILE *fp) const;
   std::string get_insn_str(unsigned pc) const;
   void add_inst(const std::list<ptx_instruction *> &instructions) {

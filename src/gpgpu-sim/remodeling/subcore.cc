@@ -44,7 +44,7 @@
 #include "register_file.h"
 #include "l0_icnt.h"            // v2: num_bytes_cache_req() declared here
 
-#include "../trace_data/traced_instruction.h" // v2: moved under trace_data/
+#include "../../../../../util/traces_enhanced/src/traced_instruction.h"
 
 
 

@@ -35,7 +35,7 @@
 #include <vector>
 
 #include "../../abstract_hardware_model.h"
-#include "../trace_data/traced_instruction.h"  // v2: moved under trace_data/
+#include "../../../../../util/traces_enhanced/src/traced_instruction.h"
 
 
 class shader_core_config;

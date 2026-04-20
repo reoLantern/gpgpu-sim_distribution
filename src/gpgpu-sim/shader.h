@@ -123,6 +123,16 @@ class shd_warp_t {
   // allocation don't need to be dragged into every TU that includes shader.h.
   shd_warp_t(class shader_core_ctx_wrapper *shader, unsigned warp_size,
              class shader_core_stats *stats);
+  // Stage 1d.4+5: 3-arg overload used by trace_shd_warp_t (which passes a
+  // trace_shader_core_ctx* / shader_core_ctx* rather than a wrapper).  Keeps
+  // the trace-driven path compatible with the non-remodeled hierarchy.
+  shd_warp_t(class shader_core_ctx *shader, unsigned warp_size,
+             class shader_core_stats *stats)
+      : m_shader(shader), m_warp_size(warp_size) {
+    m_stores_outstanding = 0;
+    m_inst_in_pipeline = 0;
+    reset();
+  }
   virtual ~shd_warp_t();
   void reset() {
     assert(m_stores_outstanding == 0);
@@ -431,6 +441,17 @@ unsigned register_bank(int regnum, int wid, unsigned num_banks,
 class shader_core_ctx;
 class shader_core_config;
 class shader_core_stats;
+// MICRO 2025 port: forward declaration so that trace_driven.h can declare
+// `virtual RRS* get_loog_rrs()` without dragging in shader_core_wrapper.h.
+// The full `class RRS` stub lives in stubs.h (Stage 1c).
+class RRS;
+// Stage 1d.4+5: forward declarations for the stats types referenced by
+// shader_core_ctx's newly-added virtual stubs (create_gpu_per_sm_stats,
+// gather_gpu_per_sm_stats, gather_gpu_per_sm_single_stat).  Full definitions
+// live in remodeling/new_stats.h (Element_stats) and stubs.h
+// (coalescingStatsAcrossSms stub).
+class Element_stats;
+class coalescingStatsAcrossSms;
 
 enum scheduler_prioritization_type {
   SCHEDULER_PRIORITIZATION_LRR = 0,   // Loose Round Robin
@@ -1831,6 +1852,13 @@ class shader_core_config : public core_config {
 
   // Feature toggles
   bool is_trace_mode = false;
+  // Stage 1d.4+5: master switch for MICRO 2025 remodeled SM path.  When 0,
+  // vanilla gpgpu-sim dispatch is taken.  When 1, the remodeling/ SM class
+  // hierarchy is used (see shader_core_wrapper.h + remodeling/sm.cc).
+  bool is_SM_remodeling_enabled = false;
+  // Stage 1d.4+5: number of subcores per SM (normally 4 for Turing/Ampere).
+  // Read by trace_simt_core_cluster::create_shader_core_ctx and related.
+  int num_subcores_in_SM = 4;
   bool is_loog_enabled = false;
   bool is_rf_cache_enabled = false;
   bool is_ibuffer_remodeled_enabled = false;
@@ -2339,6 +2367,29 @@ class shader_core_ctx : public core_t {
                   unsigned shader_id, unsigned tpc_id,
                   const shader_core_config *config,
                   const memory_config *mem_config, shader_core_stats *stats);
+
+  // MICRO 2025 port (Stage 1d.4+5): LOOG virtuals — stubbed to "disabled"
+  // in the vanilla core. `trace_shader_core_ctx` (trace_driven.h) overrides
+  // them with the same impl, matching MICRO 2025's shader.h:3555-3556.
+  // LOOG itself is not yet implemented; the config field `is_loog_enabled`
+  // stays false until a future step wires it up.
+  virtual RRS* get_loog_rrs() { return nullptr; }
+  virtual bool get_is_loog_enabled() { return m_config->is_loog_enabled; }
+
+  // MICRO 2025 port (Stage 1d.4+5): overridable init hook + per-SM stats
+  // collection API (matches shader.h:3002-3013 in MICRO 2025).  Vanilla
+  // shader_core_ctx keeps these as no-ops; remodeling/ SM class provides
+  // the real impl.  trace_driven.cc calls init() + create_gpu_per_sm_stats
+  // per shader at cluster setup.
+  virtual void init() {}
+  virtual void create_gpu_per_sm_stats(Element_stats &all_stats) {}
+  virtual void gather_gpu_per_sm_stats(
+      Element_stats &all_stats,
+      coalescingStatsAcrossSms &coal_stats_l1d,
+      coalescingStatsAcrossSms &coal_stats_const,
+      coalescingStatsAcrossSms &coal_stats_sharedmem) {}
+  virtual void gather_gpu_per_sm_single_stat(
+      Element_stats &all_stats, std::string stat_name) {}
 
   // used by simt_core_cluster:
   // modifiers
@@ -2947,7 +2998,14 @@ class simt_core_cluster {
   const shader_core_config *m_config;
   shader_core_stats *m_stats;
   memory_stats_t *m_memory_stats;
-  shader_core_ctx **m_core;
+  // Stage 1d.4+5: switched from C-array `shader_core_ctx **m_core` to
+  // std::vector to match MICRO 2025 (shader.h:3643).  All `m_core[i]` call
+  // sites remain source-compatible.  We keep `shader_core_ctx*` (vs MICRO
+  // 2025's `shader_core_ctx_wrapper*`) to avoid rewiring the vanilla
+  // inheritance hierarchy — safe because `trace_shader_core_ctx` derives
+  // from `shader_core_ctx` and the wrapper dispatch already routes through
+  // `m_shader_wrapper` on `shd_warp_t`.
+  std::vector<shader_core_ctx*> m_core;
   const memory_config *m_mem_config;
 
   unsigned m_cta_issue_next_core;

@@ -4534,7 +4534,8 @@ void opndcoll_rfu_t::collector_unit_t::dispatch() {
 }
 
 void exec_simt_core_cluster::create_shader_core_ctx() {
-  m_core = new shader_core_ctx *[m_config->n_simt_cores_per_cluster];
+  // Stage 1d.4+5: m_core is now std::vector<shader_core_ctx*>.
+  m_core.resize(m_config->n_simt_cores_per_cluster);
   for (unsigned i = 0; i < m_config->n_simt_cores_per_cluster; i++) {
     unsigned sid = m_config->cid_to_sid(i, m_cluster_id);
     m_core[i] = new exec_shader_core_ctx(m_gpu, this, sid, m_cluster_id,

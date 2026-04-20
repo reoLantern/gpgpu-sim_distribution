@@ -71,6 +71,24 @@ enum Ldgsts_State {
   STORE_STAGE = 2
 };
 
+// MICRO 2025 port (Stage 1d.4+5): SASS control-flow classification.
+// Populated by the ported trace_warp_inst_t::parse_from_trace_struct.
+// These are Volta+ independent-thread-scheduling primitives (WARPSYNC/BSYNC/
+// YIELD) plus the conventional branch/jump/return trio.  MICRO 2025 leaves
+// consumption of this field for future steps; we port it now so the enum
+// and the per-inst tag are available when we light up the consumer later.
+enum uarch_trace_control_flow_t {
+  NOT_DEFINED = -1,
+  IS_BRANCH = 1,    // SASS BRA
+  IS_ENDCALL = 2,   // SASS RET
+  IS_JUMP = 3,      // SASS BRX (indirect branch)
+  IS_BSYNC = 4,     // SASS BSYNC
+  IS_WARPSYNC = 5,  // SASS WARPSYNC (Volta+ ITS)
+  IS_RPCMOV = 6,    // SASS RPCMOV
+  IS_YIELD = 7      // SASS YIELD
+};
+typedef enum uarch_trace_control_flow_t trace_control_flow_type;
+
 // ib_ooo_simt_info moved further down: declared after address_type is typedef'd.
 
 #ifndef COEFF_STRUCT
@@ -229,6 +247,10 @@ class kernel_info_t {
   //   }
   kernel_info_t(dim3 gridDim, dim3 blockDim, class function_info *entry,
                 unsigned long long streamID);
+  // MICRO 2025 port (Stage 1d.4+5): 3-arg ctor matching MICRO 2025's
+  // trace_kernel_info_t base delegation.  streamID defaults to 0 since
+  // trace-driven kernels don't participate in our per-stream stats bucket.
+  kernel_info_t(dim3 gridDim, dim3 blockDim, class function_info *entry);
   kernel_info_t(
       dim3 gridDim, dim3 blockDim, class function_info *entry,
       std::map<std::string, const struct cudaArray *> nameToCudaArray,
@@ -1211,6 +1233,7 @@ class warp_inst_t : public inst_t {
     unique_function_id = 0;
     skip_wb = false;
     m_fu_assigned = nullptr;
+    control_flow_type = NOT_DEFINED;  // Stage 1d.4+5
   }
   warp_inst_t(const core_config *config) {
     m_uid = 0;
@@ -1245,6 +1268,7 @@ class warp_inst_t : public inst_t {
     unique_function_id = 0;
     skip_wb = false;
     m_fu_assigned = nullptr;
+    control_flow_type = NOT_DEFINED;  // Stage 1d.4+5
   }
   virtual ~warp_inst_t() {}
 
@@ -1277,6 +1301,34 @@ class warp_inst_t : public inst_t {
     assert(num_addrs <= MAX_ACCESSES_PER_INSN_PER_THREAD);
     for (unsigned i = 0; i < num_addrs; i++)
       m_per_scalar_thread[n].memreqaddr[i] = addr[i];
+  }
+  // MICRO 2025 port (Stage 1d.4+5): paired memory-access addresses.  For
+  // LDGSTS (async copy) and other 2-access-per-inst SASS ops, the second
+  // memory reference lives in the memref2 vector.  Ours matches MICRO 2025's
+  // set_addr_memref2 verbatim (abstract_hardware_model.h:1425-1448).
+  void set_addr_memref2(unsigned n, new_addr_type addr) {
+    unsigned int config_warp_size = 32;
+    if (m_config != nullptr) {
+      config_warp_size = m_config->warp_size;
+    }
+    if (!m_per_scalar_thread_valid_memref2) {
+      m_per_scalar_thread_memref2.resize(config_warp_size);
+      m_per_scalar_thread_valid_memref2 = true;
+    }
+    m_per_scalar_thread_memref2[n].memreqaddr[0] = addr;
+  }
+  void set_addr_memref2(unsigned n, new_addr_type *addr, unsigned num_addrs) {
+    unsigned int config_warp_size = 32;
+    if (m_config != nullptr) {
+      config_warp_size = m_config->warp_size;
+    }
+    if (!m_per_scalar_thread_valid_memref2) {
+      m_per_scalar_thread_memref2.resize(config_warp_size);
+      m_per_scalar_thread_valid_memref2 = true;
+    }
+    assert(num_addrs <= MAX_ACCESSES_PER_INSN_PER_THREAD);
+    for (unsigned i = 0; i < num_addrs; i++)
+      m_per_scalar_thread_memref2[n].memreqaddr[i] = addr[i];
   }
   void print_m_accessq() {
     if (accessq_empty())
@@ -1328,6 +1380,11 @@ class warp_inst_t : public inst_t {
     m_per_scalar_thread[lane_id].callback.thread = thread;
   }
   void set_active(const active_mask_t &active);
+  // MICRO 2025 port (Stage 1d.4+5): overload that accepts an explicit warp_size.
+  // Needed by trace_warp_inst_t::parse_from_trace_struct when m_config is not
+  // yet bound (the inst may be set up before being attached to a core).  Our
+  // existing 1-arg version continues to route through m_config->warp_size.
+  void set_active(const active_mask_t &active, unsigned int warp_size);
 
   void clear_active(const active_mask_t &inactive);
   void set_not_active(unsigned lane_id);
@@ -1581,6 +1638,10 @@ class warp_inst_t : public inst_t {
   unsigned int m_reg_offset = 0;
   bool m_per_scalar_thread_valid_memref2 = false;
   std::vector<per_thread_info> m_per_scalar_thread_memref2;
+  // Stage 1d.4+5: SASS control-flow classification (WARPSYNC / BSYNC / YIELD /
+  // BRANCH / JUMP / ENDCALL / RPCMOV / NOT_DEFINED).  Populated by the ported
+  // trace_warp_inst_t::parse_from_trace_struct based on opcode.
+  trace_control_flow_type control_flow_type = NOT_DEFINED;
 };
 
 void move_warp(warp_inst_t *&dst, warp_inst_t *&src);

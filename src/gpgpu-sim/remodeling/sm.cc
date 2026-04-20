@@ -44,7 +44,7 @@
 #include "functional_unit.h"
 #include "warp_dependency_state.h"
 
-#include "../trace_data/traced_operand.h"     // v2: moved under trace_data/
+#include "../../../../../util/traces_enhanced/src/traced_operand.h"
 
 
 #define STRSIZE 1024
