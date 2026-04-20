@@ -832,6 +832,13 @@ class gpgpu_sim : public gpgpu_t {
   unsigned long long get_current_gpu_cycle() { return gpu_tot_sim_cycle + gpu_sim_cycle; }
   void decrease_num_threads_kernel(unsigned /*kernel_id*/, unsigned /*n*/) { /* no-op */ }
 
+  // MICRO 2025 port (Stage 1d.8): load the static per-kernel JSON produced by
+  // the tracer-v2 into m_extra_trace_info so that
+  // traced_execution::get_kernel_by_unique_function_id and friends can
+  // resolve lookups.  Invoked from accel-sim.cc right after tracer
+  // construction (mirrors MICRO 2025 main.cc:99).
+  void parse_extra_trace_info(std::string filepath, bool is_extra_trace_enabled);
+
   // MICRO 2025 port (Stage 1d.4+5): global per-SM stats bucket.  Populated
   // by each shader_core_ctx via create_gpu_per_sm_stats()/gather_*; read in
   // shader.cc total_l1d_instructions/total_accesses_coalesced/etc.  Under

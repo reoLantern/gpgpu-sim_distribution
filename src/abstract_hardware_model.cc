@@ -1097,6 +1097,16 @@ void simt_stack::print_checkpoint(FILE *fout) const {
 void simt_stack::update(simt_mask_t &thread_done, addr_vector_t &next_pc,
                         address_type recvg_pc, op_type next_inst_op,
                         unsigned next_inst_size, address_type next_inst_pc) {
+  // MICRO 2025 port (Stage 1d.8): in trace-driven mode the simt_stack is
+  // not used — divergence is encoded in each inst's active_mask, and the
+  // reconvergence happens at trace-provided PCs.  MICRO 2025 gutted this
+  // whole function (their simulator is trace-only); we retain the vanilla
+  // PTX-functional body behind a trace-mode guard so pure-PTX mode (if
+  // ever re-enabled) keeps working.
+  if (m_gpu && m_gpu->getShaderCoreConfig() &&
+      m_gpu->getShaderCoreConfig()->is_trace_mode) {
+    return;
+  }
   assert(m_stack.size() > 0);
 
   assert(next_pc.size() == m_warp_size);

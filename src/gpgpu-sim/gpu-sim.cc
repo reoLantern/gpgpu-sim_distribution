@@ -420,6 +420,14 @@ void shader_core_config::reg_options(class OptionParser *opp) {
   option_parser_register(
       opp, "-gpgpu_num_cta_barriers", OPT_UINT32, &max_barriers_per_cta,
       "Maximum number of named barriers per CTA (default 16)", "16");
+  // Stage 1d.8: trace-driven mode toggle.  Gates the simt_stack::update
+  // early return and other trace-specific short-circuits.  accel-sim.out
+  // always runs in trace-driven mode, so default = 1.  Set to 0 only when
+  // running pure-PTX sim (no trace file).
+  option_parser_register(opp, "-is_trace_mode", OPT_BOOL, &is_trace_mode,
+                         "1 = trace-driven mode (default for accel-sim), "
+                         "0 = pure-PTX functional sim",
+                         "1");
   option_parser_register(opp, "-gpgpu_n_clusters", OPT_UINT32, &n_simt_clusters,
                          "number of processing clusters", "10");
   option_parser_register(opp, "-gpgpu_n_cores_per_cluster", OPT_UINT32,
@@ -790,6 +798,17 @@ void increment_x_then_y_then_z(dim3 &i, const dim3 &bound) {
       i.y = 0;
       if (i.z < bound.z) i.z++;
     }
+  }
+}
+
+// MICRO 2025 port (Stage 1d.8): load static JSON into m_extra_trace_info.
+// Mirrors MICRO 2025 gpu-sim.cc:131-135.  Called by accel-sim.cc right
+// after tracer construction, so trace_driven lookups (which use
+// traced_execution::get_kernel_by_unique_function_id) find populated data.
+void gpgpu_sim::parse_extra_trace_info(std::string filepath,
+                                       bool is_extra_trace_enabled) {
+  if (is_extra_trace_enabled) {
+    m_extra_trace_info.DeserializeFromFile(filepath.c_str());
   }
 }
 
