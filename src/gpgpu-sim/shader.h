@@ -2877,8 +2877,12 @@ class shader_core_ctx : public core_t, public shader_core_ctx_wrapper {
 
   virtual void create_shd_warp() = 0;
 
-  virtual const warp_inst_t *get_next_inst(unsigned warp_id,
-                                           address_type pc) = 0;
+  // Stage 1e-B3 (W3): match MICRO 2025 shader.h:3402 — drop const, add
+  // `decrement_trace_pc` pure virtual.  The old const was a v2-local
+  // hack; trace_shader_core_ctx already returns mutable warp_inst_t*
+  // and its decrement_trace_pc was only consumed via a concrete override.
+  virtual warp_inst_t *get_next_inst(unsigned warp_id, address_type pc) = 0;
+  virtual void decrement_trace_pc(unsigned warp_id) = 0;
   virtual void get_pdom_stack_top_info(unsigned warp_id, const warp_inst_t *pI,
                                        unsigned *pc, unsigned *rpc) = 0;
   virtual const active_mask_t &get_active_mask(unsigned warp_id,
@@ -3012,7 +3016,10 @@ class exec_shader_core_ctx : public shader_core_ctx {
                                    unsigned hw_cta_id, unsigned hw_warp_id,
                                    gpgpu_t *gpu);
   virtual void create_shd_warp();
-  virtual const warp_inst_t *get_next_inst(unsigned warp_id, address_type pc);
+  // Stage 1e-B3 (W3): match shader_core_ctx base-class signature (non-const).
+  virtual warp_inst_t *get_next_inst(unsigned warp_id, address_type pc);
+  // Stage 1e-B3 (W3): exec-path has no trace PC to decrement; no-op stub.
+  virtual void decrement_trace_pc(unsigned /*warp_id*/) override {}
   virtual void get_pdom_stack_top_info(unsigned warp_id, const warp_inst_t *pI,
                                        unsigned *pc, unsigned *rpc);
   virtual const active_mask_t &get_active_mask(unsigned warp_id,
@@ -3196,6 +3203,9 @@ class shader_memory_interface : public mem_fetch_interface {
   // MICRO 2025 port: dispatch via m_core or m_core_wrapper (body in shader.cc
   // since it calls a virtual method on shader_core_ctx_wrapper).
   virtual void push(mem_fetch *mf);
+  // Stage 1e-B3 (W1): empty-body flush stub to satisfy the now-pure
+  // mem_fetch_interface::flush.  MICRO 2025 shader.h:3684 equivalent.
+  virtual void flush() override {}
 
  private:
   shader_core_ctx *m_core;
@@ -3222,6 +3232,8 @@ class perfect_memory_interface : public mem_fetch_interface {
   }
   // MICRO 2025 port: body in shader.cc (wrapper virtual dispatch).
   virtual void push(mem_fetch *mf);
+  // Stage 1e-B3 (W1): empty-body flush stub (MICRO 2025 shader.h:3708).
+  virtual void flush() override {}
 
  private:
   shader_core_ctx *m_core;
@@ -3278,6 +3290,9 @@ class sst_memory_interface : public mem_fetch_interface {
     m_core->inc_simt_to_mem(mf->get_num_flits(true));
     m_cluster->icnt_inject_request_packet_to_SST(mf);
   }
+  // Stage 1e-B3 (W1): empty-body flush stub.  SST path never needs a flush;
+  // upstream stubs MICRO 2025-style.
+  virtual void flush() override {}
 
  private:
   shader_core_ctx *m_core;

@@ -875,8 +875,11 @@ void shader_core_stats::visualizer_print(gzFile visualizer_file) {
                 check ptx_ir.h to verify this does not overlap \
                 other memory spaces */
 
-const warp_inst_t *exec_shader_core_ctx::get_next_inst(unsigned warp_id,
-                                                       address_type pc) {
+// Stage 1e-B3 (W3): drop const from return type to match MICRO 2025 + the
+// updated shader_core_ctx pure-virtual signature.  ptx_fetch_inst was
+// already mutable-returning (Stage 1c.7.4), so no cast needed.
+warp_inst_t *exec_shader_core_ctx::get_next_inst(unsigned warp_id,
+                                                  address_type pc) {
   // read the inst from the functional model
   return m_gpu->gpgpu_ctx->ptx_fetch_inst(pc);
 }

@@ -1017,7 +1017,10 @@ class mem_fetch_interface {
   virtual bool full(unsigned size, bool write) const = 0;
   virtual void push(mem_fetch *mf) = 0;
   // MICRO 2025 port: cache_invalidate hook called from SM::cycle.  Default no-op.
-  virtual void flush() {}
+  // Stage 1e-B3 (W1): match MICRO 2025 abstract_hardware_model.h:1047 —
+  // force every mem_fetch_interface subclass to explicitly declare its
+  // flush intent.  Empty-body stubs live on the subclasses.
+  virtual void flush() = 0;
 };
 
 class mem_fetch_allocator {

@@ -261,6 +261,9 @@ class L2interface : public mem_fetch_interface {
     mf->set_status(IN_PARTITION_L2_TO_DRAM_QUEUE, 0 /*FIXME*/);
     m_unit->m_L2_dram_queue->push(mf);
   }
+  // Stage 1e-B3 (W1): empty-body flush stub to satisfy the now-pure
+  // mem_fetch_interface::flush.  Matches MICRO 2025 l2cache.h:267.
+  virtual void flush() override {}
 
  private:
   memory_sub_partition *m_unit;
