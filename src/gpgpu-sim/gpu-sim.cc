@@ -1702,6 +1702,14 @@ gpgpu_sim::gpgpu_sim(const gpgpu_sim_config &config, gpgpu_context *ctx)
   // Jin: functional simulation for CDP
   m_functional_sim = false;
   m_functional_sim_kernel = NULL;
+
+  // Stage 1f P0-A.2: populate m_gpu_per_sm_stats BEFORE derived trace_gpgpu_sim
+  // ctor runs createSIMTCluster(), which in turn invokes
+  // trace_simt_core_cluster::create_shader_core_ctx() →
+  // SM::create_gpu_per_sm_stats(m_gpu_per_sm_stats) to copy keys into each
+  // per-SM m_sm_stats map. Matches MICRO 2025 gpu-sim.cc:1755 position
+  // (tail of base ctor, before derived cluster creation).
+  create_gpu_per_sm_stats();
 }
 
 void sst_gpgpu_sim::SST_receive_mem_reply(unsigned core_id, void *mem_req) {
@@ -1864,11 +1872,9 @@ void gpgpu_sim::init() {
   for (unsigned i = 0; i < m_shader_config->n_simt_clusters; i++)
     m_cluster[i]->reinit();
   m_shader_stats->new_grid();
-  // Stage 1e-A2 (Codex review follow-up): hydrate per-SM Element_stats bucket
-  // with counter definitions.  Matches MICRO 2025 gpu-sim.cc:1755 position
-  // inside init().  Safe to call even when is_SM_remodeling_enabled=0 — the
-  // counters just stay at 0 until the SM path populates them.
-  create_gpu_per_sm_stats();
+  // Stage 1f P0-A.2: create_gpu_per_sm_stats() moved to gpgpu_sim ctor tail
+  // so m_gpu_per_sm_stats is populated before derived trace_gpgpu_sim ctor
+  // invokes createSIMTCluster() / SM::create_gpu_per_sm_stats(...).
   // initialize the control-flow, memory access, memory latency logger
   if (m_config.g_visualizer_enabled) {
     create_thread_CFlogger(gpgpu_ctx, m_config.num_shader(),
