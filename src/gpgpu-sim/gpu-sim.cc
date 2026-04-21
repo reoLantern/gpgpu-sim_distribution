@@ -350,6 +350,22 @@ void shader_core_config::reg_options(class OptionParser *opp) {
       " {<sector?>:<nsets>:<bsize>:<assoc>,<rep>:<wr>:<alloc>:<wr_"
       "alloc>:<set_index_fn>,<mshr>:<N>:<merge>,<mq>} ",
       "N:64:128:16,L:R:f:N:L,S:2:48,4");
+  // Stage 1f (SM path): L0 I-cache config string — matches MICRO 2025
+  // gpu-sim.cc:362-367 shape.  Needed by first_level_instruction_cache
+  // under is_L0I_enabled=1.
+  option_parser_register(
+      opp, "-gpgpu_cache:il0", OPT_CSTR, &m_L0I_config.m_config_string,
+      "shader L0 instruction cache config"
+      " {<sector?>:<nsets>:<bsize>:<assoc>,<rep>:<wr>:<alloc>:<wr_"
+      "alloc>:<set_index_fn>,<mshr>:<N>:<merge>,<mq>}",
+      "N:64:128:16,L:R:f:N:L,S:2:48,4");
+  // Stage 1f: L0 const cache (subcore-private), matches MICRO 2025
+  // gpu-sim.cc:1302.
+  option_parser_register(
+      opp, "-gpgpu_subcore_const_cache:l0", OPT_CSTR,
+      &m_L0C_config.m_config_string,
+      "per-subcore L0 constant cache (READ-ONLY) config",
+      "64:64:2,L:R:f:N,A:2:32,4");
   option_parser_register(opp, "-gpgpu_cache:dl1", OPT_CSTR,
                          &m_L1D_config.m_config_string,
                          "per-shader L1 data cache config "
@@ -741,6 +757,382 @@ void shader_core_config::reg_options(class OptionParser *opp) {
                            "OC_SPEC>:<OC_EX_SPEC>,<NAME>}",
                            "0,4,4,4,4,BRA");
   }
+
+  // Stage 1f (SM path): bulk-inject MICRO 2025 shader_core_config options
+  // whose backing fields already exist in our shader.h.  Auto-extracted from
+  // upstream gpu-sim.cc; 73 options.
+  option_parser_register(opp, "-branch_latency", OPT_INT32,
+                         &branch_latency, "Latency of the branch instructions."
+                         "Configure to any positive number (default=1)",
+                         "1");
+
+  option_parser_register(opp, "-constant_cache_latency_at_sm_structure", OPT_UINT32,
+                         &constant_cache_latency_at_sm_structure, "Minimum latency of the constant  memory instruction when is accessing to the constant memory (l1 constant cache) of the SM in the memory structures."
+                         "Configure to any positive number (default=20)",
+                         "20");
+
+  option_parser_register(opp, "-dp_shared_intermidiate_stages", OPT_UINT32,
+                         &dp_shared_intermidiate_stages, "Number of intermediate stages in the shared DP pipeline."
+                         "Configure to any positive number (default=1)",
+                         "1");
+
+  option_parser_register(opp, "-dp_sm_shared_queue_size", OPT_UINT32,
+                         &dp_sm_shared_queue_size, "Size of the queue inside each SM shared execution unit for the DP instructions. Only used if there is not dedicated DP unit in each sub-core"
+                         "Configure to any positive number (default=1)",
+                         "1");
+
+  option_parser_register(opp, "-dp_subcore_max_latency", OPT_UINT32,
+                         &dp_subcore_max_latency, "Number of maximum cycles that the DP instructions takes for transferring the data from the subcore to the shared unit of the SM. Only used if there is not dedicated DP unit in each sub-core. While is active, it is not possible to transfer other DP instruction."
+                         "Configure to any positive number (default=8)",
+                         "8");
+
+  option_parser_register(opp, "-dp_subcore_queue_size", OPT_UINT32,
+                         &dp_subcore_queue_size, "Size of the queue inside each subcore for the DP instructions before being sent to the shared unit of the SM. Only used if there is not dedicated DP unit in each sub-core"
+                         "Configure to any positive number (default=4)",
+                         "4");
+
+  option_parser_register(opp, "-fetch_decode_width", OPT_INT32,
+                         &fetch_decode_width, "Size of the fetch and decode width. Cannot be bigger than extended_ibuffer_size or ibuffer_remodeled_size. If LOOG is enabled, loog_frontend_size is used instead of this variable."
+                         "Configure to any positive number (default=2)",
+                         "1");
+
+  option_parser_register(opp, "-ibuffer_coalescing", OPT_BOOL,
+                         &ibuffer_coalescing,
+                         "If enabled, IBuffers will snoop for instructions even though the served request is not for them."
+                         "(default = disabled)",
+                         "0");
+
+  option_parser_register(opp, "-ibuffer_remodeled_size", OPT_INT32,
+                         &ibuffer_remodeled_size, "Size of the extended Instruction Buffer. If LOOG is enabled, loog_frontend_size is used instead of this variable."
+                         "Configure to any positive number (default=3)",
+                         "3");
+
+  option_parser_register(opp, "-invalidate_instruction_caches_at_kernel_end", OPT_BOOL,
+                         &invalidate_instruction_caches_at_kernel_end,
+                         "Invalidate instructions cache at the end of each kernel call", "0");
+
+  option_parser_register(opp, "-is_dp_pipeline_shared_for_subcores", OPT_BOOL,
+                         &is_dp_pipeline_shared_for_subcores,
+                         "If enabled, Subcores have a shared unit for executing the DP instructions. The -dp_subcore_queue_size is taken into account ."
+                         "(default = enabled)",
+                         "1");
+
+  option_parser_register(opp, "-is_fp32ops_allowed_in_int_pipeline", OPT_BOOL,
+                         &is_fp32ops_allowed_in_int_pipeline,
+                         "If enabled, FFMA instructions can be dispatched also to the INT execution pipeline."
+                         "(default = disabled)",
+                         "0");
+
+  option_parser_register(opp, "-is_instruction_prefetching_enabled", OPT_BOOL,
+                         &is_instruction_prefetching_enabled,
+                         "If enabled, Instruction cache has prefetching enabled. The prefetcher just tries to prefetc subsequent blocks of the current one. That number of blocks can be configured with -prefetch_per_stream_buffer_size."
+                         "(default = disabled)",
+                         "0");
+
+  option_parser_register(opp, "-is_load_half_bandwidth_in_the_subcore_link_to_sm_enabled", OPT_BOOL,
+                         &is_load_half_bandwidth_in_the_subcore_link_to_sm_enabled, "If enabled, laods have half of the bandwidth specified at -memory_subcore_link_to_sm_byte_size."
+                         "Configure to any positive number (default=1)",
+                         "1");
+
+  option_parser_register(opp, "-is_store_half_bandwidth_in_the_subcore_link_to_sm_enabled", OPT_BOOL,
+                         &is_store_half_bandwidth_in_the_subcore_link_to_sm_enabled, "If enabled, stores have half of the bandwidth specified at -memory_subcore_link_to_sm_byte_size."
+                         "Configure to any positive number (default=0)",
+                         "0");
+
+  option_parser_register(opp, "-latency_L0_to_L1", OPT_INT32,
+                         &latency_L0_to_L1, "Latency of requests from L0 and L1. L1 if it is instruction cahce, L1.5 constant cache."
+                         "Configure to any positive number (default=40)",
+                         "40"); 
+
+  option_parser_register(opp, "-latency_L1_to_L0", OPT_INT32,
+                         &latency_L1_to_L0, "Latency of replies from L1 to L0. L1 if it is instruction cahce, L1.5 constant cache.."
+                         "Configure to any positive number (default=40)",
+                         "40"); 
+
+  option_parser_register(opp, "-max_latency_regular_register_file_latency", OPT_INT32,
+                         &max_latency_regular_register_file_latency, "Maximum supported latency (cycles) for reading operands in the regular register file."
+                         "Configure to any positive number (default=4)",
+                         "4");
+
+  option_parser_register(opp, "-max_operands_regular_register_file", OPT_INT32,
+                         &max_operands_regular_register_file, "Number of operands with regular register allowed per instruction. Only used when -is_rf_cache_enabled is enabled."
+                         "Configure to any positive number (default=4)",
+                         "4");
+
+  option_parser_register(opp, "-max_pops_per_cycle_register_file_write_queue_for_fixed_latency_instructions", OPT_INT32,
+                         &max_pops_per_cycle_register_file_write_queue_for_fixed_latency_instructions, "Maximum number of pops per cycle of the register file write_queue for fixed latency instructions."
+                         "Configure to any positive number (default=1)",
+                         "1");
+
+  option_parser_register(opp, "-max_reply_allowed_from_L1I", OPT_INT32,
+                         &max_reply_allowed_from_L1I, "Number of maximum reply allowed from L1I in a given cycle. Also known as maximum number of ports for replies"
+                         "Configure to any positive number (default=1)",
+                         "1"); 
+
+  option_parser_register(opp, "-max_request_allowed_to_L1I", OPT_INT32,
+                         &max_request_allowed_to_L1I, "Number of maximum request allowed to L1I in a given cycle. Also known as maximum number of ports for requests"
+                         "Configure to any positive number (default=1)",
+                         "1");
+
+  option_parser_register(opp, "-max_size_register_file_write_queue_for_fixed_latency_instructions", OPT_INT32,
+                         &max_size_register_file_write_queue_for_fixed_latency_instructions, "Maximum size of the register file write_queue for fixed latency instructions."
+                         "Configure to any positive number (default=1)",
+                         "1");
+
+  option_parser_register(opp, "-measure_coalescing_potential_stats", OPT_BOOL,
+    &measure_coalescing_potential_stats,
+    "If enabled, We track the distance and how much intra and inter warp coalescing exists It consumes more RAM."
+    "(default = 0 (disabled))",
+    "0");
+
+  option_parser_register(opp, "-memmory_max_concurrent_requests_shmem_per_sm", OPT_UINT32,
+                         &memmory_max_concurrent_requests_shmem_per_sm, "Maximum number of shared memory instructions that can be concurrent in the memory SM structure."
+                         "Configure to any positive number (default=4)",
+                         "4");
+
+  option_parser_register(opp, "-memmory_max_concurrent_requests_standard_per_sm", OPT_UINT32,
+                         &memmory_max_concurrent_requests_standard_per_sm, "Maximum number of standard memory instructions (no shared) that can be concurrent in the memory SM structure."
+                         "Configure to any positive number (default=8)",
+                         "8");
+
+  option_parser_register(opp, "-memory_intermidiate_stages_subcore_unit", OPT_UINT32,
+                         &memory_intermidiate_stages_subcore_unit, "Number of intermediate stages in the memory pipeline of the subcore unit."
+                         "Configure to any positive number (default=3)",
+                         "3");
+
+  option_parser_register(opp, "-memory_l1d_max_lookups_per_cycle_per_bank", OPT_UINT32,
+                         &memory_l1d_max_lookups_per_cycle_per_bank, "Maximum number of look ups allowed per cycle in each bank of the L1D. If there are 4 banks and this parameter is set to 4, it will perform a maximum of 16 look ups in total.."
+                         "Configure to any positive number (default=4)",
+                         "4");
+
+  option_parser_register(opp, "-memory_l1d_minimum_latency", OPT_UINT32,
+                         &memory_l1d_minimum_latency, "Minimum latency of the global memory instruction when is accessing to the L1D cache of the SM in the memory structures."
+                         "Configure to any positive number (default=11)",
+                         "11");
+
+  option_parser_register(opp, "-memory_maximum_coalescing_cycles", OPT_UINT32,
+                         &memory_maximum_coalescing_cycles, "Minimum latency of the memory instruction when it needs to perform a coalescing operation for a memory instruction."
+                         "Configure to any positive number (default=1)",
+                         "1");                                                    
+
+  option_parser_register(opp, "-memory_num_scalar_units_per_subcore", OPT_UINT32,
+                         &memory_num_scalar_units_per_subcore, "Number of scalar units inside each subcore for the memory instructions. Used for calculating addresses"
+                         "Configure to any positive number (default=4)",
+                         "8");
+
+  option_parser_register(opp, "-memory_shared_memory_extra_latency_ldsm_multiple_matrix", OPT_UINT32,
+                         &memory_shared_memory_extra_latency_ldsm_multiple_matrix, "Extra latency required at SM shared memory structures when LDSM loads multiple matrices."
+                         "Configure to any positive number (default=2)",
+                         "2");
+
+  option_parser_register(opp, "-memory_shared_memory_minimum_latency", OPT_UINT32,
+                         &memory_shared_memory_minimum_latency, "Minimum latency of the shared memory instruction when is accessing to the shared memory of the SM in the memory structures."
+                         "Configure to any positive number (default=16)",
+                         "16");
+
+  option_parser_register(opp, "-memory_sm_prt_size", OPT_UINT32,
+                         &memory_sm_prt_size, "Size of the PRT inside the shared memory unit in each SM. It allows to have several instructions solving their accesses to the different types of memories."
+                         "Configure to any positive number (default=64)",
+                         "64");
+
+  option_parser_register(opp, "-memory_subcore_extra_latency_load_shared_mem", OPT_UINT32,
+                         &memory_subcore_extra_latency_load_shared_mem, "Offset latency of the shared memory instruction when is being processed (calculating address and other stuff) inside each subcore."
+                         "Configure to any positive number (default=2)",
+                         "2");
+
+  option_parser_register(opp, "-memory_subcore_link_to_sm_byte_size", OPT_UINT32,
+                         &memory_subcore_link_to_sm_byte_size, "Byte size between the link of a subcore and the SM for transfering data of memory instructions to SM memory structures."
+                         "Configure to any positive number (default=4)",
+                         "4");
+
+  option_parser_register(opp, "-memory_subcore_queue_size", OPT_UINT32,
+                         &memory_subcore_queue_size, "Size of the queue inside each subcore for the LD/ST/TEXT instructions before being sent to the shared unit of the SM."
+                         "Configure to any positive number (default=4)",
+                         "4");
+
+  option_parser_register(opp, "-miscellaneous_no_queue_latency", OPT_INT32,
+                         &miscellaneous_no_queue_latency, "Latency of the miscellaneous no queue instructions."
+                         "Configure to any positive number (default=1)",
+                         "1");
+
+  option_parser_register(opp, "-miscellaneous_queue_latency", OPT_INT32,
+                         &miscellaneous_queue_latency, "Latency of the miscellaneous queue instructions."
+                         "Configure to any positive number (default=2)",
+                         "2");
+
+  option_parser_register(opp, "-miscellaneous_queue_size", OPT_UINT32,
+                         &miscellaneous_queue_size, "Size of the queue inside each subcore for the miscellaneous queue instructions."
+                         "Configure to any positive number (default=2)",
+                         "2");
+
+  option_parser_register(opp, "-num_const_cache_cycle_misses_before_switch_to_other_warp", OPT_UINT32,
+                         &num_const_cache_cycle_misses_before_switch_to_other_warp, "Number of cycles the issue stage can not swap to a different warp due to constant cache keeps trying a miss."
+                         "Configure to any positive number (default=4)",
+                         "4");
+
+  option_parser_register(opp, "-num_cycles_issue_port_busy_after_imadwide", OPT_UINT32,
+                         &num_cycles_issue_port_busy_after_imadwide, "Number of cycles the issue stage can not issue any instruction because the previous one issued (an IMAD.WIDE) is keeping the issue port busy."
+                         "Configure to any positive number (default=4)",
+                         "4");
+
+  option_parser_register(opp, "-num_cycles_needed_to_write_a_reg_from_sm_struct_to_subcore", OPT_INT32,
+                         &num_cycles_needed_to_write_a_reg_from_sm_struct_to_subcore, "Number of cycles needed to write a register from the SM structure (memory or shared dp if enabled) to the subcore."
+                         "Configure to any positive number (default=2)",
+                         "2");
+
+  option_parser_register(opp, "-num_cycles_to_stall_SM_at_cta_memory_barrier", OPT_UINT32,
+                         &num_cycles_to_stall_SM_at_cta_memory_barrier, "Number of cycles that the SM is stalled after all the warps of the SM have reached the MEMBAR.CTA."
+                         "Configure to any positive number (default=0)",
+                         "53");
+
+  option_parser_register(opp, "-num_cycles_to_stall_SM_at_gpu_memory_barrier", OPT_UINT32,
+                         &num_cycles_to_stall_SM_at_gpu_memory_barrier, "Number of cycles that the SM is stalled after all the warps of the SM have reached the MEMBAR.GPU."
+                         "Configure to any positive number (default=0)",
+                         "186");
+
+  option_parser_register(opp, "-num_cycles_to_stall_SM_at_system_memory_barrier", OPT_UINT32,
+                         &num_cycles_to_stall_SM_at_system_memory_barrier, "Number of cycles that the SM is stalled after all the warps of the SM have reached the MEMBAR.SYS."
+                         "Configure to any positive number (default=0)",
+                         "2900");
+
+  option_parser_register(opp, "-num_cycles_to_wait_to_dispatch_another_inst_from_subcore_to_sm_shared_pipeline_when_is_dp_inst", OPT_UINT32,
+                         &num_cycles_to_wait_to_dispatch_another_inst_from_subcore_to_sm_shared_pipeline_when_is_dp_inst, "Number of cycles that the shared pipelines by sub-cores in the SM needs to wait until it is allowed to do the next issue when dispatched instruction is DP. Only effective if -dp_sm_shared_queue_size is 1. Current cycle is included in the counter. For example, 1 allows to issue the next cycle."
+                         "Configure to any positive number (default=1)",
+                         "1");
+
+  option_parser_register(opp, "-num_cycles_to_wait_to_dispatch_another_inst_from_subcore_to_sm_shared_pipeline_when_is_mem_inst", OPT_UINT32,
+                         &num_cycles_to_wait_to_dispatch_another_inst_from_subcore_to_sm_shared_pipeline_when_is_mem_inst, "Number of cycles that the shared pipelines by sub-cores in the SM needs to wait until it is allowed to do the next issue when dispatched instruction is memory. Current cycle is included in the counter. For example, 1 allows to issue the next cycle."
+                         "Configure to any positive number (default=2)",
+                         "2");
+
+  option_parser_register(opp, "-num_instruction_prefetches_per_cycle", OPT_UINT32,
+                         &num_instruction_prefetches_per_cycle, "Number of blocks that the instruction cache prefetcher tries to prefetch every cycle. Only effective if -is_instruction_prefetching_enabled is enabled."
+                         "Configure to any positive number (default=1)",
+                         "1");
+
+  option_parser_register(opp, "-num_regular_register_file_read_ports_per_bank", OPT_INT32,
+                         &num_regular_register_file_read_ports_per_bank, "Number of read ports per bank in the regular register file available per cycle."
+                         "Configure to any positive number (default=6)",
+                         "6");
+
+  option_parser_register(opp, "-num_regular_register_file_write_ports_per_bank", OPT_INT32,
+                         &num_regular_register_file_write_ports_per_bank, "Number of write ports per bank in the regular register file available per cycle."
+                         "Configure to any positive number (default=1)",
+                         "1");
+
+  option_parser_register(opp, "-num_stall_cycles_wait_after_bits_stall_0_and_yield", OPT_UINT32,
+                         &num_stall_cycles_wait_after_bits_stall_0_and_yield, "Number of cycles that the stall counter is set when the instruction has the combination of Stall bits set to 0 and yield set on."
+                         "Configure to any positive number (default=0)",
+                         "0");
+
+  option_parser_register(opp, "-num_threads_granularity_read_regular_register_file_dp_inst", OPT_INT32,
+                         &num_threads_granularity_read_regular_register_file_dp_inst, "Granularity of theads inside a warp for reading RF for DP instrucions. For example, 8 means that it needs 4 cycles because the width is 256 bits and takes 4 cycles to read the 32 threads (1024 width)."
+                         "Configure to any positive number (default=8)",
+                         "8");
+
+  option_parser_register(opp, "-num_threads_granularity_read_regular_register_file_mem_inst", OPT_INT32,
+                         &num_threads_granularity_read_regular_register_file_mem_inst, "Granularity of theads inside a warp for reading RF for memory instrucions. For example, 8 means that it needs 4 cycles because the width is 256 bits and takes 4 cycles to read the 32 threads (1024 width)."
+                         "Configure to any positive number (default=8)",
+                         "8");
+
+  option_parser_register(opp, "-num_threads_granularity_read_regular_register_file_other_inst", OPT_INT32,
+                         &num_threads_granularity_read_regular_register_file_other_inst, "Granularity of theads inside a warp for reading RF for DP instrucions. For example, 8 means that it needs 4 cycles because the width is 256 bits and takes 4 cycles to read the 32 threads (1024 width)."
+                         "Configure to any positive number (default=8)",
+                         "8");
+
+  option_parser_register(opp, "-num_threads_granularity_read_regular_register_file_sfu_inst", OPT_INT32,
+                         &num_threads_granularity_read_regular_register_file_sfu_inst, "Granularity of theads inside a warp for reading RF for special function instrucions. For example, 8 means that it needs 4 cycles because the width is 256 bits and takes 4 cycles to read the 32 threads (1024 width)."
+                         "Configure to any positive number (default=8)",
+                         "8");
+
+  option_parser_register(opp, "-offset_latency_firts_stage_memory_subcore", OPT_INT32,
+                         &offset_latency_firts_stage_memory_subcore, "Number of cycles difference at the first stage of memory subcore unit respect to the baseline architecture Ampere."
+                         "Configure to any positive number (default=0)",
+                         "0");   
+
+  option_parser_register(opp, "-perfect_constant_cache", OPT_BOOL,
+                         &perfect_constant_cache,
+                         "If enabled, constant cache."
+                         "(default = disabled)",
+                         "0");
+
+  option_parser_register(opp, "-perfect_instruction_cache", OPT_BOOL,
+                         &perfect_instruction_cache,
+                         "If enabled, Perfect_instruction cache."
+                         "(default = disabled)",
+                         "0");
+
+  option_parser_register(opp, "-predicate_latency", OPT_UINT32,
+                         &predicate_latency, "Latency of the predicate instructions."
+                         "Configure to any positive number (default=2)",
+                         "2");
+
+  option_parser_register(opp, "-prefetch_num_stream_buffers", OPT_UINT32,
+                         &prefetch_num_stream_buffers, "Number of stream buffers in the first level instruction cache. Only effective if -is_instruction_prefetching_enabled is enabled."
+                         "Configure to any positive number (default=1)",
+                         "1");
+
+  option_parser_register(opp, "-prefetch_per_stream_buffer_size", OPT_UINT32,
+                         &prefetch_per_stream_buffer_size, "Number of blocks that the instruction cache prefetcher (stream buffer)can hold. Only effective if -is_instruction_prefetching_enabled is enabled."
+                         "Configure to any positive number (default=1)",
+                         "1");
+
+  option_parser_register(opp, "-scoreboard_war_max_uses_per_reg", OPT_UINT32,
+                         &scoreboard_war_max_uses_per_reg, "Number of maximum uses per register allowed"
+                         " in the scoreboard_reads in order to prevent WAR hazards in the baseline. (default=9999)",
+                         "9999");
+
+  option_parser_register(opp, "-sm_memory_unit_bypass_l1d_directly_go_to_l2_access_queue_size", OPT_UINT32,
+                          &sm_memory_unit_bypass_l1d_directly_go_to_l2_access_queue_size, "Size of the access queue to directly to L2 because is bypassin l1d at the memory SM structure. There is one queue per bank."
+                          "Configure to any positive number (default=1)",
+                          "1");
+
+  option_parser_register(opp, "-sm_memory_unit_l1c_access_queue_size", OPT_UINT32,
+                         &sm_memory_unit_l1c_access_queue_size, "Size of the access queue to the L1 constant cache at the memory SM structure."
+                         "Configure to any positive number (default=1)",
+                         "1");
+
+  option_parser_register(opp, "-sm_memory_unit_l1d_access_queue_size", OPT_UINT32,
+                          &sm_memory_unit_l1d_access_queue_size, "Size of the access queue to the L1 constant cache at the memory SM structure. There is one queue per bank."
+                          "Configure to any positive number (default=1)",
+                          "1");
+
+  option_parser_register(opp, "-sm_memory_unit_l1t_access_queue_size", OPT_UINT32,
+                          &sm_memory_unit_l1t_access_queue_size, "Size of the access queue to the L1 texture cache at the memory SM structure."
+                          "Configure to any positive number (default=1)",
+                          "1");
+
+  option_parser_register(opp, "-sm_memory_unit_miscellaneous_access_queue_size", OPT_UINT32,
+                          &sm_memory_unit_miscellaneous_access_queue_size, "Size of the access queue to the miscellaneous at the memory SM structure."
+                          "Configure to any positive number (default=1)",
+                          "1");
+
+  option_parser_register(opp, "-sm_memory_unit_shmem_access_queue_size", OPT_UINT32,
+                          &sm_memory_unit_shmem_access_queue_size, "Size of the access queue to the Shared memory (SHMEM) at the memory SM structure."
+                          "Configure to any positive number (default=1)",
+                          "1");
+
+  option_parser_register(opp, "-tensor_extra_latency_16816_fp32_1688_fp32", OPT_INT32,
+                         &tensor_extra_latency_16816_fp32_1688_fp32, "Maximum latency of the Tensor instructions."
+                         "Configure to any positive number (default=0)",
+                         "0");
+
+  option_parser_register(opp, "-tensor_latency", OPT_INT32,
+                         &tensor_latency, "Maximum latency of the Tensor instructions."
+                         "Configure to any positive number (default=32)",
+                         "32");
+
+  option_parser_register(opp, "-tensor_rate_per_cycle", OPT_INT32,
+                         &tensor_rate_per_cycle, "Rate of processing of the tensor cores per cycle."
+                         "Configure to any positive number (default=2048)",
+                         "2048");
+
+  option_parser_register(opp, "-uniform_latency", OPT_INT32,
+                         &uniform_latency, "Latency of the uniform instructions."
+                         "Configure to any positive number (default=2)",
+                         "2");
+
+  // End of Stage 1f bulk-inject
 }
 
 void gpgpu_sim_config::reg_options(option_parser_t opp) {

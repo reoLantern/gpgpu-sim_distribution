@@ -1698,6 +1698,24 @@ class shader_core_config : public core_config {
     m_L1T_config.init(m_L1T_config.m_config_string, FuncCachePreferNone);
     m_L1C_config.init(m_L1C_config.m_config_string, FuncCachePreferNone);
     m_L1D_config.init(m_L1D_config.m_config_string, FuncCachePreferNone);
+    // Stage 1f (SM path): L0 I-cache is used by
+    // first_level_instruction_cache under is_L0I_enabled=1.  Init here
+    // so get_max_num_lines() etc. don't hit m_valid asserts even when
+    // the SM path is on.  Matches MICRO 2025 shader.h:1856 equivalent.
+    m_L0I_config.init(m_L0I_config.m_config_string, FuncCachePreferNone);
+    // Stage 1f (SM path): L0 const cache (subcore-private).  Same reason.
+    m_L0C_config.init(m_L0C_config.m_config_string, FuncCachePreferNone);
+    // Stage 1f: m_L1I_L1_half_C_cache_config is the cache that SM path uses
+    // for its L1I (sm.cc:805).  MICRO 2025 routes `-gpgpu_cache:il1` here,
+    // whereas our vanilla fork routes it to m_L1I_config.  Mirror the L1I
+    // config string into the half-C field so the SM path has a valid config
+    // without diverging the option registration (which would break vanilla).
+    if (!m_L1I_L1_half_C_cache_config.m_config_string) {
+      m_L1I_L1_half_C_cache_config.m_config_string = m_L1I_config.m_config_string;
+    }
+    m_L1I_L1_half_C_cache_config.init(
+        m_L1I_L1_half_C_cache_config.m_config_string,
+        FuncCachePreferNone);
     gpgpu_cache_texl1_linesize = m_L1T_config.get_line_sz();
     gpgpu_cache_constl1_linesize = m_L1C_config.get_line_sz();
     m_valid = true;
