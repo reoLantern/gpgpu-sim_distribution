@@ -2230,6 +2230,15 @@ class shader_core_stats : public shader_core_stats_pod {
 
     m_shader_dynamic_warp_issue_distro.resize(config->num_shader());
     m_shader_warp_slot_issue_distro.resize(config->num_shader());
+
+    // Stage 1f P0-A: MICRO 2025 shader.h:2577-2619 — memory stats indexed by
+    // [sid][bank] in ldst_unit_sm::L1_latency_queue_cycle (line 515, 538).
+    l1d_accesses_per_sid_per_bank.resize(m_config->num_shader());
+    l1d_evals_per_sid_per_bank.resize(m_config->num_shader());
+    for (unsigned i = 0; i < m_config->num_shader(); i++) {
+      l1d_accesses_per_sid_per_bank[i].resize(m_config->m_L1D_config.l1_banks);
+      l1d_evals_per_sid_per_bank[i].resize(m_config->m_L1D_config.l1_banks);
+    }
   }
 
   ~shader_core_stats() {
@@ -2323,18 +2332,37 @@ class shader_core_stats : public shader_core_stats_pod {
   friend class LooseRoundRobbinScheduler;
 
   // MICRO 2025 port: per-kernel stat-array index used by SM::cycle() to bump
-  // shader_cycles_per_kernel[m_current_kernel_pos][sid].  v2 never updates it
-  // (vanilla stats use a different shape), so default 0 is harmless.
+  // shader_cycles_per_kernel[m_current_kernel_pos][sid].
  public:
   unsigned m_current_kernel_pos = 0;
+  unsigned m_last_kernel_id = 0;
 
-  // Extra MICRO 2025 stats — empty containers are enough (Stage 1 ignores).
   std::vector<std::vector<unsigned long long>> m_num_sim_winsn_per_shader_per_kernel;
   std::vector<std::vector<unsigned long long>> shader_active_warps_per_kernel;
   std::vector<std::vector<unsigned long long>> shader_maximum_theoretical_warps_per_kernel;
   std::vector<std::vector<unsigned long long>> shader_cycles_per_kernel;
   std::vector<unsigned long long> number_of_warps_per_kernel;
   std::vector<unsigned long long> m_num_sim_winsn_per_shader;
+
+  // MICRO 2025 shader.h:2843 — called from gpgpu_sim::launch() on every new
+  // kernel so per_kernel_pos indexing in SM::cycle/init_warps always has a
+  // valid slot. We only resize vectors we actually port (OoO IBuffer stats
+  // intentionally skipped).
+  void allocate_for_a_new_kernel() {
+    m_last_kernel_id += 1;
+    m_current_kernel_pos = m_last_kernel_id - 1;
+
+    number_of_warps_per_kernel.resize(m_last_kernel_id);
+    m_num_sim_winsn_per_shader_per_kernel.resize(m_last_kernel_id);
+    shader_active_warps_per_kernel.resize(m_last_kernel_id);
+    shader_maximum_theoretical_warps_per_kernel.resize(m_last_kernel_id);
+    shader_cycles_per_kernel.resize(m_last_kernel_id);
+
+    m_num_sim_winsn_per_shader_per_kernel[m_current_kernel_pos].resize(m_config->num_shader());
+    shader_active_warps_per_kernel[m_current_kernel_pos].resize(m_config->num_shader());
+    shader_maximum_theoretical_warps_per_kernel[m_current_kernel_pos].resize(m_config->num_shader());
+    shader_cycles_per_kernel[m_current_kernel_pos].resize(m_config->num_shader());
+  }
   unsigned num_scoreboard_reads_check_collision = 0;
   unsigned num_scoreboard_reads_collision_due_to_max_uses_per_reg = 0;
   std::vector<std::vector<unsigned long long>> l1d_accesses_per_sid_per_bank;

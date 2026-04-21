@@ -910,6 +910,11 @@ void shader_core_config::reg_options(class OptionParser *opp) {
                          "Configure to any positive number (default=11)",
                          "11");
 
+  option_parser_register(opp, "-memory_global_shared_latency_for_ldgsts", OPT_UINT32,
+                         &memory_global_shared_latency_for_ldgsts, "Latency of the ICNT network between global and shared memory for the the LDGSTS."
+                         "Configure to any positive number (default=11)",
+                         "11");
+
   option_parser_register(opp, "-memory_maximum_coalescing_cycles", OPT_UINT32,
                          &memory_maximum_coalescing_cycles, "Minimum latency of the memory instruction when it needs to perform a coalescing operation for a memory instruction."
                          "Configure to any positive number (default=1)",
@@ -1463,6 +1468,11 @@ void gpgpu_sim::launch(kernel_info_t *kinfo) {
     }
   }
   assert(n < m_running_kernels.size());
+  // Stage 1f P0-A: MICRO 2025 gpu-sim.cc:1541 — resize all per-kernel stat
+  // vectors and bump m_current_kernel_pos so SM::init_warps / SM::cycle can
+  // index into them. Without this, number_of_warps_per_kernel[0] is a
+  // zero-length vector and SM::init_warps segfaults.
+  m_shader_stats->allocate_for_a_new_kernel();
   // Stage 1e-A3: register this kernel in the grid-barrier bookkeeping map.
   // increase_num_threads_kernel (called from issue_block2core) will add the
   // CTA thread counts as they launch; set_kernel_done() erases the entry.
