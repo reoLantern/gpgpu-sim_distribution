@@ -4838,7 +4838,15 @@ void simt_core_cluster::icnt_cycle() {
   if (!m_response_fifo.empty()) {
     mem_fetch *mf = m_response_fifo.front();
     unsigned cid = m_config->sid_to_cid(mf->get_sid());
-    if (mf->get_access_type() == INST_ACC_R) {
+    // Stage 1g G5.4: MICRO 2025 shader.cc:4703 routes CONST_ACC_R and
+    // TLB_MISS_ACC_INST together with INST_ACC_R to accept_fetch_response
+    // (L1I_L1_half_C.fill). Previously CONST_ACC_R fell through to
+    // accept_ldst_unit_response → m_L1C.fill which never inserted these
+    // mfs in m_extra_mf_fields (they originated from L1I_L1_half_C miss
+    // via L0_icnt coalescing).
+    if ((mf->get_access_type() == INST_ACC_R) ||
+        (mf->get_access_type() == CONST_ACC_R) ||
+        (mf->get_access_type() == TLB_MISS_ACC_INST)) {
       // instruction fetch response
       if (!m_core[cid]->fetch_unit_response_buffer_full()) {
         m_response_fifo.pop_front();
