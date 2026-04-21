@@ -165,6 +165,13 @@ class shd_warp_t {
       m_ldgdepbar_buf[i].clear();
     }
     m_ldgdepbar_buf.clear();
+    // Stage 1e-A4 (Codex review follow-up): clear stale function-call frames
+    // on reset.  Without this, remodeling/SM paths that consult
+    // get_current_unique_function_id_call() can hit stale unique_function_id
+    // values from prior CTA runs.  Mirrors MICRO 2025 shader.h:180-182.
+    while (!m_function_call_stack.empty()) {
+      m_function_call_stack.pop();
+    }
   }
   void init(address_type start_pc, unsigned cta_id, unsigned wid,
             const std::bitset<MAX_WARP_SIZE> &active, unsigned dynamic_warp_id,
@@ -204,7 +211,14 @@ class shd_warp_t {
   bool hardware_done() const;
 
   bool done_exit() const { return m_done_exit; }
-  void set_done_exit() { m_done_exit = true; }
+  // Stage 1e-A4: match MICRO 2025 shader.h:239-242 — pop the currently-active
+  // frame off m_function_call_stack before flagging done.  Keeps the stack
+  // aligned with true in-flight state and prevents stale frames from leaking
+  // across warp reuses.
+  void set_done_exit() {
+    pop_function_call(m_active_threads);
+    m_done_exit = true;
+  }
 
   void print(FILE *fout) const;
   void print_ibuffer(FILE *fout) const;
