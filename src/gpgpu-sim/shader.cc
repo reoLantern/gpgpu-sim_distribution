@@ -101,7 +101,7 @@ std::list<unsigned> shader_core_ctx::get_regs_written(const inst_t &fvt) const {
 void exec_shader_core_ctx::create_shd_warp() {
   m_warp.resize(m_config->max_warps_per_shader);
   for (unsigned k = 0; k < m_config->max_warps_per_shader; ++k) {
-    m_warp[k] = new shd_warp_t(this, m_config->warp_size);
+    m_warp[k] = new shd_warp_t(this, m_config->warp_size, m_stats);
   }
 }
 
@@ -4103,8 +4103,6 @@ void shader_core_ctx::get_icnt_power_stats(long &n_simt_to_mem,
 }
 
 kernel_info_t *shd_warp_t::get_kernel_info() const {
-  // MICRO 2025 port (Stage 1c.7 round 2): dispatch via whichever ctor set.
-  if (m_shader_wrapper) return m_shader_wrapper->get_kernel_info();
   return m_shader->get_kernel_info();
 }
 
@@ -4121,14 +4119,8 @@ bool shd_warp_t::waiting() {
     // waiting to be initialized with a kernel
     return true;
   }
-  // MICRO 2025 port (Stage 1c.7 round 2): dispatch via m_shader_wrapper
-  // when the remodeling wrapper ctor was used.
-  bool at_barrier = m_shader_wrapper
-                        ? m_shader_wrapper->warp_waiting_at_barrier(m_warp_id)
-                        : m_shader->warp_waiting_at_barrier(m_warp_id);
-  bool at_mem_barrier = m_shader_wrapper
-                            ? m_shader_wrapper->warp_waiting_at_mem_barrier(m_warp_id)
-                            : m_shader->warp_waiting_at_mem_barrier(m_warp_id);
+  bool at_barrier = m_shader->warp_waiting_at_barrier(m_warp_id);
+  bool at_mem_barrier = m_shader->warp_waiting_at_mem_barrier(m_warp_id);
   if (at_barrier) {
     // waiting for other warps in CTA to reach barrier
     return true;
@@ -4148,42 +4140,22 @@ bool shd_warp_t::waiting() {
   return false;
 }
 
-// MICRO 2025 port (Stage 1c.7.1): wrapper-aware ctor.  Mirrors MICRO 2025
-// shader.h:146-156 — SM (which implements shader_core_ctx_wrapper but NOT
-// shader_core_ctx) creates every physical warp via this overload, and both
-// remodeled buffers are immediately dereferenced from sm.cc / subcore.cc.
-//
-// m_shader stays null: its shader_core_ctx* type can't hold an SM*, and no
-// inlined shd_warp_t method dereferences m_shader on the remodeling path
-// (verified by grep; vanilla path does, but vanilla goes through the 2-arg
-// ctor instead).
+// Stage 1g G1: single wrapper-typed ctor. Both vanilla shader_core_ctx and
+// remodeling SM assign through the same m_shader field (both are
+// shader_core_ctx_wrapper subclasses).
 shd_warp_t::shd_warp_t(shader_core_ctx_wrapper *shader, unsigned warp_size,
                        shader_core_stats *stats)
-    : m_shader(nullptr), m_warp_size(warp_size) {
+    : m_shader(shader), m_warp_size(warp_size) {
   m_stores_outstanding = 0;
   m_inst_in_pipeline = 0;
-  m_shader_wrapper = shader;  // MICRO 2025: get_kernel_info / waiting dispatch on this
   m_IBuffer_remodeled = new IBuffer_Remodeled(shader->get_config(), this, stats);
   m_dependency_state  = new Dependency_State(shader->get_config(), stats);
   reset();
 }
 
 shd_warp_t::~shd_warp_t() {
-  // Safe against the 2-arg vanilla ctor which leaves both pointers null.
   delete m_IBuffer_remodeled;
   delete m_dependency_state;
-}
-
-// Stage 1f P0-A.3: path-agnostic accessors for trace_shd_warp_t and other
-// call sites that otherwise null-deref on the remodeling path (where
-// m_shader is nullptr but m_shader_wrapper is SM*).
-const shader_core_config *shd_warp_t::get_shader_config() const {
-  if (m_shader_wrapper) return m_shader_wrapper->get_config();
-  return m_shader->get_config();
-}
-gpgpu_sim *shd_warp_t::get_shader_gpu() const {
-  if (m_shader_wrapper) return m_shader_wrapper->get_gpu();
-  return m_shader->get_gpu();
 }
 
 // MICRO 2025 port (Stage 1c.7.1): out-of-line push() bodies for the two

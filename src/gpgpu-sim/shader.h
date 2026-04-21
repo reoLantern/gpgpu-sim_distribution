@@ -110,29 +110,12 @@ class thread_ctx_t {
 
 class shd_warp_t {
  public:
-  shd_warp_t(class shader_core_ctx *shader, unsigned warp_size)
-      : m_shader(shader), m_warp_size(warp_size) {
-    m_stores_outstanding = 0;
-    m_inst_in_pipeline = 0;
-    reset();
-  }
-  // MICRO 2025 port: SM (from remodeling/) inherits shader_core_ctx_wrapper,
-  // NOT shader_core_ctx.  Provide an overload that accepts the abstract
-  // wrapper + stats pointer.  Body is out-of-line in shader.cc so the
-  // remodeling/ headers needed for IBuffer_Remodeled / Dependency_State
-  // allocation don't need to be dragged into every TU that includes shader.h.
+  // Stage 1g G1: single ctor taking shader_core_ctx_wrapper*. Both vanilla
+  // shader_core_ctx and remodeling SM are wrapper subclasses. Body is
+  // out-of-line in shader.cc because IBuffer_Remodeled/Dependency_State
+  // pull in remodeling headers we don't want every TU to include.
   shd_warp_t(class shader_core_ctx_wrapper *shader, unsigned warp_size,
              class shader_core_stats *stats);
-  // Stage 1d.4+5: 3-arg overload used by trace_shd_warp_t (which passes a
-  // trace_shader_core_ctx* / shader_core_ctx* rather than a wrapper).  Keeps
-  // the trace-driven path compatible with the non-remodeled hierarchy.
-  shd_warp_t(class shader_core_ctx *shader, unsigned warp_size,
-             class shader_core_stats *stats)
-      : m_shader(shader), m_warp_size(warp_size) {
-    m_stores_outstanding = 0;
-    m_inst_in_pipeline = 0;
-    reset();
-  }
   virtual ~shd_warp_t();
   void reset() {
     assert(m_stores_outstanding == 0);
@@ -314,13 +297,13 @@ class shd_warp_t {
   unsigned get_dynamic_warp_id() const { return m_dynamic_warp_id; }
   unsigned get_warp_id() const { return m_warp_id; }
 
-  class shader_core_ctx *get_shader() {
+  class shader_core_ctx_wrapper *get_shader() {
     return m_shader;
   }
 
  private:
   static const unsigned IBUFFER_SIZE = 2;
-  class shader_core_ctx *m_shader;
+  class shader_core_ctx_wrapper *m_shader;
   unsigned long long m_streamID;
   unsigned m_cta_id;
   unsigned m_warp_id;
@@ -427,18 +410,9 @@ class shd_warp_t {
   bool is_atomic_pending() const { return m_n_atomic > 0; }
   const active_mask_t &get_active_mask() const { return m_active_threads; }
 
-  // MICRO 2025 port (Stage 1c.7 round 2): store wrapper pointer so
-  // get_kernel_info() / waiting() / barrier lookups can dispatch via
-  // either m_shader (vanilla) or m_shader_wrapper (remodeling).  Wrapper
-  // ctor sets m_shader_wrapper in shader.cc.
-  class shader_core_ctx_wrapper *m_shader_wrapper = nullptr;
-
-  // Stage 1f P0-A.3: helpers that pick the non-null shader pointer.
-  // Remodeling path has m_shader=nullptr + m_shader_wrapper=SM*; vanilla
-  // path has m_shader=trace_shader_core_ctx* + m_shader_wrapper=nullptr.
-  // trace_shd_warp_t::get_next_trace_inst uses these to avoid null-deref.
-  const shader_core_config *get_shader_config() const;
-  class gpgpu_sim *get_shader_gpu() const;
+  // Stage 1g G1: m_shader_wrapper merged into m_shader; both vanilla and
+  // remodeling paths use the same wrapper* field. get_shader_config/gpu
+  // helpers removed - callers use m_shader->get_config()/get_gpu() directly.
 
  private:
   class IBuffer_Remodeled *m_IBuffer_remodeled = nullptr;
