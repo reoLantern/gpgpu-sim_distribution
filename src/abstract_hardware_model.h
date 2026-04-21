@@ -1645,8 +1645,16 @@ class warp_inst_t : public inst_t {
   unsigned int vpreg_virtual_out[MAX_OUTPUT_VALUES] = {0};
   bool m_sm_shared_wb_consumed = false;  // backing field for the sm_shared_wb* helpers
   void set_unique_inst_id(unsigned long long /*uid*/) {}
-  void set_some_warp_attributes(unsigned int /*warp_id*/,
-                                unsigned int /*dynamic_warp_id*/) {}
+  // Stage 1g G2: real body ported from MICRO 2025 abstract_hardware_model.cc:101.
+  // This is what clears m_empty at decode time — without it, Subcore::issue's
+  // are_l1c_operands_ready calls alloc(*pI, ...) on an m_empty=true inst and
+  // warp_inst_t::warp_id() aborts on !m_empty.
+  void set_some_warp_attributes(unsigned int warp_id,
+                                unsigned int dynamic_warp_id) {
+    m_warp_id = warp_id;
+    m_dynamic_warp_id = dynamic_warp_id;
+    m_empty = false;
+  }
 
   // MICRO 2025 port additional fields read by the ported generate_*_latencies
   // / sm_shared_wb_consumed / ldgsts_change_to_sts_mode methods in
