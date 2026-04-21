@@ -1958,6 +1958,53 @@ enum cache_request_status read_only_cache::access(
   return cache_status;
 }
 
+// Stage 1g G5.2: 5-arg overload wholesale ported from MICRO 2025
+// gpu-cache.cc:1789. Drives SECTOR_ASSOC coalesced fill by threading
+// the erase_original_mf signal from send_read_request back up to the
+// L0I/L1I fill caller.
+enum cache_request_status read_only_cache::access(
+    new_addr_type addr, mem_fetch *mf, unsigned time,
+    std::list<cache_event> &events, bool &erase_original_mf) {
+  assert(mf->get_data_size() <= m_config.get_atom_sz());
+  assert(m_config.m_write_policy == READ_ONLY);
+  assert(!mf->get_is_write());
+  new_addr_type block_addr = m_config.block_addr(addr);
+  unsigned cache_index = (unsigned)-1;
+  enum cache_request_status status =
+      m_tag_array->probe(block_addr, cache_index, mf, mf->is_write());
+  enum cache_request_status cache_status = RESERVATION_FAIL;
+
+  mem_access_type mem_type_acc = mf->get_access_type();
+
+  if (status == HIT) {
+    cache_status = m_tag_array->access(block_addr, time, cache_index,
+                                       mf);  // update LRU state
+  } else if (status != RESERVATION_FAIL) {
+    if (!miss_queue_full(0)) {
+      bool do_miss = false;
+      erase_original_mf = send_read_request(addr, block_addr, cache_index, mf,
+                                            time, do_miss, events, true, false);
+      if (do_miss)
+        cache_status = MISS;
+      else
+        cache_status = RESERVATION_FAIL;
+    } else {
+      cache_status = RESERVATION_FAIL;
+      m_stats.inc_fail_stats(mem_type_acc, MISS_QUEUE_FULL, mf->get_streamID());
+    }
+  } else {
+    m_stats.inc_fail_stats(mem_type_acc, LINE_ALLOC_FAIL, mf->get_streamID());
+  }
+
+  m_stats.inc_stats(mem_type_acc,
+                    m_stats.select_stats_status(status, cache_status),
+                    mf->get_streamID());
+  m_stats.inc_stats_pw(mem_type_acc,
+                       m_stats.select_stats_status(status, cache_status),
+                       mf->get_streamID());
+  return cache_status;
+}
+
 //! A general function that takes the result of a tag_array probe
 //  and performs the correspding functions based on the cache configuration
 //  The access fucntion calls this function

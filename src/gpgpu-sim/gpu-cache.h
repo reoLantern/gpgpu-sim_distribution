@@ -1562,16 +1562,13 @@ class read_only_cache : public baseline_cache {
                                            unsigned time,
                                            std::list<cache_event> &events);
 
-  // MICRO 2025 port: 5-arg overload with `bool& erase_original_mf` out-param
-  // used by first_level_instruction_cache.  v2 has no such semantics; we set
-  // the flag to `false` and forward to the 4-arg version.
+  // MICRO 2025 port (Stage 1g G5.2): 5-arg overload with `bool& erase_original_mf`
+  // out-param used by first_level_instruction_cache. Body in gpu-cache.cc
+  // mirrors MICRO 2025 gpu-cache.cc:1789, drives SECTOR_ASSOC coalesced fill.
   virtual enum cache_request_status access(new_addr_type addr, mem_fetch *mf,
                                            unsigned time,
                                            std::list<cache_event> &events,
-                                           bool &erase_original_mf) {
-    erase_original_mf = false;
-    return access(addr, mf, time, events);
-  }
+                                           bool &erase_original_mf);
 
   virtual ~read_only_cache() {}
 
