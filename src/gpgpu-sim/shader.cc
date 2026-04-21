@@ -3787,7 +3787,7 @@ std::list<opndcoll_rfu_t::op_t> opndcoll_rfu_t::arbiter_t::allocate_reads() {
   return result;
 }
 
-barrier_set_t::barrier_set_t(shader_core_ctx *shader,
+barrier_set_t::barrier_set_t(shader_core_ctx_wrapper *shader,
                              unsigned max_warps_per_core,
                              unsigned max_cta_per_core,
                              unsigned max_barriers_per_cta,
@@ -3865,10 +3865,8 @@ void barrier_set_t::warp_reaches_barrier(unsigned cta_id, unsigned warp_id,
   cta_to_warp_t::iterator w = m_cta_to_warps.find(cta_id);
 
   if (w == m_cta_to_warps.end()) {  // cta is active
-    // MICRO 2025 port (Stage 1c.7 round 2): dispatch via m_shader_wrapper
-    // when the remodeling wrapper ctor was used.
-    gpgpu_sim *gpu = m_shader_wrapper ? m_shader_wrapper->get_gpu()
-                                       : m_shader->get_gpu();
+    // Stage 1g G1b: m_shader wrapper virtual dispatches to vanilla/SM.
+    gpgpu_sim *gpu = m_shader->get_gpu();
     printf(
         "ERROR ** cta_id %u not found in barrier set on cycle %llu+%llu...\n",
         cta_id, gpu->gpu_tot_sim_cycle,
@@ -3891,11 +3889,7 @@ void barrier_set_t::warp_reaches_barrier(unsigned cta_id, unsigned warp_id,
       m_bar_id_to_warps[bar_id] &= ~at_barrier;
       m_warp_at_barrier &= ~at_barrier;
       if (bar_type == RED) {
-        // MICRO 2025 port: dispatch via whichever storage was set by ctor.
-        if (m_shader_wrapper)
-          m_shader_wrapper->broadcast_barrier_reduction(cta_id, bar_id, at_barrier);
-        else
-          m_shader->broadcast_barrier_reduction(cta_id, bar_id, at_barrier);
+        m_shader->broadcast_barrier_reduction(cta_id, bar_id, at_barrier);
       }
     }
   } else {
@@ -3906,11 +3900,7 @@ void barrier_set_t::warp_reaches_barrier(unsigned cta_id, unsigned warp_id,
       m_bar_id_to_warps[bar_id] &= ~at_barrier;
       m_warp_at_barrier &= ~at_barrier;
       if (bar_type == RED) {
-        // MICRO 2025 port: dispatch via whichever storage was set by ctor.
-        if (m_shader_wrapper)
-          m_shader_wrapper->broadcast_barrier_reduction(cta_id, bar_id, at_barrier);
-        else
-          m_shader->broadcast_barrier_reduction(cta_id, bar_id, at_barrier);
+        m_shader->broadcast_barrier_reduction(cta_id, bar_id, at_barrier);
       }
     }
   }
@@ -4158,21 +4148,17 @@ shd_warp_t::~shd_warp_t() {
   delete m_dependency_state;
 }
 
-// MICRO 2025 port (Stage 1c.7.1): out-of-line push() bodies for the two
-// memory interfaces — they need the full shader_core_ctx_wrapper class to
-// virtual-dispatch inc_simt_to_mem(), which v2 shader.h can't include
-// transitively (circular through shader_core_wrapper.h).
+// Stage 1g G1b: single wrapper-typed m_core, virtual dispatches
+// inc_simt_to_mem through shader_core_ctx_wrapper.
 void shader_memory_interface::push(mem_fetch *mf) {
-  if (m_core_wrapper) m_core_wrapper->inc_simt_to_mem(mf->get_num_flits(true));
-  else                m_core->inc_simt_to_mem(mf->get_num_flits(true));
+  m_core->inc_simt_to_mem(mf->get_num_flits(true));
   m_cluster->icnt_inject_request_packet(mf);
 }
 
 void perfect_memory_interface::push(mem_fetch *mf) {
   if (mf && mf->isatomic())
     mf->do_atomic();  // execute atomic inside the "memory subsystem"
-  if (m_core_wrapper) m_core_wrapper->inc_simt_to_mem(mf->get_num_flits(true));
-  else                m_core->inc_simt_to_mem(mf->get_num_flits(true));
+  m_core->inc_simt_to_mem(mf->get_num_flits(true));
   m_cluster->push_response_fifo(mf);
 }
 

@@ -1159,20 +1159,11 @@ class opndcoll_rfu_t {  // operand collector based register file unit
 
 class barrier_set_t {
  public:
-  barrier_set_t(shader_core_ctx *shader, unsigned max_warps_per_core,
+  // Stage 1g G1b: single wrapper ctor. Vanilla shader_core_ctx is a
+  // wrapper subclass so both paths funnel through here.
+  barrier_set_t(shader_core_ctx_wrapper *shader, unsigned max_warps_per_core,
                 unsigned max_cta_per_core, unsigned max_barriers_per_cta,
                 unsigned warp_size);
-  // MICRO 2025 port: wrapper overload (SM from remodeling).  Delegates to
-  // the shader_core_ctx form with nullptr, then sets m_shader_wrapper so
-  // warp_reaches_barrier can dispatch correctly.
-  barrier_set_t(shader_core_ctx_wrapper *shader,
-                unsigned max_warps_per_core, unsigned max_cta_per_core,
-                unsigned max_barriers_per_cta, unsigned warp_size)
-      : barrier_set_t(static_cast<shader_core_ctx *>(nullptr),
-                      max_warps_per_core, max_cta_per_core,
-                      max_barriers_per_cta, warp_size) {
-    m_shader_wrapper = shader;
-  }
 
   // during cta allocation
   void allocate_barrier(unsigned cta_id, warp_set_t warps);
@@ -1206,8 +1197,7 @@ class barrier_set_t {
   bar_id_to_warp_t m_bar_id_to_warps;
   warp_set_t m_warp_active;
   warp_set_t m_warp_at_barrier;
-  shader_core_ctx *m_shader;
-  shader_core_ctx_wrapper *m_shader_wrapper = nullptr;  // MICRO 2025: set by wrapper ctor
+  shader_core_ctx_wrapper *m_shader;
 };
 
 struct insn_latency_info {
@@ -3210,61 +3200,38 @@ class sst_simt_core_cluster : public exec_simt_core_cluster {
 
 class shader_memory_interface : public mem_fetch_interface {
  public:
-  shader_memory_interface(shader_core_ctx *core, simt_core_cluster *cluster) {
+  // Stage 1g G1b: single wrapper-typed m_core field; both vanilla
+  // shader_core_ctx and remodeling SM dispatch through the wrapper virtuals.
+  shader_memory_interface(shader_core_ctx_wrapper *core, simt_core_cluster *cluster) {
     m_core = core;
-    m_core_wrapper = nullptr;
-    m_cluster = cluster;
-  }
-  // MICRO 2025 port: SM (remodeling) doesn't inherit shader_core_ctx; accept
-  // the wrapper and store separately.  push() dispatches via whichever
-  // storage was set.
-  shader_memory_interface(shader_core_ctx_wrapper *core,
-                          simt_core_cluster *cluster) {
-    m_core = nullptr;
-    m_core_wrapper = core;
     m_cluster = cluster;
   }
   virtual bool full(unsigned size, bool write) const {
     return m_cluster->icnt_injection_buffer_full(size, write);
   }
-  // MICRO 2025 port: dispatch via m_core or m_core_wrapper (body in shader.cc
-  // since it calls a virtual method on shader_core_ctx_wrapper).
   virtual void push(mem_fetch *mf);
-  // Stage 1e-B3 (W1): empty-body flush stub to satisfy the now-pure
-  // mem_fetch_interface::flush.  MICRO 2025 shader.h:3684 equivalent.
   virtual void flush() override {}
 
  private:
-  shader_core_ctx *m_core;
-  shader_core_ctx_wrapper *m_core_wrapper;  // MICRO 2025: set by wrapper ctor
+  shader_core_ctx_wrapper *m_core;
   simt_core_cluster *m_cluster;
 };
 
 class perfect_memory_interface : public mem_fetch_interface {
  public:
-  perfect_memory_interface(shader_core_ctx *core, simt_core_cluster *cluster) {
+  // Stage 1g G1b: single wrapper-typed m_core field.
+  perfect_memory_interface(shader_core_ctx_wrapper *core, simt_core_cluster *cluster) {
     m_core = core;
-    m_core_wrapper = nullptr;
-    m_cluster = cluster;
-  }
-  // MICRO 2025 port: wrapper overload for SM (from remodeling).
-  perfect_memory_interface(shader_core_ctx_wrapper *core,
-                           simt_core_cluster *cluster) {
-    m_core = nullptr;
-    m_core_wrapper = core;
     m_cluster = cluster;
   }
   virtual bool full(unsigned size, bool write) const {
     return m_cluster->response_queue_full();
   }
-  // MICRO 2025 port: body in shader.cc (wrapper virtual dispatch).
   virtual void push(mem_fetch *mf);
-  // Stage 1e-B3 (W1): empty-body flush stub (MICRO 2025 shader.h:3708).
   virtual void flush() override {}
 
  private:
-  shader_core_ctx *m_core;
-  shader_core_ctx_wrapper *m_core_wrapper;  // MICRO 2025: set by wrapper ctor
+  shader_core_ctx_wrapper *m_core;
   simt_core_cluster *m_cluster;
 };
 
