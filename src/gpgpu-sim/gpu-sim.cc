@@ -456,6 +456,46 @@ void shader_core_config::reg_options(class OptionParser *opp) {
   option_parser_register(opp, "-is_remodeling_scoreboarding_enabled", OPT_BOOL,
                          &is_remodeling_scoreboarding_enabled,
                          "1 = MICRO 2025 WAR scoreboard on", "0");
+  // Stage 1e-A1 (Codex review follow-up): full MICRO 2025 IWC/PRT parameter
+  // set.  Matches gpu-sim.cc:1341-1377.  Without these the
+  // InterWarpCoalescingUnit and PendingRequestTable get constructed with
+  // 0-table / 0-capacity if is_interwarp_coalescing_enabled is flipped on.
+  option_parser_register(opp, "-num_interwarp_coalescing_tables", OPT_UINT32,
+                         &num_interwarp_coalescing_tables,
+                         "Number of inter-warp coalescing tables", "1");
+  option_parser_register(opp, "-max_size_interwarp_coalescing_per_table",
+                         OPT_UINT32, &max_size_interwarp_coalescing_per_table,
+                         "Size of each inter-warp coalescing table", "64");
+  option_parser_register(opp, "-interwarp_coalescing_quanta", OPT_UINT32,
+                         &interwarp_coalescing_quanta,
+                         "Cycles per inter-warp coalescing quanta (WARPPOOL_HYBRID)",
+                         "100000");
+  option_parser_register(opp,
+      "-interwarp_coalescing_quanta_warppool_policy_miss_ratio_threshold",
+      OPT_DOUBLE,
+      &interwarp_coalescing_quanta_warppool_policy_miss_ratio_threshold,
+      "Miss-ratio threshold for WARPPOOL_HYBRID policy switch",
+      "0.99");
+  option_parser_register(opp, "-number_of_coalescers", OPT_UINT32,
+                         &number_of_coalescers,
+                         "Number of intra-warp coalescers", "1");
+  option_parser_register(opp, "-number_of_clusters_for_prt_selection",
+                         OPT_UINT32, &number_of_clusters_for_prt_selection,
+                         "Number of clusters used for WARPID_N_CLUSTERS_WITH_OLDEST",
+                         "16");
+  option_parser_register(opp, "-interwarp_coalescing_selection_policy_string",
+                         OPT_CSTR, &interwarp_coalescing_selection_policy_string,
+                         "< OLDEST | GTL_WARPID | "
+                         "SAME_LAST_LEADER_INST_PC_THEN_OLDEST | "
+                         "WARPPOOL_HYBRID | DEP_COUNT_WAIT_* > (default OLDEST)",
+                         "OLDEST");
+  option_parser_register(opp, "-prt_selection_policy_string", OPT_CSTR,
+                         &prt_selection_policy_string,
+                         "< OLDEST | SAME_LAST_WARP_ID_THEN_OLDEST | "
+                         "SAME_LAST_INST_PC_THEN_OLDEST | "
+                         "WARPID_N_CLUSTERS_WITH_OLDEST | "
+                         "DEP_COUNT_WAIT_* > (default OLDEST)",
+                         "OLDEST");
   option_parser_register(opp, "-gpgpu_n_clusters", OPT_UINT32, &n_simt_clusters,
                          "number of processing clusters", "10");
   option_parser_register(opp, "-gpgpu_n_cores_per_cluster", OPT_UINT32,

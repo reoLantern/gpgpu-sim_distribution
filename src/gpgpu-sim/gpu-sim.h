@@ -450,6 +450,47 @@ class gpgpu_sim_config : public power_config,
     snprintf(buf, 1024, "gpgpusim_visualizer__%s.log.gz", date);
     g_visualizer_filename = strdup(buf);
 
+    // Stage 1e-A1 (Codex review follow-up): derived shader-config values +
+    // IWC / PRT policy-string parsing, mirrored from MICRO 2025 gpu-sim.h:
+    // 585-614.  Must happen after m_shader_config.init() so that all input
+    // fields (minimum latencies, coalescing cycles, policy strings) are
+    // populated.
+    m_shader_config.cycles_needed_for_address_calculation =
+        ceil((double)m_shader_config.warp_size /
+             m_shader_config.memory_num_scalar_units_per_subcore);
+    m_shader_config.maximum_l1d_latency_at_sm_structure =
+        m_shader_config.memory_l1d_minimum_latency +
+        m_shader_config.memory_maximum_coalescing_cycles;
+    m_shader_config.maximum_shared_memory_latency_at_sm_structure =
+        m_shader_config.memory_shared_memory_minimum_latency +
+        m_shader_config.memory_maximum_coalescing_cycles +
+        m_shader_config.memory_shared_memory_extra_latency_ldsm_multiple_matrix;
+
+    if (m_shader_config.interwarp_coalescing_selection_policy_string) {
+      std::string iwc_policy_str =
+          m_shader_config.interwarp_coalescing_selection_policy_string;
+      m_shader_config.interwarp_coalescing_selection_policy =
+          iwc_policy_str.find("GTL_WARPID") != std::string::npos ? GTL_WARPID
+        : iwc_policy_str.find("SAME_LAST_LEADER_INST_PC_THEN_OLDEST") != std::string::npos ? SAME_LAST_LEADER_INST_PC_THEN_OLDEST
+        : iwc_policy_str.find("WARPPOOL_HYBRID") != std::string::npos ? WARPPOOL_HYBRID
+        : iwc_policy_str.find("DEP_COUNT_WAIT_OLDEST_INST_IBUFFER_GENERIC") != std::string::npos ? DEP_COUNT_WAIT_OLDEST_INST_IBUFFER_GENERIC
+        : iwc_policy_str.find("DEP_COUNT_WAIT_OLDEST_INST_IBUFFER_CHECKING_WARP_ID") != std::string::npos ? DEP_COUNT_WAIT_OLDEST_INST_IBUFFER_CHECKING_WARP_ID
+        : iwc_policy_str.find("DEP_COUNT_WAIT_DETECTED_AT_DECODE_GENERIC") != std::string::npos ? DEP_COUNT_WAIT_DETECTED_AT_DECODE_GENERIC
+        : iwc_policy_str.find("DEP_COUNT_WAIT_DETECTED_AT_DECODE_CHECKING_WARP_ID") != std::string::npos ? DEP_COUNT_WAIT_DETECTED_AT_DECODE_CHECKING_WARP_ID
+        : IWCOAL_OLDEST;
+    }
+    if (m_shader_config.prt_selection_policy_string) {
+      std::string prt_sel_policy_str =
+          m_shader_config.prt_selection_policy_string;
+      m_shader_config.prt_selection_policy =
+          prt_sel_policy_str.find("SAME_LAST_WARP_ID_THEN_OLDEST") != std::string::npos ? SAME_LAST_WARP_ID_THEN_OLDEST
+        : prt_sel_policy_str.find("SAME_LAST_INST_PC_THEN_OLDEST") != std::string::npos ? SAME_LAST_INST_PC_THEN_OLDEST
+        : prt_sel_policy_str.find("WARPID_N_CLUSTERS_WITH_OLDEST") != std::string::npos ? WARPID_N_CLUSTERS_WITH_OLDEST
+        : prt_sel_policy_str.find("DEP_COUNT_WAIT_GENERIC_THEN_OLDEST") != std::string::npos ? DEP_COUNT_WAIT_GENERIC_THEN_OLDEST
+        : prt_sel_policy_str.find("DEP_COUNT_WAIT_CHECKING_WARP_ID_THEN_OLDEST") != std::string::npos ? DEP_COUNT_WAIT_CHECKING_WARP_ID_THEN_OLDEST
+        : OLDEST;
+    }
+
     m_valid = true;
   }
   unsigned get_core_freq() const { return core_freq; }

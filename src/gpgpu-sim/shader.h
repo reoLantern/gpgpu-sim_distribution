@@ -1905,6 +1905,11 @@ class shader_core_config : public core_config {
   unsigned max_size_interwarp_coalescing_per_table = 0;
   unsigned interwarp_coalescing_quanta = 0;
   float interwarp_coalescing_quanta_warppool_policy_miss_ratio_threshold = 0.0f;
+  // Stage 1e-A1 (post-Codex review): policy *strings* backing the option parser
+  // (OPT_CSTR).  gpgpu_sim_config::init() converts these into the enum fields
+  // above.  Matches MICRO 2025 shader.h:2170-2171.
+  char *interwarp_coalescing_selection_policy_string = nullptr;
+  char *prt_selection_policy_string = nullptr;
   bool measure_coalescing_potential_stats = false;
   bool is_vpreg_enabled = false;
   unsigned memmory_max_concurrent_requests_standard_per_sm = 0;  // typo mirrors upstream
@@ -1965,6 +1970,11 @@ class shader_core_config : public core_config {
   unsigned memory_shared_memory_minimum_latency = 1;
   unsigned memory_shared_memory_extra_latency_ldsm_multiple_matrix = 0;
   unsigned memory_l1d_minimum_latency = 1;
+  // Stage 1e-A1: MICRO 2025 derivative-input params (shader.h:2155-2157
+  // equivalent).  Used by gpgpu_sim_config::init() to compute
+  // cycles_needed_for_address_calculation + maximum_*_at_sm_structure.
+  unsigned memory_num_scalar_units_per_subcore = 8;
+  unsigned memory_maximum_coalescing_cycles = 1;
   unsigned memory_subcore_extra_latency_load_shared_mem = 0;
   unsigned offset_latency_firts_stage_memory_subcore = 0;  // typo mirrors upstream
   unsigned dp_sm_shared_queue_size = 0;
