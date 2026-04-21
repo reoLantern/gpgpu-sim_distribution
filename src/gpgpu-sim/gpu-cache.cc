@@ -1357,8 +1357,8 @@ void baseline_cache::inc_aggregated_stats_pw(cache_request_status status,
   }
 }
 
-/// Read miss handler without writeback
-void baseline_cache::send_read_request(new_addr_type addr,
+/// Read miss handler without writeback. MICRO 2025 port: returns erase_mf.
+bool baseline_cache::send_read_request(new_addr_type addr,
                                        new_addr_type block_addr,
                                        unsigned cache_index, mem_fetch *mf,
                                        unsigned time, bool &do_miss,
@@ -1366,12 +1366,16 @@ void baseline_cache::send_read_request(new_addr_type addr,
                                        bool read_only, bool wa) {
   bool wb = false;
   evicted_block_info e;
-  send_read_request(addr, block_addr, cache_index, mf, time, do_miss, wb, e,
-                    events, read_only, wa);
+  bool erase_original_mf = send_read_request(addr, block_addr, cache_index, mf,
+                                             time, do_miss, wb, e, events,
+                                             read_only, wa);
+  return erase_original_mf;
 }
 
-/// Read miss handler. Check MSHR hit or MSHR available
-void baseline_cache::send_read_request(new_addr_type addr,
+/// Read miss handler. Check MSHR hit or MSHR available. MICRO 2025 port
+/// (gpu-cache.cc:1217): returns erase_mf so SECTOR_ASSOC coalesced fills
+/// can drop the coalesced duplicate mf instead of double-freeing it.
+bool baseline_cache::send_read_request(new_addr_type addr,
                                        new_addr_type block_addr,
                                        unsigned cache_index, mem_fetch *mf,
                                        unsigned time, bool &do_miss, bool &wb,
@@ -1381,13 +1385,19 @@ void baseline_cache::send_read_request(new_addr_type addr,
   new_addr_type mshr_addr = m_config.mshr_addr(mf->get_addr());
   bool mshr_hit = m_mshrs.probe(mshr_addr);
   bool mshr_avail = !m_mshrs.full(mshr_addr);
+  bool erase_mf = false;
   if (mshr_hit && mshr_avail) {
     if (read_only)
       m_tag_array->access(block_addr, time, cache_index, mf);
     else
       m_tag_array->access(block_addr, time, cache_index, wb, evicted, mf);
 
-    m_mshrs.add(mshr_addr, mf);
+    bool do_regular_access = !mf->get_is_fixed_latency_constant_access();
+    if (do_regular_access) {
+      m_mshrs.add(mshr_addr, mf);
+    } else {
+      erase_mf = true;
+    }
     m_stats.inc_stats(mf->get_access_type(), MSHR_HIT, mf->get_streamID());
     do_miss = true;
 
@@ -1416,6 +1426,11 @@ void baseline_cache::send_read_request(new_addr_type addr,
                            mf->get_streamID());
   else
     assert(0);
+
+  if (erase_mf) {
+    delete mf;
+  }
+  return erase_mf;
 }
 
 /// Sends write request to lower level memory (write or writeback)
