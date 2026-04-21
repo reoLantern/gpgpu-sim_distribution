@@ -4174,6 +4174,18 @@ shd_warp_t::~shd_warp_t() {
   delete m_dependency_state;
 }
 
+// Stage 1f P0-A.3: path-agnostic accessors for trace_shd_warp_t and other
+// call sites that otherwise null-deref on the remodeling path (where
+// m_shader is nullptr but m_shader_wrapper is SM*).
+const shader_core_config *shd_warp_t::get_shader_config() const {
+  if (m_shader_wrapper) return m_shader_wrapper->get_config();
+  return m_shader->get_config();
+}
+gpgpu_sim *shd_warp_t::get_shader_gpu() const {
+  if (m_shader_wrapper) return m_shader_wrapper->get_gpu();
+  return m_shader->get_gpu();
+}
+
 // MICRO 2025 port (Stage 1c.7.1): out-of-line push() bodies for the two
 // memory interfaces — they need the full shader_core_ctx_wrapper class to
 // virtual-dispatch inc_simt_to_mem(), which v2 shader.h can't include

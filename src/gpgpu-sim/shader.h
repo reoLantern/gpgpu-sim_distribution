@@ -433,6 +433,13 @@ class shd_warp_t {
   // ctor sets m_shader_wrapper in shader.cc.
   class shader_core_ctx_wrapper *m_shader_wrapper = nullptr;
 
+  // Stage 1f P0-A.3: helpers that pick the non-null shader pointer.
+  // Remodeling path has m_shader=nullptr + m_shader_wrapper=SM*; vanilla
+  // path has m_shader=trace_shader_core_ctx* + m_shader_wrapper=nullptr.
+  // trace_shd_warp_t::get_next_trace_inst uses these to avoid null-deref.
+  const shader_core_config *get_shader_config() const;
+  class gpgpu_sim *get_shader_gpu() const;
+
  private:
   class IBuffer_Remodeled *m_IBuffer_remodeled = nullptr;
   class Dependency_State  *m_dependency_state  = nullptr;
