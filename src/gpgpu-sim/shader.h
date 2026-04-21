@@ -1865,6 +1865,10 @@ class shader_core_config : public core_config {
   // vanilla gpgpu-sim dispatch is taken.  When 1, the remodeling/ SM class
   // hierarchy is used (see shader_core_wrapper.h + remodeling/sm.cc).
   bool is_SM_remodeling_enabled = false;
+  // Stage 1g G5.3: MICRO 2025 L0I (per-subcore instruction cache) gate.
+  // When 1, each subcore gets its own L0I + an L0_icnt that routes
+  // coalesced misses into the shared L1I_L1_half_C cache.
+  bool is_L0I_enabled = false;
   // Stage 1d.4+5: number of subcores per SM (normally 4 for Turing/Ampere).
   // Read by trace_simt_core_cluster::create_shader_core_ctx and related.
   int num_subcores_in_SM = 4;

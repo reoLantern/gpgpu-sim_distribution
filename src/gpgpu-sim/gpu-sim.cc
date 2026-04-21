@@ -452,6 +452,11 @@ void shader_core_config::reg_options(class OptionParser *opp) {
                          "1 = use remodeling/SM class (MICRO 2025), "
                          "0 = legacy trace_shader_core_ctx",
                          "0");
+  option_parser_register(opp, "-is_L0I_enabled", OPT_BOOL,
+                         &is_L0I_enabled,
+                         "If enabled, each sub-core has its own L0I. "
+                         "Routes L0I misses through L0_icnt to shared L1I_L1_half_C cache.",
+                         "0");
   option_parser_register(opp, "-num_subcores_in_SM", OPT_INT32,
                          &num_subcores_in_SM,
                          "Number of subcores per SM (Turing/Ampere default 4)",
