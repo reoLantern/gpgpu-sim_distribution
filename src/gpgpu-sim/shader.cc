@@ -4656,6 +4656,12 @@ unsigned simt_core_cluster::issue_block2core() {
         //            m_config->max_cta(*kernel)) ) {
         m_core[core]->can_issue_1block(*kernel)) {
       m_core[core]->issue_block2core(*kernel);
+      // Stage 1e-A3 (Codex review follow-up): tick the grid-barrier thread-
+      // count ledger right after CTA launch.  Matches MICRO 2025 shader.cc:
+      // 4593.  Complements the decrease call in remodeling/sm.cc when a CTA
+      // retires.
+      m_gpu->increase_num_threads_kernel(kernel->get_uid(),
+                                         kernel->threads_per_cta());
       num_blocks_issued++;
       m_cta_issue_next_core = core;
       break;

@@ -38,7 +38,10 @@
 #include <fstream>
 #include <iostream>
 #include <list>
+#include <memory>
 #include <omp.h>
+#include <queue>
+#include <set>
 #include "../abstract_hardware_model.h"
 // MICRO 2025 port: Stage 1d.4+5 — real traced_execution now lives under
 // util/traces_enhanced/src/ (shared with the tracer and the new
@@ -631,6 +634,45 @@ class watchpoint_event {
   const ptx_instruction *m_inst;
 };
 
+// Stage 1e-A3 (Codex review follow-up): grid-level barrier tracking.  Byte-
+// for-byte from MICRO 2025 gpu-sim.h:720-750.  Populated by launch(),
+// erased by set_kernel_done(), tickled per CTA in issue_block2core
+// (increase) and CTA-complete (decrease), and finally drained by
+// register_grid_barrier_arrivement when a GRID_BARRIER_OP mem_fetch arrives.
+struct grid_barrier_notify_info {
+  grid_barrier_notify_info() : kernel_id(0), sm_ids_to_notify() {}
+  grid_barrier_notify_info(unsigned int kernel_id,
+                           std::set<unsigned int> sm_ids_to_notify)
+      : kernel_id(kernel_id), sm_ids_to_notify(sm_ids_to_notify) {}
+
+  unsigned int kernel_id;
+  std::set<unsigned int> sm_ids_to_notify;
+};
+
+struct grid_barrier_status {
+  grid_barrier_status()
+      : kernel_id(0),
+        num_threads_kernel(0),
+        num_threads_arrived(0),
+        active(false) {}
+  grid_barrier_status(unsigned int kernel_id,
+                      unsigned long long num_threads_kernel)
+      : kernel_id(kernel_id),
+        num_threads_kernel(num_threads_kernel),
+        num_threads_arrived(0),
+        active(false) {}
+
+  bool barrier_completed() {
+    return num_threads_arrived == num_threads_kernel;
+  }
+
+  unsigned int kernel_id;
+  unsigned long long num_threads_kernel;
+  unsigned long long num_threads_arrived;
+  bool active;
+  std::set<unsigned int> sm_ids_to_notify;
+};
+
 class gpgpu_sim : public gpgpu_t {
  public:
   gpgpu_sim(const gpgpu_sim_config &config, gpgpu_context *ctx);
@@ -753,6 +795,10 @@ class gpgpu_sim : public gpgpu_t {
   unsigned m_last_issued_kernel;
 
   std::list<unsigned> m_finished_kernel;
+  // Stage 1e-A3: per-kernel grid-barrier state + pending notifications.
+  // Matches MICRO 2025 gpu-sim.h:898-899.
+  std::map<unsigned int, grid_barrier_status> m_grid_barrier_status;
+  std::queue<std::unique_ptr<grid_barrier_notify_info>> m_grid_barrier_notify_queue;
   // m_total_cta_launched == per-kernel count. gpu_tot_issued_cta == global
   // count.
   unsigned long long m_total_cta_launched;
@@ -871,7 +917,15 @@ class gpgpu_sim : public gpgpu_t {
 
   // MICRO 2025 port: misc helpers exposed to remodeling/ code.
   unsigned long long get_current_gpu_cycle() { return gpu_tot_sim_cycle + gpu_sim_cycle; }
-  void decrease_num_threads_kernel(unsigned /*kernel_id*/, unsigned /*n*/) { /* no-op */ }
+
+  // Stage 1e-A3 (Codex review follow-up): real grid-barrier plumbing.
+  // Matches MICRO 2025 gpu-sim.h:768-770 + gpu-sim.cc:2801-2829.  The prior
+  // no-op decrease stub would silently break grid-barrier semantics under
+  // SM remodeling; real impls assert the kernel_id is registered (launch()
+  // inserts the entry, set_kernel_done() erases it).
+  std::unique_ptr<grid_barrier_notify_info> register_grid_barrier_arrivement(mem_fetch *mf);
+  void increase_num_threads_kernel(unsigned kernel_id, unsigned num_threads);
+  void decrease_num_threads_kernel(unsigned kernel_id, unsigned num_threads);
 
   // MICRO 2025 port (Stage 1d.8): load the static per-kernel JSON produced by
   // the tracer-v2 into m_extra_trace_info so that

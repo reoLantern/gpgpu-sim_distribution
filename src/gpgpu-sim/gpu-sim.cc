@@ -991,6 +991,46 @@ void gpgpu_sim::reset_gpu_per_sm_stats() {
   }
 }
 
+// Stage 1e-A3 (Codex review follow-up): grid-barrier plumbing.  Byte-for-byte
+// from MICRO 2025 gpu-sim.cc:2801-2829.  The cycle()-level dispatch of
+// GRID_BARRIER_OP mem_fetches is NOT ported here (separate future patch)
+// because our current 12-kernel smoke suite doesn't emit them — all 3
+// methods are still correct in isolation once a grid barrier fires.
+std::unique_ptr<grid_barrier_notify_info>
+gpgpu_sim::register_grid_barrier_arrivement(mem_fetch *mf) {
+  std::unique_ptr<grid_barrier_notify_info> notification_res = nullptr;
+  unsigned int kernel_id = mf->get_kernel_id();
+  assert(m_grid_barrier_status.find(kernel_id) != m_grid_barrier_status.end());
+  if (!m_grid_barrier_status[kernel_id].active) {
+    m_grid_barrier_status[kernel_id].active = true;
+  }
+  m_grid_barrier_status[kernel_id].sm_ids_to_notify.insert(mf->get_sid());
+  m_grid_barrier_status[kernel_id].num_threads_arrived +=
+      mf->get_inst().active_count();
+  if (m_grid_barrier_status[kernel_id].barrier_completed()) {
+    m_grid_barrier_status[kernel_id].active = false;
+    m_grid_barrier_status[kernel_id].num_threads_arrived = 0;
+    notification_res = std::make_unique<grid_barrier_notify_info>(
+        kernel_id, m_grid_barrier_status[kernel_id].sm_ids_to_notify);
+    m_grid_barrier_status[kernel_id].sm_ids_to_notify.clear();
+  }
+  delete mf;
+  return notification_res;
+}
+
+void gpgpu_sim::increase_num_threads_kernel(unsigned kernel_id,
+                                            unsigned num_threads) {
+  assert(m_grid_barrier_status.find(kernel_id) != m_grid_barrier_status.end());
+  m_grid_barrier_status[kernel_id].num_threads_kernel += num_threads;
+}
+
+void gpgpu_sim::decrease_num_threads_kernel(unsigned kernel_id,
+                                            unsigned num_threads) {
+  assert(m_grid_barrier_status.find(kernel_id) != m_grid_barrier_status.end());
+  assert(m_grid_barrier_status[kernel_id].num_threads_kernel >= num_threads);
+  m_grid_barrier_status[kernel_id].num_threads_kernel -= num_threads;
+}
+
 void gpgpu_sim::launch(kernel_info_t *kinfo) {
   unsigned kernelID = kinfo->get_uid();
   unsigned long long streamID = kinfo->get_streamID();
@@ -1031,6 +1071,11 @@ void gpgpu_sim::launch(kernel_info_t *kinfo) {
     }
   }
   assert(n < m_running_kernels.size());
+  // Stage 1e-A3: register this kernel in the grid-barrier bookkeeping map.
+  // increase_num_threads_kernel (called from issue_block2core) will add the
+  // CTA thread counts as they launch; set_kernel_done() erases the entry.
+  // Matches MICRO 2025 gpu-sim.cc:1543.
+  m_grid_barrier_status[kernelID] = grid_barrier_status(kernelID, 0);
 }
 
 bool gpgpu_sim::can_start_kernel() {
@@ -1129,6 +1174,9 @@ void gpgpu_sim::set_kernel_done(kernel_info_t *kernel) {
   last_streamID = streamID;
   gpu_kernel_time.at(streamID).at(uid).end_cycle =
       gpu_tot_sim_cycle + gpu_sim_cycle;
+  // Stage 1e-A3: drop this kernel's grid-barrier entry.  Matches MICRO 2025
+  // gpu-sim.cc:1635.
+  m_grid_barrier_status.erase(uid);
   m_finished_kernel.push_back(uid);
   std::vector<kernel_info_t *>::iterator k;
   for (k = m_running_kernels.begin(); k != m_running_kernels.end(); k++) {
