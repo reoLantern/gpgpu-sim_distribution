@@ -69,4 +69,22 @@ inline std::string mem_stage_access_type_to_string(mem_stage_access_type type) {
   }
 }
 
+// Stage 1e-A2: companion helper for mem_stage_stall_type (matches MICRO 2025
+// stats.h:84-98).  Used by create_gpu_per_sm_stats stat-name construction.
+inline std::string mem_stage_stall_type_to_string(mem_stage_stall_type type) {
+  switch (type) {
+    case NO_RC_FAIL: return "NO_RC_FAIL";
+    case BK_CONF: return "BK_CONF";
+    case MSHR_RC_FAIL: return "MSHR_RC_FAIL";
+    case ICNT_RC_FAIL: return "ICNT_RC_FAIL";
+    case COAL_STALL: return "COAL_STALL";
+    case TLB_STALL: return "TLB_STALL";
+    case DATA_PORT_STALL: return "DATA_PORT_STALL";
+    case WB_ICNT_RC_FAIL: return "WB_ICNT_RC_FAIL";
+    case WB_CACHE_RSRV_FAIL: return "WB_CACHE_RSRV_FAIL";
+    case N_MEM_STAGE_STALL_TYPE: return "N_MEM_STAGE_STALL_TYPE";
+    default: return "UNKNOWN";
+  }
+}
+
 #endif

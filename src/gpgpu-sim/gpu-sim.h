@@ -887,6 +887,21 @@ class gpgpu_sim : public gpgpu_t {
   // Name matches MICRO 2025 gpu-sim.cc:1667 initialization.
   Element_stats m_gpu_per_sm_stats{"GPU_per_SM_stats"};
 
+  // Stage 1e-A2 (Codex review follow-up): per-coalescer stats buckets +
+  // stats-collection chain, matches MICRO 2025 gpu-sim.h:855-859 +
+  // gpu-sim.cc:1780-1889.  coalescingStatsAcrossSms is still a stub (Stage
+  // 1b excluded fusedMemory), so the addStats() calls are inert until we
+  // port the full class; the plumbing is in place for when we do.
+  coalescingStatsAcrossSms m_coalescing_stats_across_sms_l1d;
+  coalescingStatsAcrossSms m_coalescing_stats_across_sms_const;
+  coalescingStatsAcrossSms m_coalescing_stats_across_sms_sharedmem;
+
+  void create_gpu_per_sm_stats();
+  void gather_gpu_per_sm_stats();
+  void reset_cycless_access_history();
+  void gather_gpu_per_sm_single_stat(std::string stat_name);
+  void reset_gpu_per_sm_stats();
+
  private:
   ::traced_execution m_extra_trace_info;
 };

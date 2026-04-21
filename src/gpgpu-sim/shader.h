@@ -3026,6 +3026,29 @@ class simt_core_cluster {
   // OpenMP: flush per-SM/cluster local stats to globals
   void flush_local_stats();
 
+  // Stage 1e-A2 (Codex review follow-up): gather per-SM Element_stats across
+  // all cluster cores.  Mirrors MICRO 2025 shader.h:3571-3587 verbatim.
+  void reset_cycless_access_history() {
+    for (unsigned i = 0; i < m_core.size(); i++) {
+      m_core[i]->reset_cycless_access_history();
+    }
+  }
+  void gather_stats(Element_stats &all_stats,
+                    coalescingStatsAcrossSms &coal_stats_l1d,
+                    coalescingStatsAcrossSms &coal_stats_const,
+                    coalescingStatsAcrossSms &coal_stats_sharedmem) {
+    for (unsigned i = 0; i < m_core.size(); i++) {
+      m_core[i]->gather_gpu_per_sm_stats(all_stats, coal_stats_l1d,
+                                         coal_stats_const,
+                                         coal_stats_sharedmem);
+    }
+  }
+  void gather_single_stat(Element_stats &all_stats, std::string stat_name) {
+    for (unsigned i = 0; i < m_core.size(); i++) {
+      m_core[i]->gather_gpu_per_sm_single_stat(all_stats, stat_name);
+    }
+  }
+
   // for perfect memory interface
   bool response_queue_full() {
     return (m_response_fifo.size() >= m_config->n_simt_ejection_buffer_size);

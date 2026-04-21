@@ -880,6 +880,117 @@ void gpgpu_sim::parse_extra_trace_info(std::string filepath,
   }
 }
 
+// Stage 1e-A2 (Codex review follow-up): per-SM stats management chain,
+// byte-for-byte ported from MICRO 2025 gpu-sim.cc:1780-1889.  Populates
+// m_gpu_per_sm_stats with the full set of ~70 counters SM/subcore emit;
+// gather_* iterates all clusters to pull their SM-local Element_stats
+// into the global bucket; reset_* zeroes counters between print rounds.
+void gpgpu_sim::create_gpu_per_sm_stats() {
+  m_gpu_per_sm_stats.add_unsigned_long_long_stat("gpu_sim_insn", AllowedTypesStats::UNSIGNED_LONG_LONG, 0, "= ", "", true, true, false);
+  m_gpu_per_sm_stats.add_unsigned_long_long_stat("gpgpu_n_mem_read_local", AllowedTypesStats::UNSIGNED_LONG_LONG, 0, "= ", "", true, false, false);
+  m_gpu_per_sm_stats.add_unsigned_long_long_stat("gpgpu_n_mem_write_local", AllowedTypesStats::UNSIGNED_LONG_LONG, 0, "= ", "", true, false, false);
+  m_gpu_per_sm_stats.add_unsigned_long_long_stat("gpgpu_n_mem_read_global", AllowedTypesStats::UNSIGNED_LONG_LONG, 0, "= ", "", true, false, false);
+  m_gpu_per_sm_stats.add_unsigned_long_long_stat("gpgpu_n_mem_write_global", AllowedTypesStats::UNSIGNED_LONG_LONG, 0, "= ", "", true, false, false);
+  m_gpu_per_sm_stats.add_unsigned_long_long_stat("gpgpu_n_mem_texture", AllowedTypesStats::UNSIGNED_LONG_LONG, 0, "= ", "", true, false, false);
+  m_gpu_per_sm_stats.add_unsigned_long_long_stat("gpgpu_n_mem_const", AllowedTypesStats::UNSIGNED_LONG_LONG, 0, "= ", "", true, false, false);
+  m_gpu_per_sm_stats.add_unsigned_long_long_stat("gpgpu_n_mem_read_inst", AllowedTypesStats::UNSIGNED_LONG_LONG, 0, "= ", "", true, false, false);
+  m_gpu_per_sm_stats.add_unsigned_long_long_stat("gpgpu_n_mem_l2_writeback", AllowedTypesStats::UNSIGNED_LONG_LONG, 0, "= ", "", true, false, false);
+  m_gpu_per_sm_stats.add_unsigned_long_long_stat("gpgpu_n_mem_l1_write_allocate", AllowedTypesStats::UNSIGNED_LONG_LONG, 0, "= ", "", true, false, false);
+  m_gpu_per_sm_stats.add_unsigned_long_long_stat("gpgpu_n_mem_l2_write_allocate", AllowedTypesStats::UNSIGNED_LONG_LONG, 0, "= ", "", true, false, false);
+  m_gpu_per_sm_stats.add_unsigned_long_long_stat("gpgpu_n_mem_grid_barrier", AllowedTypesStats::UNSIGNED_LONG_LONG, 0, "= ", "", true, false, false);
+  m_gpu_per_sm_stats.add_unsigned_long_long_stat("gpgpu_n_mem_tlb_miss_data", AllowedTypesStats::UNSIGNED_LONG_LONG, 0, "= ", "", true, false, false);
+  m_gpu_per_sm_stats.add_unsigned_long_long_stat("gpgpu_n_mem_tlb_miss_inst", AllowedTypesStats::UNSIGNED_LONG_LONG, 0, "= ", "", true, false, false);
+  m_gpu_per_sm_stats.add_unsigned_long_long_stat("gpgpu_n_load_insn", AllowedTypesStats::UNSIGNED_LONG_LONG, 0, " = ", "", true, false, false);
+  m_gpu_per_sm_stats.add_unsigned_long_long_stat("gpgpu_n_store_insn", AllowedTypesStats::UNSIGNED_LONG_LONG, 0, "= ", "", true, false, false);
+  m_gpu_per_sm_stats.add_unsigned_long_long_stat("gpgpu_n_shmem_insn", AllowedTypesStats::UNSIGNED_LONG_LONG, 0, "= ", "", true, false, false);
+  m_gpu_per_sm_stats.add_unsigned_long_long_stat("gpgpu_n_sstarr_insn", AllowedTypesStats::UNSIGNED_LONG_LONG, 0, "= ", "", true, false, false);
+  m_gpu_per_sm_stats.add_unsigned_long_long_stat("gpgpu_n_tex_insn", AllowedTypesStats::UNSIGNED_LONG_LONG, 0, "= ", "", true, false, false);
+  m_gpu_per_sm_stats.add_unsigned_long_long_stat("gpgpu_n_const_mem_insn", AllowedTypesStats::UNSIGNED_LONG_LONG, 0, "= ", "", true, false, false);
+  m_gpu_per_sm_stats.add_unsigned_long_long_stat("gpgpu_n_param_mem_insn", AllowedTypesStats::UNSIGNED_LONG_LONG, 0, "= ", "", true, false, false);
+  m_gpu_per_sm_stats.add_unsigned_long_long_stat("gpgpu_n_shmem_bkconflict", AllowedTypesStats::UNSIGNED_LONG_LONG, 0, "= ", "", true, false, false);
+  m_gpu_per_sm_stats.add_unsigned_long_long_stat("gpgpu_n_shmem_port_conflict", AllowedTypesStats::UNSIGNED_LONG_LONG, 0, "= ", "", true, false, false);
+  m_gpu_per_sm_stats.add_unsigned_long_long_stat("gpgpu_n_stall_dispatch_to_subpipeline_mem", AllowedTypesStats::UNSIGNED_LONG_LONG, 0, "= ", "", true, false, false);
+  m_gpu_per_sm_stats.add_unsigned_long_long_stat("gpgpu_n_l1cache_bkconflict", AllowedTypesStats::UNSIGNED_LONG_LONG, 0, "= ", "", true, false, false);
+  m_gpu_per_sm_stats.add_unsigned_long_long_stat("gpgpu_n_l1cache_coalescing_conflicts", AllowedTypesStats::UNSIGNED_LONG_LONG, 0, "= ", "", true, false, false);
+  m_gpu_per_sm_stats.add_unsigned_long_long_stat("gpgpu_n_directly_to_l2_coalescing_conflicts", AllowedTypesStats::UNSIGNED_LONG_LONG, 0, "= ", "", true, false, false);
+  m_gpu_per_sm_stats.add_unsigned_long_long_stat("gpgpu_n_cmem_portconflict", AllowedTypesStats::UNSIGNED_LONG_LONG, 0, "= ", "", true, false, false);
+  m_gpu_per_sm_stats.add_unsigned_long_long_stat("gpgpu_n_cmem_coalescing_conflicts", AllowedTypesStats::UNSIGNED_LONG_LONG, 0, "= ", "", true, false, false);
+  m_gpu_per_sm_stats.add_unsigned_long_long_stat("total_num_warp_instructions", AllowedTypesStats::UNSIGNED_LONG_LONG, 0, "= ", "", true, false, false);
+  m_gpu_per_sm_stats.add_unsigned_long_long_stat("Total_effective_incomplete_warps", AllowedTypesStats::UNSIGNED_LONG_LONG, 0, ": ", "", true, false, false);
+  m_gpu_per_sm_stats.add_unsigned_long_long_stat("total_accesses_l1d_instructions", AllowedTypesStats::UNSIGNED_LONG_LONG, 0, ": ", "", true, false, false);
+  m_gpu_per_sm_stats.add_unsigned_long_long_stat("total_l1d_instructions", AllowedTypesStats::UNSIGNED_LONG_LONG, 0, ": ", "", true, false, false);
+  m_gpu_per_sm_stats.add_unsigned_long_long_stat("total_conflicts_shared_instructions", AllowedTypesStats::UNSIGNED_LONG_LONG, 0, ": ", "", true, false, false);
+  m_gpu_per_sm_stats.add_unsigned_long_long_stat("total_shared_instructions", AllowedTypesStats::UNSIGNED_LONG_LONG, 0, ": ", "", true, false, false);
+  m_gpu_per_sm_stats.add_unsigned_long_long_stat("total_shared_mem_accesses", AllowedTypesStats::UNSIGNED_LONG_LONG, 0, ": ", "", true, false, false);
+  m_gpu_per_sm_stats.add_unsigned_long_long_stat("total_num_ldst_unit_instructions", AllowedTypesStats::UNSIGNED_LONG_LONG, 0, ": ", "", true, false, false);
+  m_gpu_per_sm_stats.add_unsigned_long_long_stat("total_num_dp_instructions", AllowedTypesStats::UNSIGNED_LONG_LONG, 0, ": ", "", true, false, false);
+  m_gpu_per_sm_stats.add_unsigned_long_long_stat("ctas_completed", AllowedTypesStats::UNSIGNED_LONG_LONG, 0, ": ", "", true, false, false);
+  m_gpu_per_sm_stats.add_unsigned_long_long_stat("total_num_times_wb_port_conflict", AllowedTypesStats::UNSIGNED_LONG_LONG, 0, ": ", "", true, false, false);
+  m_gpu_per_sm_stats.add_unsigned_long_long_stat("total_num_times_wb_evaluated", AllowedTypesStats::UNSIGNED_LONG_LONG, 0, ": ", "", true, false, false);
+  m_gpu_per_sm_stats.add_unsigned_long_long_stat("total_num_cycles_issue_stage_issuing", AllowedTypesStats::UNSIGNED_LONG_LONG, 0, ": ", "", true, false, false);
+  m_gpu_per_sm_stats.add_unsigned_long_long_stat("total_num_evals_rf", AllowedTypesStats::UNSIGNED_LONG_LONG, 0, ": ", "", true, false, false);
+  m_gpu_per_sm_stats.add_unsigned_long_long_stat("total_num_evals_rf_with_conflict", AllowedTypesStats::UNSIGNED_LONG_LONG, 0, ": ", "", true, false, false);
+  m_gpu_per_sm_stats.add_unsigned_long_long_stat("total_num_cycles_issue_stage_stall_next_stage_not_available", AllowedTypesStats::UNSIGNED_LONG_LONG, 0, ": ", "", true, false, false);
+  m_gpu_per_sm_stats.add_unsigned_long_long_stat("total_num_cycles_issue_stage_stall_issue_port_busy", AllowedTypesStats::UNSIGNED_LONG_LONG, 0, ": ", "", true, false, false);
+  m_gpu_per_sm_stats.add_unsigned_long_long_stat("total_num_cycles_issue_stage_stall_no_valid_instruction", AllowedTypesStats::UNSIGNED_LONG_LONG, 0, ": ", "", true, false, false);
+  m_gpu_per_sm_stats.add_unsigned_long_long_stat("total_num_cycles_issue_stage_stall_no_warps_ready", AllowedTypesStats::UNSIGNED_LONG_LONG, 0, ": ", "", true, false, false);
+  m_gpu_per_sm_stats.add_unsigned_long_long_stat("total_num_cycles_issue_stage_evaluated", AllowedTypesStats::UNSIGNED_LONG_LONG, 0, ": ", "", true, false, false);
+  m_gpu_per_sm_stats.add_unsigned_long_long_stat("total_num_register_file_cache_hits", AllowedTypesStats::UNSIGNED_LONG_LONG, 0, ": ", "", true, false, false);
+  m_gpu_per_sm_stats.add_unsigned_long_long_stat("total_num_register_file_cache_allocations", AllowedTypesStats::UNSIGNED_LONG_LONG, 0, ": ", "", true, false, false);
+  m_gpu_per_sm_stats.add_unsigned_long_long_stat("total_num_regular_regfile_reads", AllowedTypesStats::UNSIGNED_LONG_LONG, 0, ": ", "", true, false, false);
+  m_gpu_per_sm_stats.add_unsigned_long_long_stat("total_num_regular_regfile_writes", AllowedTypesStats::UNSIGNED_LONG_LONG, 0, ": ", "", true, false, false);
+  m_gpu_per_sm_stats.add_unsigned_long_long_stat("total_num_constant_cache_reads", AllowedTypesStats::UNSIGNED_LONG_LONG, 0, ": ", "", true, false, false);
+  m_gpu_per_sm_stats.add_unsigned_long_long_stat("total_num_uniform_predicate_regfile_writes", AllowedTypesStats::UNSIGNED_LONG_LONG, 0, ": ", "", true, false, false);
+  m_gpu_per_sm_stats.add_unsigned_long_long_stat("total_num_uniform_predicate_regfile_reads", AllowedTypesStats::UNSIGNED_LONG_LONG, 0, ": ", "", true, false, false);
+  m_gpu_per_sm_stats.add_unsigned_long_long_stat("total_num_uniform_regfile_writes", AllowedTypesStats::UNSIGNED_LONG_LONG, 0, ": ", "", true, false, false);
+  m_gpu_per_sm_stats.add_unsigned_long_long_stat("total_num_uniform_regfile_reads", AllowedTypesStats::UNSIGNED_LONG_LONG, 0, ": ", "", true, false, false);
+  m_gpu_per_sm_stats.add_unsigned_long_long_stat("total_num_predicate_regfile_writes", AllowedTypesStats::UNSIGNED_LONG_LONG, 0, ": ", "", true, false, false);
+  m_gpu_per_sm_stats.add_unsigned_long_long_stat("total_num_predicate_regfile_reads", AllowedTypesStats::UNSIGNED_LONG_LONG, 0, ": ", "", true, false, false);
+  m_gpu_per_sm_stats.add_unsigned_long_long_stat("total_accesses", AllowedTypesStats::UNSIGNED_LONG_LONG, 0, ": ", "", true, false, false);
+  m_gpu_per_sm_stats.add_unsigned_long_long_stat("total_accesses_coalesced", AllowedTypesStats::UNSIGNED_LONG_LONG, 0, ": ", "", true, false, false);
+  m_gpu_per_sm_stats.add_unsigned_long_long_stat("total_accesses_not_coalesced", AllowedTypesStats::UNSIGNED_LONG_LONG, 0, ": ", "", true, false, false);
+
+  for (unsigned int i = 0; i < N_MEM_STAGE_ACCESS_TYPE; i++) {
+    for (unsigned int j = 0; j < N_MEM_STAGE_STALL_TYPE; j++) {
+      std::string stat_name = "gpgpu_stall_shd_mem[" +
+          mem_stage_access_type_to_string(static_cast<mem_stage_access_type>(i)) + "][" +
+          mem_stage_stall_type_to_string(static_cast<mem_stage_stall_type>(j)) + "]";
+      m_gpu_per_sm_stats.add_unsigned_long_long_stat(stat_name, AllowedTypesStats::UNSIGNED_LONG_LONG, 0, ": ", "", true, false, false);
+    }
+  }
+
+  for (unsigned int i = 0; i < m_shader_config->warp_size + 1u; i++) {
+    m_gpu_per_sm_stats.add_unsigned_long_long_stat("warp_occ_dist" + std::to_string(i), AllowedTypesStats::UNSIGNED_LONG_LONG, 0, "= ", "", true, true, false);
+  }
+}
+
+void gpgpu_sim::gather_gpu_per_sm_stats() {
+  for (unsigned int i = 0; i < m_shader_config->n_simt_clusters; i++) {
+    m_cluster[i]->gather_stats(m_gpu_per_sm_stats,
+                               m_coalescing_stats_across_sms_l1d,
+                               m_coalescing_stats_across_sms_const,
+                               m_coalescing_stats_across_sms_sharedmem);
+  }
+}
+
+void gpgpu_sim::reset_cycless_access_history() {
+  for (unsigned int i = 0; i < m_shader_config->n_simt_clusters; i++) {
+    m_cluster[i]->reset_cycless_access_history();
+  }
+}
+
+void gpgpu_sim::gather_gpu_per_sm_single_stat(std::string stat_name) {
+  for (unsigned int i = 0; i < m_shader_config->n_simt_clusters; i++) {
+    m_cluster[i]->gather_single_stat(m_gpu_per_sm_stats, stat_name);
+  }
+}
+
+void gpgpu_sim::reset_gpu_per_sm_stats() {
+  for (auto stat_name : m_gpu_per_sm_stats.m_stats_name) {
+    m_gpu_per_sm_stats.reset_stat(stat_name);
+  }
+}
+
 void gpgpu_sim::launch(kernel_info_t *kinfo) {
   unsigned kernelID = kinfo->get_uid();
   unsigned long long streamID = kinfo->get_streamID();
@@ -1303,6 +1414,11 @@ void gpgpu_sim::init() {
   for (unsigned i = 0; i < m_shader_config->n_simt_clusters; i++)
     m_cluster[i]->reinit();
   m_shader_stats->new_grid();
+  // Stage 1e-A2 (Codex review follow-up): hydrate per-SM Element_stats bucket
+  // with counter definitions.  Matches MICRO 2025 gpu-sim.cc:1755 position
+  // inside init().  Safe to call even when is_SM_remodeling_enabled=0 — the
+  // counters just stay at 0 until the SM path populates them.
+  create_gpu_per_sm_stats();
   // initialize the control-flow, memory access, memory latency logger
   if (m_config.g_visualizer_enabled) {
     create_thread_CFlogger(gpgpu_ctx, m_config.num_shader(),
