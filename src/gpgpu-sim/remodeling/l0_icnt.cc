@@ -196,10 +196,18 @@ void L0_icnt::cycle() {
                 mf->get_wid(), mf->get_sid(), mf->get_tpc(), mf->get_mem_config(),
                 m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle, mf, NULL);
         mf_n->set_unique_function_id(mf->get_unique_function_id());
-        // v2: MICRO 2025's read_only_cache::access has an extra `bool &erase_original_mf`
-        // out-param; v2 vanilla does not.  Drop it (value was only used by their caller
-        // to free `mf` on HIT, and in Stage 1 this path is behind is_SM_remodeling_enabled=0).
-        status = m_L1->access((new_addr_type) mf_n->get_access_address(), mf_n, m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle, events);
+        // Stage 1e-B3 (W5): call the 5-arg read_only_cache::access overload
+        // (the extra `bool& erase_original_mf` out-param) to re-align with
+        // MICRO 2025 remodeling/l0_icnt.cc.  The bool isn't consumed here —
+        // upstream also declares it and ignores it — but routing through the
+        // matching signature makes the tree-wide diff vs MICRO 2025 smaller
+        // and keeps the ownership-protocol interface explicit.
+        bool erase_original_mf = false;
+        status = m_L1->access((new_addr_type) mf_n->get_access_address(),
+                              mf_n,
+                              m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle,
+                              events, erase_original_mf);
+        (void)erase_original_mf;  // deliberately unused (see note above)
 
         if(status == RESERVATION_FAIL) {
             inserted = false;
@@ -215,11 +223,6 @@ void L0_icnt::cycle() {
             delete mf_n;
             assert(0);
         }
-
-        // v2: the orig-mf erasure behavior was tied to MICRO 2025's extra `bool&`
-        // out-param on read_only_cache::access (dropped at Stage 1c.4.5).  Not
-        // freeing here is safe: the caller above (the subcore fetch path) retains
-        // ownership of mf along this path.
 
         if(inserted) {
            m_icnt_L1_TLB_to_cache.pop();
