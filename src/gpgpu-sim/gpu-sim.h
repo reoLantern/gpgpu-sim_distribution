@@ -55,6 +55,9 @@
 // MICRO 2025 port (Stage 1d.4+5): Element_stats is the gpu_per_sm stats bucket
 // used by trace_driven.cc and shader.cc total_* stats collection.
 #include "remodeling/new_stats.h"
+// Stage 1e-B1: full ports of coalescing stats classes from fusedMemory/.
+// m_coalescing_stats_across_sms_* fields below need the full class def.
+#include "remodeling/fusedMemory/coalescingStats.h"
 
 // constants for statistics printouts
 #define GPU_RSTAT_SHD_INFO 0x1
@@ -943,12 +946,16 @@ class gpgpu_sim : public gpgpu_t {
 
   // Stage 1e-A2 (Codex review follow-up): per-coalescer stats buckets +
   // stats-collection chain, matches MICRO 2025 gpu-sim.h:855-859 +
-  // gpu-sim.cc:1780-1889.  coalescingStatsAcrossSms is still a stub (Stage
-  // 1b excluded fusedMemory), so the addStats() calls are inert until we
-  // port the full class; the plumbing is in place for when we do.
-  coalescingStatsAcrossSms m_coalescing_stats_across_sms_l1d;
-  coalescingStatsAcrossSms m_coalescing_stats_across_sms_const;
-  coalescingStatsAcrossSms m_coalescing_stats_across_sms_sharedmem;
+  // gpu-sim.cc:1668-1670.
+  // Stage 1e-B1: switched from stubbed default-ctor to the real 2-arg
+  // ctor (name_space, space_type).  In-class init here keeps gpgpu_sim's
+  // ctor init list unchanged.
+  coalescingStatsAcrossSms m_coalescing_stats_across_sms_l1d{
+      "l1d", _memory_space_t::global_space};
+  coalescingStatsAcrossSms m_coalescing_stats_across_sms_const{
+      "const", _memory_space_t::const_space};
+  coalescingStatsAcrossSms m_coalescing_stats_across_sms_sharedmem{
+      "sharedMem", _memory_space_t::shared_space};
 
   void create_gpu_per_sm_stats();
   void gather_gpu_per_sm_stats();

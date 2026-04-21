@@ -1430,6 +1430,17 @@ class warp_inst_t : public inst_t {
   bool accessq_empty() const { return m_accessq.empty(); }
   unsigned accessq_count() const { return m_accessq.size(); }
   const mem_access_t &accessq_back() { return m_accessq.back(); }
+  // Stage 1e-B1: MICRO 2025 abstract_hardware_model.h:1594.  coalescingStats
+  // iterates accesses by index, so a snapshot vector is the convenient API.
+  // Our m_accessq is std::list; we materialize a vector on demand.
+  std::vector<mem_access_t> get_mem_accesses() const {
+    std::vector<mem_access_t> res;
+    assert(!m_accessq.empty());
+    for (auto it = m_accessq.begin(); it != m_accessq.end(); ++it) {
+      res.push_back(*it);
+    }
+    return res;
+  }
   void accessq_pop_back() { m_accessq.pop_back(); }
 
   bool dispatch_delay() {
@@ -1613,7 +1624,10 @@ class warp_inst_t : public inst_t {
   bool is_dp_op() const { return is_dp(); }
   bool get_generated_constant_accesses() const { return m_generated_constant_accesses; }
   void set_generated_constant_accesses(bool v) { m_generated_constant_accesses = v; }
-  const std::list<mem_access_t> &get_mem_accesses() const { return m_accessq; }
+  // Stage 1e-B1: MICRO 2025's get_mem_accesses returns `std::vector`.  The
+  // real impl is above (inline near accessq_back); the list-reference
+  // variant was a v2-local convenience helper with only 2 call sites, both
+  // compatible with the vector-returning API.  Removed to match upstream.
   bool m_generated_constant_accesses = false;
 
   // MICRO 2025 port: extra overload of issue() whose trailing arg is the

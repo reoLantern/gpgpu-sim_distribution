@@ -35,7 +35,15 @@ list(APPEND gpgpusim_SRC addrdec.cc
     remodeling/sm.cc
     remodeling/stream_buffer.cc
     remodeling/subcore.cc
-    remodeling/warp_dependency_state.cc)
+    remodeling/warp_dependency_state.cc
+    # Stage 1e-B1: real coalescingStats port (replaces stubs.h stub classes).
+    # MICRO 2025 uses these for inter-/intra-warp coalescing histograms.
+    remodeling/fusedMemory/coalescingStats.cc
+    # Stage 1e-B2: dormant-but-complete GMMU + PageTableWalker classes.
+    # MICRO 2025 never instantiates them; we carry the code for future
+    # multi-GPU TLB / Hopper TMA address-translation work.
+    remodeling/gmmu.cc
+    remodeling/page_table_walker.cc)
 if(NOT GPGPUSIM_USE_POWER_MODEL)
     list(REMOVE_ITEM ${gpgpusim_SRC} power_interface.cc)
 endif()
