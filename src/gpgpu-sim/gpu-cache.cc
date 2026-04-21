@@ -1235,18 +1235,9 @@ void baseline_cache::cycle() {
 bool baseline_cache::fill(mem_fetch *mf, unsigned time) {
   bool res_deleted = false;  // MICRO 2025 port
   if (m_config.m_mshr_type == SECTOR_ASSOC) {
-    if (!mf->get_original_mf()) {
-      fprintf(stderr, "[DBG fill] cache=%s mf=%p original_mf=NULL access_type=%d addr=0x%llx is_filling_L0=%d\n",
-              m_name.c_str(), mf, (int)mf->get_access_type(), (unsigned long long)mf->get_addr(), mf->get_is_filling_L0());
-    }
     assert(mf->get_original_mf());
     extra_mf_fields_lookup::iterator e =
         m_extra_mf_fields.find(mf->get_original_mf());
-    if (e == m_extra_mf_fields.end()) {
-      fprintf(stderr, "[DBG fill] cache=%s mf=%p original_mf=%p NOT in m_extra_mf_fields (size=%zu) access_type=%d addr=0x%llx is_filling_L0=%d\n",
-              m_name.c_str(), mf, mf->get_original_mf(), m_extra_mf_fields.size(),
-              (int)mf->get_access_type(), (unsigned long long)mf->get_addr(), mf->get_is_filling_L0());
-    }
     assert(e != m_extra_mf_fields.end());
     e->second.pending_read--;
 

@@ -2210,9 +2210,19 @@ class shader_core_stats : public shader_core_stats_pod {
     // [sid][bank] in ldst_unit_sm::L1_latency_queue_cycle (line 515, 538).
     l1d_accesses_per_sid_per_bank.resize(m_config->num_shader());
     l1d_evals_per_sid_per_bank.resize(m_config->num_shader());
+    // Stage 1g G5.5: MICRO 2025 shader.h:2596-2615 power-model per-cycle
+    // samples. SM::issue_warp reads warp_issues_from_last_power_sample[sid][wid].
+    warp_issues_from_last_power_sample.resize(m_config->num_shader());
+    bank_wb_from_last_power_sample.resize(m_config->num_shader());
+    collector_unit_allocations_from_last_power_sample.resize(m_config->num_shader());
+    // Stage 1g G5.6: 1D [sid] vector used by SM::warp_inst_complete (sm.cc:1470).
+    m_num_sim_winsn_per_shader.resize(m_config->num_shader());
     for (unsigned i = 0; i < m_config->num_shader(); i++) {
       l1d_accesses_per_sid_per_bank[i].resize(m_config->m_L1D_config.l1_banks);
       l1d_evals_per_sid_per_bank[i].resize(m_config->m_L1D_config.l1_banks);
+      warp_issues_from_last_power_sample[i].resize(m_config->max_warps_per_shader);
+      bank_wb_from_last_power_sample[i].resize(m_config->gpgpu_num_reg_banks);
+      collector_unit_allocations_from_last_power_sample[i].resize(m_config->gpgpu_operand_collector_num_units_gen);
     }
   }
 
@@ -2343,6 +2353,10 @@ class shader_core_stats : public shader_core_stats_pod {
   std::vector<std::vector<unsigned long long>> l1d_accesses_per_sid_per_bank;
   std::vector<std::vector<unsigned long long>> l1d_evals_per_sid_per_bank;
   std::vector<std::vector<unsigned long long>> warp_issues_from_last_power_sample;
+  // Stage 1g G5.5: MICRO 2025 shader.h:2596-2604 power-model per-cycle samples,
+  // resized in ctor below. Accessed by SM::issue_warp / SM::cycle.
+  std::vector<std::vector<unsigned long long>> bank_wb_from_last_power_sample;
+  std::vector<std::vector<unsigned long long>> collector_unit_allocations_from_last_power_sample;
 };
 
 class memory_config;

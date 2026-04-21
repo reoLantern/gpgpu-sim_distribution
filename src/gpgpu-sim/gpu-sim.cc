@@ -457,6 +457,12 @@ void shader_core_config::reg_options(class OptionParser *opp) {
                          "If enabled, each sub-core has its own L0I. "
                          "Routes L0I misses through L0_icnt to shared L1I_L1_half_C cache.",
                          "0");
+  // Stage 1g G5.6: MICRO 2025 gpu-sim.cc:968. Volta/Turing/Ampere = 6 barriers.
+  option_parser_register(opp, "-num_wait_barriers_per_warp", OPT_UINT32,
+                         &num_wait_barriers_per_warp,
+                         "Number of wait barriers that each warp has. "
+                         "Current architectures like Volta/Turing/Ampere have 6 barriers.",
+                         "6");
   option_parser_register(opp, "-num_subcores_in_SM", OPT_INT32,
                          &num_subcores_in_SM,
                          "Number of subcores per SM (Turing/Ampere default 4)",
