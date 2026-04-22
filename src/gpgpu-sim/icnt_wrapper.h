@@ -33,21 +33,23 @@
 
 // functional interface to the interconnect
 
-typedef void (*icnt_create_p)(unsigned n_shader, unsigned n_mem);
-typedef void (*icnt_init_p)();
-typedef bool (*icnt_has_buffer_p)(unsigned input, unsigned int size);
+typedef void (*icnt_create_p)(unsigned n_shader, unsigned n_mem, unsigned int gpu_id);
+typedef void (*icnt_delete_p)(unsigned int gpu_id);
+typedef void (*icnt_init_p)(unsigned int gpu_id);
+typedef bool (*icnt_has_buffer_p)(unsigned input, unsigned int size, unsigned int gpu_id);
 typedef void (*icnt_push_p)(unsigned input, unsigned output, void* data,
-                            unsigned int size);
-typedef void* (*icnt_pop_p)(unsigned output);
-typedef void (*icnt_transfer_p)();
-typedef bool (*icnt_busy_p)();
-typedef void (*icnt_drain_p)();
-typedef void (*icnt_display_stats_p)();
-typedef void (*icnt_display_overall_stats_p)();
-typedef void (*icnt_display_state_p)(FILE* fp);
-typedef unsigned (*icnt_get_flit_size_p)();
+                            unsigned int size, unsigned int gpu_id);
+typedef void* (*icnt_pop_p)(unsigned output, unsigned int gpu_id);
+typedef void (*icnt_transfer_p)(unsigned int gpu_id);
+typedef bool (*icnt_busy_p)(unsigned int gpu_id);
+typedef void (*icnt_drain_p)(unsigned int gpu_id);
+typedef void (*icnt_display_stats_p)(unsigned int gpu_id);
+typedef void (*icnt_display_overall_stats_p)(unsigned int gpu_id);
+typedef void (*icnt_display_state_p)(FILE* fp, unsigned int gpu_id);
+typedef unsigned (*icnt_get_flit_size_p)(unsigned int gpu_id);
 
 extern icnt_create_p icnt_create;
+extern icnt_delete_p icnt_delete;
 extern icnt_init_p icnt_init;
 extern icnt_has_buffer_p icnt_has_buffer;
 extern icnt_push_p icnt_push;

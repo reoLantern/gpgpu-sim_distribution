@@ -40,6 +40,9 @@ std::string traffic_breakdown::classify_memfetch(class mem_fetch* mf) {
     case L2_WRBK_ACC:
     case L1_WR_ALLOC_R:
     case L2_WR_ALLOC_R:
+    case GRID_BARRIER_ACC:
+    case TLB_MISS_ACC_DATA:
+    case TLB_MISS_ACC_INST:
       traffic_name = mem_access_type_str(access_type);
       break;
     case GLOBAL_ACC_R:
@@ -51,4 +54,25 @@ std::string traffic_breakdown::classify_memfetch(class mem_fetch* mf) {
       assert(0 && "Unknown traffic type");
   }
   return traffic_name;
+}
+
+void traffic_breakdown::join_stats(const traffic_breakdown& td) {
+  for (traffic_stat_t::const_iterator i_stat = td.m_stats.begin();
+       i_stat != td.m_stats.end(); i_stat++) {
+    auto it_1 = m_stats.find(i_stat->first);
+    if (it_1 == m_stats.end()) {
+      m_stats[i_stat->first] = i_stat->second;
+    } else {
+      for (traffic_class_t::const_iterator i_class = i_stat->second.begin();
+           i_class != i_stat->second.end(); i_class++) {
+        auto it_2 = it_1->second.find(i_class->first);
+        if (it_2 == it_1->second.end()) {
+          m_stats[i_stat->first][i_class->first] = i_class->second;
+        } else {
+          m_stats[i_stat->first][i_class->first] =
+              it_2->second + i_class->second;
+        }
+      }
+    }
+  }
 }

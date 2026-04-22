@@ -16,6 +16,8 @@ class traffic_breakdown {
   // record the amount and type of traffic introduced by this mem_fetch object
   void record_traffic(class mem_fetch* mf, unsigned int size);
 
+  void join_stats(const traffic_breakdown& td);
+
  protected:
   std::string m_network_name;
 

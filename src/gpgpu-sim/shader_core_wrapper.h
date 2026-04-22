@@ -26,32 +26,14 @@
 // ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 // POSSIBILITY OF SUCH DAMAGE.
 
-// v2 adaptations vs the MICRO 2025 original:
-//   - Added `#include "stubs.h"` for RRS / coalescingStatsAcrossSms (stubs in
-//     Stage 1; the full LOOG + fusedMemory classes are out of scope).
-//   - Added `#include <string>` for std::string used in gather_*_single_stat.
-//   - Define WARP_PER_CTA_MAX here (=64, v2 default; MICRO 2025 uses 128).
-//     v2 shader.h used to own this; Stage 1e makes wrapper.h self-contained
-//     so shader.h can include wrapper.h (for multi-inheritance by
-//     shader_core_ctx) without circular include.
-//   - Added `#include "../abstract_hardware_model.h"` for address_type.
 
 #pragma once
 
 #include <bitset>
-#include <string>
-#include "../abstract_hardware_model.h"   // address_type
-#include "stubs.h"                  // RRS, coalescingStatsPerSm, coalescingStatsAcrossSms
-#include "remodeling/new_stats.h"   // Element_stats
+#include "../constants.h"
+#include "remodeling/new_stats.h"
 
-// Stage 1e: self-contained primitives, matches MICRO 2025
-// shader_core_wrapper.h:36.  shader.h keeps its `typedef` of warp_set_t
-// guarded so the two don't duplicate.
-#ifndef WARP_PER_CTA_MAX_DEFINED
-#define WARP_PER_CTA_MAX_DEFINED
-const unsigned WARP_PER_CTA_MAX = 64;
 typedef std::bitset<WARP_PER_CTA_MAX> warp_set_t;
-#endif
 
 class gpgpu_sim;
 class warp_inst_t;
@@ -62,6 +44,8 @@ class shader_core_stats;
 class cache_stats;
 class cache_sub_stats;
 class kernel_info_t;
+class RRS;
+class coalescingStatsAcrossSms;
 
 class shader_core_ctx_wrapper {
  public:
@@ -122,7 +106,7 @@ class shader_core_ctx_wrapper {
   virtual void store_ack(class mem_fetch *mf) = 0;
   virtual void inc_store_req(unsigned warp_id) = 0;
   virtual void dec_inst_in_pipeline(unsigned warp_id) = 0;
-
+  
   virtual void display_pipeline(FILE *fout, int print_mem, int mask3bit) const = 0;
 
   virtual void print_cache_stats(FILE *fp, unsigned &dl1_accesses,

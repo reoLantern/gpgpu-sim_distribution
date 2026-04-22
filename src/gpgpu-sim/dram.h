@@ -1,19 +1,18 @@
 // Copyright (c) 2009-2021, Tor M. Aamodt, Ivan Sham, Ali Bakhoda,
 // George L. Yuan, Wilson W.L. Fung, Vijay Kandiah, Nikos Hardavellas,
 // Mahmoud Khairy, Junrui Pan, Timothy G. Rogers
-// The University of British Columbia, Northwestern University, Purdue
-// University All rights reserved.
+// The University of British Columbia, Northwestern University, Purdue University
+// All rights reserved.
 //
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are met:
 //
-// 1. Redistributions of source code must retain the above copyright notice,
-// this
+// 1. Redistributions of source code must retain the above copyright notice, this
 //    list of conditions and the following disclaimer;
 // 2. Redistributions in binary form must reproduce the above copyright notice,
 //    this list of conditions and the following disclaimer in the documentation
 //    and/or other materials provided with the distribution;
-// 3. Neither the names of The University of British Columbia, Northwestern
+// 3. Neither the names of The University of British Columbia, Northwestern 
 //    University nor the names of their contributors may be used to
 //    endorse or promote products derived from this software without specific
 //    prior written permission.
@@ -114,6 +113,8 @@ class dram_t {
   dram_t(unsigned int parition_id, const memory_config *config,
          class memory_stats_t *stats, class memory_partition_unit *mp,
          class gpgpu_sim *gpu);
+
+  ~dram_t();
 
   bool full(bool is_write) const;
   void print(FILE *simFile) const;

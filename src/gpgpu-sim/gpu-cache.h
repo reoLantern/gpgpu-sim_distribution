@@ -1,18 +1,17 @@
-// Copyright (c) 2009-2021, Tor M. Aamodt, Tayler Hetherington, Vijay Kandiah,
-// Nikos Hardavellas, Mahmoud Khairy, Junrui Pan, Timothy G. Rogers The
-// University of British Columbia, Northwestern University, Purdue University
+// Copyright (c) 2009-2021, Tor M. Aamodt, Tayler Hetherington, Vijay Kandiah, Nikos Hardavellas, 
+// Mahmoud Khairy, Junrui Pan, Timothy G. Rogers
+// The University of British Columbia, Northwestern University, Purdue University
 // All rights reserved.
 //
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are met:
 //
-// 1. Redistributions of source code must retain the above copyright notice,
-// this
+// 1. Redistributions of source code must retain the above copyright notice, this
 //    list of conditions and the following disclaimer;
 // 2. Redistributions in binary form must reproduce the above copyright notice,
 //    this list of conditions and the following disclaimer in the documentation
 //    and/or other materials provided with the distribution;
-// 3. Neither the names of The University of British Columbia, Northwestern
+// 3. Neither the names of The University of British Columbia, Northwestern 
 //    University nor the names of their contributors may be used to
 //    endorse or promote products derived from this software without specific
 //    prior written permission.
@@ -54,8 +53,8 @@ enum cache_request_status {
   SECTOR_MISS,
   MSHR_HIT,
   NUM_CACHE_REQUEST_STATUS,
-  NOT_INITIALIZED,        // MICRO 2025 port: sentinel used by l0_icnt before access() is called
-  IN_L0I_RESPONSE_QUEUE   // MICRO 2025 port: first_level_instruction_cache signals "deferred"
+  NOT_INITIALIZED, // MOD. Added L0I
+  IN_L0I_RESPONSE_QUEUE // MOD. Remodeling
 };
 
 enum cache_reservation_fail_reason {
@@ -72,13 +71,6 @@ enum cache_event_type {
   READ_REQUEST_SENT,
   WRITE_REQUEST_SENT,
   WRITE_ALLOCATE_SENT
-};
-
-enum cache_gpu_level {
-  L1_GPU_CACHE = 0,
-  L2_GPU_CACHE,
-  OTHER_GPU_CACHE,
-  NUM_CACHE_GPU_LEVELS
 };
 
 struct evicted_block_info {
@@ -376,6 +368,12 @@ struct sector_cache_block : public cache_block_t {
     }
     if (m_set_byte_mask_on_fill) set_byte_mask(byte_mask);
 
+    if (m_set_readable_on_fill[sidx]) {
+      m_readable[sidx] = true;
+      m_set_readable_on_fill[sidx] = false;
+    }
+    if (m_set_byte_mask_on_fill) set_byte_mask(byte_mask);
+
     m_sector_fill_time[sidx] = time;
     m_line_fill_time = time;
   }
@@ -509,7 +507,7 @@ struct sector_cache_block : public cache_block_t {
     for (unsigned i = 0; i < SECTOR_CHUNCK_SIZE; ++i) {
       if (sector_mask.to_ulong() & (1 << i)) return i;
     }
-    return SECTOR_CHUNCK_SIZE;  // error
+    assert(0 && "should not reach here");
   }
 };
 
@@ -732,16 +730,9 @@ class cache_config {
           "Invalid cache configuration: FETCH_ON_WRITE and LAZY_FETCH_ON_READ "
           "cannot work properly with ON_FILL policy. Cache must be ON_MISS. ");
     }
-
     if (m_cache_type == SECTOR) {
-      bool cond = m_line_sz / SECTOR_SIZE == SECTOR_CHUNCK_SIZE &&
-                  m_line_sz % SECTOR_SIZE == 0;
-      if (!cond) {
-        std::cerr << "error: For sector cache, the simulator uses hard-coded "
-                     "SECTOR_SIZE and SECTOR_CHUNCK_SIZE. The line size "
-                     "must be product of both values.\n";
-        assert(0);
-      }
+      assert(m_line_sz / SECTOR_SIZE == SECTOR_CHUNCK_SIZE &&
+             m_line_sz % SECTOR_SIZE == 0);
     }
 
     // default: port to data array width and granularity = line size
@@ -774,11 +765,6 @@ class cache_config {
   unsigned get_line_sz() const {
     assert(m_valid);
     return m_line_sz;
-  }
-  // MICRO 2025 port: set-associativity accessor.
-  unsigned get_assoc() const {
-    assert(m_valid);
-    return m_assoc;
   }
   unsigned get_atom_sz() const {
     assert(m_valid);
@@ -830,6 +816,10 @@ class cache_config {
   void set_assoc(unsigned n) {
     // set new assoc. L1 cache dynamically resized in Volta
     m_assoc = n;
+  }
+  unsigned int get_assoc() const {
+    assert(m_valid);
+    return m_assoc;
   }
   unsigned get_nset() const {
     assert(m_valid);
@@ -992,6 +982,19 @@ class tag_array {
   void remove_pending_line(mem_fetch *mf);
   void inc_dirty() { m_dirty++; }
 
+  float quanta_miss_ratio() {
+    float res = 0;
+    if (m_num_accesses_for_quanta != 0) {
+      res = (float)m_num_misses_for_quanta / (float)m_num_accesses_for_quanta;
+    }
+    return res;
+  }
+
+  void clear_quanta_stats() {
+    m_num_accesses_for_quanta = 0;
+    m_num_misses_for_quanta = 0;
+  }
+
  protected:
   // This constructor is intended for use only from derived classes that wish to
   // avoid unnecessary memory allocation that takes place in the
@@ -1007,6 +1010,8 @@ class tag_array {
 
   unsigned m_access;
   unsigned m_miss;
+  unsigned int m_num_accesses_for_quanta;
+  unsigned int m_num_misses_for_quanta;
   unsigned m_pending_hit;  // number of cache miss that hit a line that is
                            // allocated but not filled
   unsigned m_res_fail;
@@ -1026,13 +1031,6 @@ class tag_array {
 
   typedef tr1_hash_map<new_addr_type, unsigned> line_table;
   line_table pending_lines;
-
-  // MICRO 2025 port: InterWarp-coalescing quanta-miss ratio hooks.  Stage 1
-  // does not drive the counters (feature off by default); stubs return 0
-  // and do nothing.
- public:
-  float quanta_miss_ratio() const { return 0.0f; }
-  void clear_quanta_stats() {}
 };
 
 class mshr_table {
@@ -1057,10 +1055,16 @@ class mshr_table {
   bool busy() const { return false; }
   /// Accept a new cache fill response: mark entry ready for processing
   void mark_ready(new_addr_type block_addr, bool &has_atomic);
+  // Removes an entry from the mshr. Only employed for instructions accessing to the constant cache at issue
+  void remove_entry(new_addr_type block_addr);
   /// Returns true if ready accesses exist
   bool access_ready() const { return !m_current_response.empty(); }
   /// Returns next ready access
   mem_fetch *next_access();
+  unsigned int get_next_access_bank_l1d();
+  /// Returns the id of the warp id that has done the fetch. MOD. Improving fetch and decode
+  unsigned int get_next_access_warp_id(); 
+  unsigned int get_next_access_mem_icnt_id(); // MOD. Fixed LDST_Unit model
   void display(FILE *fp) const;
   // Returns true if there is a pending read after write
   bool is_read_after_write_pending(new_addr_type block_addr);
@@ -1070,6 +1074,32 @@ class mshr_table {
            "Change of MSHR parameters between kernels is not allowed");
     assert(m_max_merged == max_merged &&
            "Change of MSHR parameters between kernels is not allowed");
+  }
+
+  void clean_entries() {
+    while(!m_current_response.empty()) {
+      mem_fetch *mf = next_access();
+      if((mf != nullptr) && (mf->get_status() != mem_fetch_status::MEM_FETCH_DELETED)) {
+        delete mf;
+        mf = nullptr;
+      }
+    }
+    for(auto it = m_data.begin(); it != m_data.end(); it++) {
+      // for(auto it2 = it->second.m_list.begin(); it2 != it->second.m_list.end(); it2++) {
+      //   if(*it2 != nullptr) {
+      //     if( ((*it2)->get_original_mf() != nullptr) && ((*it2)->get_original_mf()->get_is_prefetch())) {
+      //       delete (*it2)->get_original_mf();
+      //       (*it2)->set_original_mf(nullptr);
+      //     }
+      //     if( ((*it2)->get_status() != mem_fetch_status::MEM_FETCH_DELETED) && ((*it2)->get_is_prefetch())) {
+      //       delete *it2;
+      //     }
+      //   }
+      // }
+      it->second.m_list.clear();
+    }
+    m_data.clear();
+    
   }
 
  private:
@@ -1091,27 +1121,6 @@ class mshr_table {
   // it may take several cycles to process the merged requests
   bool m_current_response_ready;
   std::list<new_addr_type> m_current_response;
-
- public:
-  // MICRO 2025 port: clean pending response queue.  Called by
-  // first_level_instruction_cache when the owning SM invalidates the L0.
-  void clean_entries() {
-    while (!m_current_response.empty()) {
-      mem_fetch *mf = next_access();
-      if (mf != nullptr) {
-        delete mf;
-        mf = nullptr;
-      }
-    }
-  }
-  // MICRO 2025 port: remove an entry without marking it ready (used by
-  // baseline_cache::fill on prefetch responses).
-  void remove_entry(new_addr_type block_addr) {
-    table::iterator a = m_data.find(block_addr);
-    assert(a != m_data.end());
-    m_data[block_addr].m_list.pop_front();
-    m_data.erase(a);
-  }
 };
 
 /***************************************************************** Caches
@@ -1242,26 +1251,20 @@ class cache_stats {
   void clear();
   // Clear AerialVision cache stats after each window
   void clear_pw();
-  void inc_stats(int access_type, int access_outcome,
-                 unsigned long long streamID);
+  void inc_stats(int access_type, int access_outcome);
   // Increment AerialVision cache stats
-  void inc_stats_pw(int access_type, int access_outcome,
-                    unsigned long long streamID);
-  void inc_fail_stats(int access_type, int fail_outcome,
-                      unsigned long long streamID);
+  void inc_stats_pw(int access_type, int access_outcome);
+  void inc_fail_stats(int access_type, int fail_outcome);
   enum cache_request_status select_stats_status(
       enum cache_request_status probe, enum cache_request_status access) const;
   unsigned long long &operator()(int access_type, int access_outcome,
-                                 bool fail_outcome,
-                                 unsigned long long streamID);
+                                 bool fail_outcome);
   unsigned long long operator()(int access_type, int access_outcome,
-                                bool fail_outcome,
-                                unsigned long long streamID) const;
+                                bool fail_outcome) const;
   cache_stats operator+(const cache_stats &cs);
   cache_stats &operator+=(const cache_stats &cs);
-  void print_stats(FILE *fout, unsigned long long streamID,
-                   const char *cache_name = "Cache_stats") const;
-  void print_fail_stats(FILE *fout, unsigned long long streamID,
+  void print_stats(FILE *fout, const char *cache_name = "Cache_stats") const;
+  void print_fail_stats(FILE *fout,
                         const char *cache_name = "Cache_fail_stats") const;
 
   unsigned long long get_stats(enum mem_access_type *access_type,
@@ -1275,22 +1278,24 @@ class cache_stats {
 
   void sample_cache_port_utility(bool data_port_busy, bool fill_port_busy);
 
+  unsigned long long get_total_write_and_read_accesses() const;
+
+  void compute_total_write_and_read_accesses();
+
  private:
   bool check_valid(int type, int status) const;
   bool check_fail_valid(int type, int fail) const;
 
-  // CUDA streamID -> cache stats[NUM_MEM_ACCESS_TYPE]
-  std::map<unsigned long long, std::vector<std::vector<unsigned long long>>>
-      m_stats;
+  std::vector<std::vector<unsigned long long> > m_stats;
   // AerialVision cache stats (per-window)
-  std::map<unsigned long long, std::vector<std::vector<unsigned long long>>>
-      m_stats_pw;
-  std::map<unsigned long long, std::vector<std::vector<unsigned long long>>>
-      m_fail_stats;
+  std::vector<std::vector<unsigned long long> > m_stats_pw;
+  std::vector<std::vector<unsigned long long> > m_fail_stats;
 
   unsigned long long m_cache_port_available_cycles;
   unsigned long long m_cache_data_port_busy_cycles;
   unsigned long long m_cache_fill_port_busy_cycles;
+
+  unsigned long long total_l1d_accesses;
 };
 
 class cache_t {
@@ -1303,11 +1308,8 @@ class cache_t {
   // accessors for cache bandwidth availability
   virtual bool data_port_free() const = 0;
   virtual bool fill_port_free() const = 0;
-
-  // MICRO 2025 port: default next_access() / access_ready() return no-fill.
-  // Override in baseline_cache / tex_cache (already concrete there).
-  virtual mem_fetch *next_access() { return nullptr; }
-  virtual bool access_ready() const { return false; }
+  virtual bool access_ready() const = 0; 
+  virtual mem_fetch *next_access() = 0;
 };
 
 bool was_write_sent(const std::list<cache_event> &events);
@@ -1321,14 +1323,11 @@ class baseline_cache : public cache_t {
  public:
   baseline_cache(const char *name, cache_config &config, int core_id,
                  int type_id, mem_fetch_interface *memport,
-                 enum mem_fetch_status status, enum cache_gpu_level level,
-                 gpgpu_sim *gpu)
+                 enum mem_fetch_status status)
       : m_config(config),
         m_tag_array(new tag_array(config, core_id, type_id)),
         m_mshrs(config.m_mshr_entries, config.m_mshr_max_merge),
-        m_bandwidth_management(config),
-        m_level(level),
-        m_gpu(gpu) {
+        m_bandwidth_management(config) {
     init(name, config, memport, status);
   }
 
@@ -1340,7 +1339,16 @@ class baseline_cache : public cache_t {
     m_miss_queue_status = status;
   }
 
-  virtual ~baseline_cache() { delete m_tag_array; }
+  virtual ~baseline_cache() {
+    while(!m_miss_queue.empty()) {
+      mem_fetch* mf = m_miss_queue.front();
+      delete mf;
+      mf = nullptr;
+      m_miss_queue.pop_front();
+    }
+    m_mshrs.clean_entries();
+    delete m_tag_array;
+  }
 
   void update_cache_parameters(cache_config &config) {
     m_config = config;
@@ -1349,35 +1357,30 @@ class baseline_cache : public cache_t {
                                   config.m_mshr_max_merge);
   }
 
-  virtual enum cache_request_status access(new_addr_type addr, mem_fetch *mf,
+  enum cache_request_status access(new_addr_type addr, mem_fetch *mf,
                                            unsigned time,
                                            std::list<cache_event> &events) = 0;
   /// Sends next request to lower level of memory
-  void cycle();
+  virtual void cycle();
   /// Interface for response from lower memory level (model bandwidth
-  /// restictions in caller).
-  /// MICRO 2025 port: returns whether the original mf was deleted during
-  /// sector-assoc coalescing (used by the L0I fill path in
-  /// first_level_instruction_cache).
-  bool fill(mem_fetch *mf, unsigned time);
+  /// restictions in caller)
+  virtual bool fill(mem_fetch *mf, unsigned time); // MOD. Added L0I
   /// Checks if mf is waiting to be filled by lower memory level
-  bool waiting_for_fill(mem_fetch *mf);
+  virtual bool waiting_for_fill(mem_fetch *mf);
   /// Are any (accepted) accesses that had to wait for memory now ready? (does
   /// not include accesses that "HIT")
   bool access_ready() const { return m_mshrs.access_ready(); }
   /// Pop next ready access (does not include accesses that "HIT")
   mem_fetch *next_access() { return m_mshrs.next_access(); }
+  /// Returns the id of the warp id that has done the fetch. MOD. Improving fetch and decode
+  unsigned int get_next_access_warp_id() { return m_mshrs.get_next_access_warp_id(); } // MOD. Improving fetch and decode
+  unsigned int get_next_access_mem_icnt_id() { return m_mshrs.get_next_access_mem_icnt_id(); } // MOD. Fixed LDST_Unit model
   // flash invalidate all entries in cache
   void flush() { m_tag_array->flush(); }
-  void invalidate() { m_tag_array->invalidate(); }
-
-  // MICRO 2025 port: public accessors used by first_level_instruction_cache +
-  // stream_buffer.  Previously only friend classes could reach the members.
-  tag_array  *get_tag_array()    { return m_tag_array; }
-  mshr_table &get_mshr()         { return m_mshrs; }
-  cache_config &get_config()     { return m_config; }
-  // get_bw_manager() defined later (bandwidth_management is a nested class
-  // declared further down in this class body).
+  virtual void invalidate() { 
+    m_tag_array->invalidate();
+    // m_mshrs.clean_entries();
+  }
   void print(FILE *fp, unsigned &accesses, unsigned &misses) const;
   void display_state(FILE *fp) const;
 
@@ -1407,15 +1410,6 @@ class baseline_cache : public cache_t {
   bool fill_port_free() const {
     return m_bandwidth_management.fill_port_free();
   }
-  void inc_aggregated_stats(cache_request_status status,
-                            cache_request_status cache_status, mem_fetch *mf,
-                            enum cache_gpu_level level);
-  void inc_aggregated_fail_stats(cache_request_status status,
-                                 cache_request_status cache_status,
-                                 mem_fetch *mf, enum cache_gpu_level level);
-  void inc_aggregated_stats_pw(cache_request_status status,
-                               cache_request_status cache_status, mem_fetch *mf,
-                               enum cache_gpu_level level);
 
   // This is a gapping hole we are poking in the system to quickly handle
   // filling the cache on cudamemcopies. We don't care about anything other than
@@ -1426,6 +1420,12 @@ class baseline_cache : public cache_t {
     mem_access_byte_mask_t byte_mask;
     m_tag_array->fill(addr, time, mask, byte_mask, true);
   }
+
+  tag_array* get_tag_array() { return m_tag_array; }
+
+  mshr_table& get_mshr() { return m_mshrs; }
+
+  cache_config& get_config() { return m_config; }
 
  protected:
   // Constructor that can be used by derived classes with custom tag arrays
@@ -1447,8 +1447,6 @@ class baseline_cache : public cache_t {
   std::list<mem_fetch *> m_miss_queue;
   enum mem_fetch_status m_miss_queue_status;
   mem_fetch_interface *m_memport;
-  cache_gpu_level m_level;
-  gpgpu_sim *m_gpu;
 
   struct extra_mf_fields {
     extra_mf_fields() { m_valid = false; }
@@ -1485,8 +1483,7 @@ class baseline_cache : public cache_t {
   bool miss_queue_full(unsigned num_miss) {
     return ((m_miss_queue.size() + num_miss) >= m_config.m_miss_queue_size);
   }
-  /// Read miss handler without writeback. Returns true if caller must erase
-  /// the original mf (MICRO 2025 port: drives SECTOR_ASSOC coalesced fill).
+  /// Read miss handler without writeback
   bool send_read_request(new_addr_type addr, new_addr_type block_addr,
                          unsigned cache_index, mem_fetch *mf, unsigned time,
                          bool &do_miss, std::list<cache_event> &events,
@@ -1530,11 +1527,8 @@ class baseline_cache : public cache_t {
 
   bandwidth_management m_bandwidth_management;
 
- public:
-  // MICRO 2025 port: accessor used by first_level_instruction_cache to
-  // reserve a fill-port cycle.  Placed after bandwidth_management's nested
-  // class definition so its return type is complete.
-  bandwidth_management &get_bw_manager() { return m_bandwidth_management; }
+  public:
+    bandwidth_management& get_bw_manager() { return m_bandwidth_management; }
 };
 
 /// Read only cache
@@ -1542,35 +1536,20 @@ class read_only_cache : public baseline_cache {
  public:
   read_only_cache(const char *name, cache_config &config, int core_id,
                   int type_id, mem_fetch_interface *memport,
-                  enum mem_fetch_status status, enum cache_gpu_level level,
-                  gpgpu_sim *gpu)
-      : baseline_cache(name, config, core_id, type_id, memport, status, level,
-                       gpu) {}
-
-  // MICRO 2025 port: overload used by first_level_instruction_cache
-  // (L0 I-cache).  Treats L0 as OTHER_GPU_CACHE; gpu pointer resolved by
-  // shader_core later.  Behaviour-inert w.r.t. level-sensitive stats.
-  read_only_cache(const char *name, cache_config &config, int core_id,
-                  int type_id, mem_fetch_interface *memport,
                   enum mem_fetch_status status)
-      : baseline_cache(name, config, core_id, type_id, memport, status,
-                       OTHER_GPU_CACHE, nullptr) {}
+      : baseline_cache(name, config, core_id, type_id, memport, status) {}
 
   /// Access cache for read_only_cache: returns RESERVATION_FAIL if request
   /// could not be accepted (for any reason)
   virtual enum cache_request_status access(new_addr_type addr, mem_fetch *mf,
                                            unsigned time,
                                            std::list<cache_event> &events);
-
-  // MICRO 2025 port (Stage 1g G5.2): 5-arg overload with `bool& erase_original_mf`
-  // out-param used by first_level_instruction_cache. Body in gpu-cache.cc
-  // mirrors MICRO 2025 gpu-cache.cc:1789, drives SECTOR_ASSOC coalesced fill.
-  virtual enum cache_request_status access(new_addr_type addr, mem_fetch *mf,
+  enum cache_request_status access(new_addr_type addr, mem_fetch *mf,
                                            unsigned time,
-                                           std::list<cache_event> &events,
-                                           bool &erase_original_mf);
-
+                                           std::list<cache_event> &events, bool &erase_original_mf);
   virtual ~read_only_cache() {}
+
+  mem_fetch_interface *get_memport() { return m_memport; }
 
  protected:
   read_only_cache(const char *name, cache_config &config, int core_id,
@@ -1586,10 +1565,8 @@ class data_cache : public baseline_cache {
   data_cache(const char *name, cache_config &config, int core_id, int type_id,
              mem_fetch_interface *memport, mem_fetch_allocator *mfcreator,
              enum mem_fetch_status status, mem_access_type wr_alloc_type,
-             mem_access_type wrbk_type, class gpgpu_sim *gpu,
-             enum cache_gpu_level level)
-      : baseline_cache(name, config, core_id, type_id, memport, status, level,
-                       gpu) {
+             mem_access_type wrbk_type, class gpgpu_sim *gpu)
+      : baseline_cache(name, config, core_id, type_id, memport, status) {
     init(mfcreator);
     m_wr_alloc_type = wr_alloc_type;
     m_wrbk_type = wrbk_type;
@@ -1778,17 +1755,9 @@ class l1_cache : public data_cache {
  public:
   l1_cache(const char *name, cache_config &config, int core_id, int type_id,
            mem_fetch_interface *memport, mem_fetch_allocator *mfcreator,
-           enum mem_fetch_status status, class gpgpu_sim *gpu,
-           enum cache_gpu_level level)
-      : data_cache(name, config, core_id, type_id, memport, mfcreator, status,
-                   L1_WR_ALLOC_R, L1_WRBK_ACC, gpu, level) {}
-
-  // MICRO 2025 port: 8-arg overload (no explicit level) used by ldst_unit_sm.
-  l1_cache(const char *name, cache_config &config, int core_id, int type_id,
-           mem_fetch_interface *memport, mem_fetch_allocator *mfcreator,
            enum mem_fetch_status status, class gpgpu_sim *gpu)
       : data_cache(name, config, core_id, type_id, memport, mfcreator, status,
-                   L1_WR_ALLOC_R, L1_WRBK_ACC, gpu, L1_GPU_CACHE) {}
+                   L1_WR_ALLOC_R, L1_WRBK_ACC, gpu) {}
 
   virtual ~l1_cache() {}
 
@@ -1811,10 +1780,9 @@ class l2_cache : public data_cache {
  public:
   l2_cache(const char *name, cache_config &config, int core_id, int type_id,
            mem_fetch_interface *memport, mem_fetch_allocator *mfcreator,
-           enum mem_fetch_status status, class gpgpu_sim *gpu,
-           enum cache_gpu_level level)
+           enum mem_fetch_status status, class gpgpu_sim *gpu)
       : data_cache(name, config, core_id, type_id, memport, mfcreator, status,
-                   L2_WR_ALLOC_R, L2_WRBK_ACC, gpu, level) {}
+                   L2_WR_ALLOC_R, L2_WRBK_ACC, gpu) {}
 
   virtual ~l2_cache() {}
 
@@ -1852,6 +1820,13 @@ class tex_cache : public cache_t {
     m_rob_status = rob_status;
   }
 
+  ~tex_cache() { 
+    while(!m_result_fifo.empty()) {
+      m_result_fifo.pop();
+    }
+    delete[] m_cache;
+   }
+
   /// Access function for tex_cache
   /// return values: RESERVATION_FAIL if request could not be accepted
   /// otherwise returns HIT_RESERVED or MISS; NOTE: *never* returns HIT
@@ -1869,6 +1844,15 @@ class tex_cache : public cache_t {
   /// Pop next ready access (includes both accesses that "HIT" and those that
   /// "MISS")
   mem_fetch *next_access() { return m_result_fifo.pop(); }
+
+  // MOD. Begin. Fixed LDST_Unit model
+  unsigned query_subcore_id() {
+    assert(!m_result_fifo.empty());
+    mem_fetch *mf = m_result_fifo.peek();
+    return mf->get_inst().get_schd_id();
+  }
+  // MOD. End
+
   void display_state(FILE *fp) const;
 
   // accessors for cache bandwidth availability - stubs for now
@@ -1944,6 +1928,11 @@ class tex_cache : public cache_t {
       m_tail = 0;
       m_data = new T[size];
     }
+
+    ~fifo() { 
+      delete[] m_data; 
+    }
+
     bool full() const { return m_num == m_size; }
     bool empty() const { return m_num == 0; }
     unsigned size() const { return m_num; }
@@ -1961,6 +1950,7 @@ class tex_cache : public cache_t {
       inc_tail();
       return result;
     }
+
     const T &peek(unsigned index) const {
       assert(index < m_size);
       return m_data[index];

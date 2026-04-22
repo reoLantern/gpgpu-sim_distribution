@@ -29,6 +29,9 @@
 #ifndef STATS_INCLUDED
 #define STATS_INCLUDED
 
+#include <string>
+
+
 enum mem_stage_access_type {
   C_MEM,
   T_MEM,
@@ -53,38 +56,45 @@ enum mem_stage_stall_type {
   N_MEM_STAGE_STALL_TYPE
 };
 
-// MICRO 2025 port: string dump helper for stat names; called by ldst_unit_sm.
-#include <string>
 inline std::string mem_stage_access_type_to_string(mem_stage_access_type type) {
-  switch (type) {
-    case C_MEM: return "C_MEM";
-    case T_MEM: return "T_MEM";
-    case S_MEM: return "S_MEM";
-    case G_MEM_LD: return "G_MEM_LD";
-    case L_MEM_LD: return "L_MEM_LD";
-    case G_MEM_ST: return "G_MEM_ST";
-    case L_MEM_ST: return "L_MEM_ST";
-    case N_MEM_STAGE_ACCESS_TYPE: return "N_MEM_STAGE_ACCESS_TYPE";
-    default: return "UNKNOWN";
-  }
+    switch (type) {
+        case C_MEM: return "C_MEM";
+        case T_MEM: return "T_MEM";
+        case S_MEM: return "S_MEM";
+        case G_MEM_LD: return "G_MEM_LD";
+        case L_MEM_LD: return "L_MEM_LD";
+        case G_MEM_ST: return "G_MEM_ST";
+        case L_MEM_ST: return "L_MEM_ST";
+        case N_MEM_STAGE_ACCESS_TYPE: return "N_MEM_STAGE_ACCESS_TYPE";
+        default: return "UNKNOWN";
+    }
 }
 
-// Stage 1e-A2: companion helper for mem_stage_stall_type (matches MICRO 2025
-// stats.h:84-98).  Used by create_gpu_per_sm_stats stat-name construction.
+// Function to convert tlb_request_status to string
+inline std::string tlb_request_status_to_string(tlb_request_status status) {
+    switch (status) {
+        case TLB_HIT: return "TLB_HIT";
+        case TLB_READY: return "TLB_READY";
+        case TLB_PENDING: return "TLB_PENDING";
+        default: return "UNKNOWN";
+    }
+}
+
+// Function to convert mem_stage_stall_type to string
 inline std::string mem_stage_stall_type_to_string(mem_stage_stall_type type) {
-  switch (type) {
-    case NO_RC_FAIL: return "NO_RC_FAIL";
-    case BK_CONF: return "BK_CONF";
-    case MSHR_RC_FAIL: return "MSHR_RC_FAIL";
-    case ICNT_RC_FAIL: return "ICNT_RC_FAIL";
-    case COAL_STALL: return "COAL_STALL";
-    case TLB_STALL: return "TLB_STALL";
-    case DATA_PORT_STALL: return "DATA_PORT_STALL";
-    case WB_ICNT_RC_FAIL: return "WB_ICNT_RC_FAIL";
-    case WB_CACHE_RSRV_FAIL: return "WB_CACHE_RSRV_FAIL";
-    case N_MEM_STAGE_STALL_TYPE: return "N_MEM_STAGE_STALL_TYPE";
-    default: return "UNKNOWN";
-  }
+    switch (type) {
+        case NO_RC_FAIL: return "NO_RC_FAIL";
+        case BK_CONF: return "BK_CONF";
+        case MSHR_RC_FAIL: return "MSHR_RC_FAIL";
+        case ICNT_RC_FAIL: return "ICNT_RC_FAIL";
+        case COAL_STALL: return "COAL_STALL";
+        case TLB_STALL: return "TLB_STALL";
+        case DATA_PORT_STALL: return "DATA_PORT_STALL";
+        case WB_ICNT_RC_FAIL: return "WB_ICNT_RC_FAIL";
+        case WB_CACHE_RSRV_FAIL: return "WB_CACHE_RSRV_FAIL";
+        case N_MEM_STAGE_STALL_TYPE: return "N_MEM_STAGE_STALL_TYPE";
+        default: return "UNKNOWN";
+    }
 }
 
 #endif

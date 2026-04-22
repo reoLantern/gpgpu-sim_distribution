@@ -1,19 +1,46 @@
-// Copyright (c) 2009-2021, Tor M. Aamodt, Wilson W.L. Fung, Andrew Turner,
-// Ali Bakhoda, Vijay Kandiah, Nikos Hardavellas,
-// Mahmoud Khairy, Junrui Pan, Timothy G. Rogers
-// The University of British Columbia, Northwestern University, Purdue
-// University All rights reserved.
+// Copyright (c) 2023-2025, Rodrigo Huerta, Mojtaba Abaie Shoushtary, Josep-Llorenç Cruz, Antonio González
+// Universitat Politecnica de Catalunya
+// All rights reserved.
 //
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are met:
 //
-// 1. Redistributions of source code must retain the above copyright notice,
-// this
+// Redistributions of source code must retain the above copyright notice, this
+// list of conditions and the following disclaimer.
+// Redistributions in binary form must reproduce the above copyright notice,
+// this list of conditions and the following disclaimer in the documentation
+// and/or other materials provided with the distribution. Neither the name of
+// The Universitat Politecnica de Catalunya nor the names of its contributors may be
+// used to endorse or promote products derived from this software without
+// specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+// ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+// CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+// SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+// INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+// CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+// ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+// POSSIBILITY OF SUCH DAMAGE.
+
+// Copyright (c) 2009-2021, Tor M. Aamodt, Wilson W.L. Fung, Andrew Turner,
+// Ali Bakhoda, Vijay Kandiah, Nikos Hardavellas, 
+// Mahmoud Khairy, Junrui Pan, Timothy G. Rogers
+// The University of British Columbia, Northwestern University, Purdue University
+// All rights reserved.
+//
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met:
+//
+// 1. Redistributions of source code must retain the above copyright notice, this
 //    list of conditions and the following disclaimer;
 // 2. Redistributions in binary form must reproduce the above copyright notice,
 //    this list of conditions and the following disclaimer in the documentation
 //    and/or other materials provided with the distribution;
-// 3. Neither the names of The University of British Columbia, Northwestern
+// 3. Neither the names of The University of British Columbia, Northwestern 
 //    University nor the names of their contributors may be used to
 //    endorse or promote products derived from this software without specific
 //    prior written permission.
@@ -38,17 +65,16 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <algorithm>
-#include <atomic>
 #include <bitset>
 #include <deque>
 #include <list>
 #include <map>
-#include <stack>  // MICRO 2025 port: function-call stack in shd_warp_t
 #include <set>
 #include <utility>
 #include <vector>
+#include <memory>
 
-// #include "../cuda-sim/ptx.tab.h"
+//#include "../cuda-sim/ptx.tab.h"
 
 #include "../abstract_hardware_model.h"
 #include "delayqueue.h"
@@ -56,15 +82,17 @@
 #include "gpu-cache.h"
 #include "mem_fetch.h"
 #include "scoreboard.h"
-#include "scoreboard_reads.h"  // MICRO 2025 port: scoreboard_reads_mode enum in shader_core_config
-#include "stack.h"
+#include "scoreboard_reads.h" // MOD. Fix WAR at baseline.
+#include "remodeling/ibuffer_remodeled.h" // MOD. Remodeling
+#include "remodeling/warp_dependency_state.h" // MOD. Remodeling
+#include "remodeling/l0_icnt.h" // MOD. Added L0I
+#include "result_bus.h" // MOD. Improved Result bus to take into account conflicts with RF banks
+#include <stack>
 #include "stats.h"
-
-// Stage 1e: full include of shader_core_wrapper.h so shader_core_ctx can
-// multi-inherit it (see class definition below).  Matches MICRO 2025
-// shader.h:94.
-#include "shader_core_wrapper.h"
 #include "traffic_breakdown.h"
+
+#include "shader_core_wrapper.h"
+# include <omp.h>
 
 #define NO_OP_FLAG 0xFF
 
@@ -82,17 +110,13 @@
 #define WRITE_MASK_SIZE 8
 
 class gpgpu_context;
+class ldst_unit_remake; // MOD. Fixed LDST_Unit model
+class coalescingStatsAcrossSms;
+class Subcore;
 
-enum exec_unit_type_t {
-  NONE = 0,
-  SP = 1,
-  SFU = 2,
-  MEM = 3,
-  DP = 4,
-  INT = 5,
-  TENSOR = 6,
-  SPECIALIZED = 7
-};
+void check_kernel_launch_limitation(
+    const kernel_info_t &k, const shader_core_config *shader_config,
+    shader_core_stats *stats);
 
 class thread_ctx_t {
  public:
@@ -108,15 +132,34 @@ class thread_ctx_t {
   bool m_active;
 };
 
+struct function_call_entry_info {
+  function_call_entry_info() {
+    unique_function_id = 0;
+    active_mask.reset();
+  }
+  unsigned int unique_function_id;
+  active_mask_t active_mask;
+};
+
 class shd_warp_t {
  public:
-  // Stage 1g G1: single ctor taking shader_core_ctx_wrapper*. Both vanilla
-  // shader_core_ctx and remodeling SM are wrapper subclasses. Body is
-  // out-of-line in shader.cc because IBuffer_Remodeled/Dependency_State
-  // pull in remodeling headers we don't want every TU to include.
-  shd_warp_t(class shader_core_ctx_wrapper *shader, unsigned warp_size,
-             class shader_core_stats *stats);
-  virtual ~shd_warp_t();
+  shd_warp_t(class shader_core_ctx_wrapper *shader, unsigned warp_size, shader_core_stats *stats) 
+      : m_shader(shader), m_warp_size(warp_size) {
+    m_stores_outstanding = 0;
+    m_inst_in_pipeline = 0;
+    m_IBuffer_remodeled = new IBuffer_Remodeled(shader->get_config(), this, stats); // MOD. Remodeling
+    m_dependency_state = new Dependency_State(shader->get_config(), stats); // MOD. Remodeling
+    m_last_unique_inst_id = 0;
+    m_kernel_id = 0;
+    m_gridbar = false;
+    reset();
+  }
+
+  virtual ~shd_warp_t() {
+    delete m_IBuffer_remodeled; // MOD. Remodeling
+    delete m_dependency_state; // MOD. Remodeling
+  }
+
   void reset() {
     assert(m_stores_outstanding == 0);
     assert(m_inst_in_pipeline == 0);
@@ -129,37 +172,18 @@ class shd_warp_t {
     m_done_exit = true;
     m_last_fetch = 0;
     m_next = 0;
-    m_streamID = (unsigned long long)-1;
+    m_last_unique_inst_id = 0;
 
     // Jin: cdp support
     m_cdp_latency = 0;
     m_cdp_dummy = false;
-
-    // Ni: Initialize ldgdepbar_id
-    m_ldgdepbar_id = 0;
-    m_depbar_start_id = 0;
-    m_depbar_group = 0;
-
-    // Ni: Set waiting to false
-    m_waiting_ldgsts = false;
-
-    // Ni: Clear m_ldgdepbar_buf
-    for (unsigned i = 0; i < m_ldgdepbar_buf.size(); i++) {
-      m_ldgdepbar_buf[i].clear();
-    }
-    m_ldgdepbar_buf.clear();
-    // Stage 1e-A4 (Codex review follow-up): clear stale function-call frames
-    // on reset.  Without this, remodeling/SM paths that consult
-    // get_current_unique_function_id_call() can hit stale unique_function_id
-    // values from prior CTA runs.  Mirrors MICRO 2025 shader.h:180-182.
-    while (!m_function_call_stack.empty()) {
+    while(!m_function_call_stack.empty()) {
       m_function_call_stack.pop();
     }
   }
   void init(address_type start_pc, unsigned cta_id, unsigned wid,
-            const std::bitset<MAX_WARP_SIZE> &active, unsigned dynamic_warp_id,
-            unsigned long long streamID) {
-    m_streamID = streamID;
+            const std::bitset<MAX_WARP_SIZE> &active,
+            unsigned dynamic_warp_id, int shader_id) {
     m_cta_id = cta_id;
     m_warp_id = wid;
     m_dynamic_warp_id = dynamic_warp_id;
@@ -174,19 +198,36 @@ class shd_warp_t {
     m_cdp_latency = 0;
     m_cdp_dummy = false;
 
-    // Ni: Initialize ldgdepbar_id
-    m_ldgdepbar_id = 0;
-    m_depbar_start_id = 0;
-    m_depbar_group = 0;
+    m_last_unique_inst_id = 1;
 
-    // Ni: Set waiting to false
-    m_waiting_ldgsts = false;
+    m_is_pending_store = false; // MOD. Fix load after stores
+    m_is_pending_load = false; // MOD. Fix load after stores
+  }
 
-    // Ni: Clear m_ldgdepbar_buf
-    for (unsigned i = 0; i < m_ldgdepbar_buf.size(); i++) {
-      m_ldgdepbar_buf[i].clear();
+  const active_mask_t& get_active_mask() {
+    return m_active_threads;
+  }
+
+  void push_function_call(unsigned int unique_function_id, active_mask_t active_mask) {
+    if(active_mask.any()) {
+      function_call_entry_info entry_info;
+      entry_info.unique_function_id = unique_function_id;
+      entry_info.active_mask = active_mask;
+      m_function_call_stack.push(entry_info);
     }
-    m_ldgdepbar_buf.clear();
+  }
+
+  void pop_function_call(active_mask_t active_mask) {
+    assert(!m_function_call_stack.empty());
+    m_function_call_stack.top().active_mask ^= active_mask;
+    if(m_function_call_stack.top().active_mask.none()) {
+      m_function_call_stack.pop();
+    }
+  }
+
+  unsigned int get_current_unique_function_id_call() {
+    assert(!m_function_call_stack.empty());
+    return m_function_call_stack.top().unique_function_id;
   }
 
   bool functional_done() const;
@@ -194,11 +235,8 @@ class shd_warp_t {
   bool hardware_done() const;
 
   bool done_exit() const { return m_done_exit; }
-  // Stage 1e-A4: match MICRO 2025 shader.h:239-242 — pop the currently-active
-  // frame off m_function_call_stack before flagging done.  Keeps the stack
-  // aligned with true in-flight state and prevents stale frames from leaking
-  // across warp reuses.
-  void set_done_exit() {
+
+  void set_done_exit() { 
     pop_function_call(m_active_threads);
     m_done_exit = true;
   }
@@ -206,13 +244,21 @@ class shd_warp_t {
   void print(FILE *fout) const;
   void print_ibuffer(FILE *fout) const;
 
+  void set_scheduler(scheduler_unit* scheduler) { m_scheduler = scheduler; } // MOD. Added L0I
+  scheduler_unit* get_scheduler() { return m_scheduler; } // MOD. Added L0I
+  bool get_is_pending_store() { return m_is_pending_store; } // MOD. Fix load after stores
+  void set_is_pending_store(bool pending) { m_is_pending_store = pending; } // MOD. Fix load after stores
+  bool get_is_pending_load() { return m_is_pending_load; } // MOD. Fix load after stores
+  void set_is_pending_load(bool pending) { m_is_pending_load = pending; } // MOD. Fix load after stores
+
+  IBuffer_Remodeled* get_IBuffer_remodeled(){ return m_IBuffer_remodeled; } // MOD. Remodeling
+  Dependency_State* get_dependency_state(){ return m_dependency_state; } // MOD. Remodeling
   unsigned get_n_completed() const { return n_completed; }
   void set_completed(unsigned lane) {
     assert(m_active_threads.test(lane));
     m_active_threads.reset(lane);
     n_completed++;
   }
-  bool test_active(unsigned lane) { return m_active_threads.test(lane); }
 
   void set_last_fetch(unsigned long long sim_cycle) {
     m_last_fetch = sim_cycle;
@@ -222,12 +268,19 @@ class shd_warp_t {
   void inc_n_atomic() { m_n_atomic++; }
   void dec_n_atomic(unsigned n) { m_n_atomic -= n; }
 
+  bool is_atomic_pending() const { return m_n_atomic > 0; }
+
   void set_membar() { m_membar = true; }
   void clear_membar() { m_membar = false; }
   bool get_membar() const { return m_membar; }
+  void set_gridbar() { m_gridbar = true; }
+  void clear_gridbar() { m_gridbar = false; }
+  bool get_gridbar() const { return m_gridbar; }
   virtual address_type get_pc() const { return m_next_pc; }
-  virtual kernel_info_t *get_kernel_info() const;
-  void set_next_pc(address_type pc) { m_next_pc = pc; }
+  virtual kernel_info_t* get_kernel_info() const;
+  void set_next_pc(address_type pc) { 
+    m_next_pc = pc; 
+  }
 
   void store_info_of_last_inst_at_barrier(const warp_inst_t *pI) {
     m_inst_at_barrier = *pI;
@@ -291,11 +344,58 @@ class shd_warp_t {
     m_inst_in_pipeline--;
   }
 
-  unsigned long long get_streamID() const { return m_streamID; }
   unsigned get_cta_id() const { return m_cta_id; }
 
   unsigned get_dynamic_warp_id() const { return m_dynamic_warp_id; }
   unsigned get_warp_id() const { return m_warp_id; }
+
+  // MOD. Begin IBuffer_ooo debug
+  std::map<unsigned,unsigned> pc_incs;
+  std::map<unsigned,unsigned> pc_decs;
+
+  void add_inc_pc(unsigned pc)
+  {
+    std::map<unsigned,unsigned>::const_iterator it = pc_incs.find(pc);
+    if(it == pc_incs.end())
+    {
+      pc_incs[pc] = 1;
+    }else {
+      unsigned current_incs = it->second;
+      pc_incs[pc] = current_incs + 1;
+    }
+  }
+
+  void add_dec_pc(unsigned pc)
+  {
+    std::map<unsigned,unsigned>::const_iterator it = pc_decs.find(pc);
+    if(it == pc_decs.end())
+    {
+      pc_decs[pc] = 1;
+    }else {
+      unsigned current_decs = it->second;
+      pc_decs[pc] = current_decs + 1;
+    }
+  }
+  void print_inc_decs() 
+  {
+    std::cout << "Size pc_incs: " << pc_incs.size() << ", size pc_decs: " << pc_decs.size() << ". PC comp:" <<std::endl;
+    std::map<unsigned,unsigned>::const_iterator it, it2;
+    unsigned aux_pc, pc_incs_val, pc_decs_val;
+    for(it = pc_incs.begin(); it != pc_incs.end(); it++)
+    {
+      aux_pc = it->first;
+      pc_incs_val = it -> second;
+      it2 = pc_decs.find(aux_pc);
+      if(it2 == pc_decs.end())
+      {
+        std::cout << "ERROR, pc not found in decs: " << std::hex << aux_pc << std::dec << std::endl;
+      }else {
+        pc_decs_val = it2->second;
+        std::cout << "Inc_Dec. PC: " << std::hex << aux_pc << std::dec << ", incs: " << pc_incs_val << ", decs: " << pc_decs_val << std::endl;
+      }
+    }
+  }
+  // MOD. end IBuffer_ooo debug
 
   class shader_core_ctx_wrapper *get_shader() {
     return m_shader;
@@ -304,7 +404,6 @@ class shd_warp_t {
  private:
   static const unsigned IBUFFER_SIZE = 2;
   class shader_core_ctx_wrapper *m_shader;
-  unsigned long long m_streamID;
   unsigned m_cta_id;
   unsigned m_warp_id;
   unsigned m_warp_size;
@@ -331,6 +430,7 @@ class shd_warp_t {
 
   unsigned m_n_atomic;  // number of outstanding atomic operations
   bool m_membar;        // if true, warp is waiting at memory barrier
+  bool m_gridbar;      // if true, warp is waiting at grid barrier
 
   bool m_done_exit;  // true once thread exit has been registered for threads in
                      // this warp
@@ -341,82 +441,20 @@ class shd_warp_t {
                                   // acknowledged
   unsigned m_inst_in_pipeline;
 
+  scheduler_unit *m_scheduler; // MOD. Added L0I
+  int m_is_pending_store; // MOD. Fix loads after store
+  int m_is_pending_load; // MOD. Fix loads after store
+  IBuffer_Remodeled *m_IBuffer_remodeled; // MOD. Remodeling
+  Dependency_State *m_dependency_state; // MOD. Remodeling
+  // MOD. End. VPREG
   // Jin: cdp support
  public:
   unsigned int m_cdp_latency;
   bool m_cdp_dummy;
-
-  // Ni: LDGDEPBAR barrier support
- public:
-  unsigned int m_ldgdepbar_id;  // LDGDEPBAR barrier ID
-  std::vector<std::vector<warp_inst_t>>
-      m_ldgdepbar_buf;  // LDGDEPBAR barrier buffer
-  unsigned int m_depbar_start_id;
-  unsigned int m_depbar_group;
-  bool m_waiting_ldgsts;  // Ni: Whether the warp is waiting for the LDGSTS
-                          // instrs to finish
-
-  // MICRO 2025 port additions: per-warp dependency state + remodeled IBuffer.
-  // In vanilla (is_SM_remodeling_enabled=0) path these stay nullptr and are
-  // never dereferenced; in Stage 1e the MICRO 2025 SM ctor will allocate them.
- public:
-  class IBuffer_Remodeled *get_IBuffer_remodeled() { return m_IBuffer_remodeled; }
-  class Dependency_State  *get_dependency_state() { return m_dependency_state; }
-
-  class Subcore *m_subcore = nullptr;          // MICRO 2025: Subcore owning this warp
-  unsigned int m_kernel_id = 0;                // MICRO 2025: per-kernel stat index
-  unsigned long long m_last_unique_inst_id = 0;  // MICRO 2025: IBuffer reuse stats
-
-  // MICRO 2025 port (Stage 1c.7 round 2): real function-call stack + real
-  // get_active_mask + real is_atomic_pending.  Previously stubbed, but
-  // remodeling/sm.cc actually relies on these to track active masks across
-  // CALL/RET and to gate atomics.
-  struct function_call_entry_info_t {
-    function_call_entry_info_t() : unique_function_id(0) { active_mask.reset(); }
-    unsigned int unique_function_id;
-    active_mask_t active_mask;
-  };
-  std::stack<function_call_entry_info_t> m_function_call_stack;
-
-  void push_function_call(unsigned int unique_function_id,
-                          active_mask_t active_mask) {
-    if (active_mask.any()) {
-      function_call_entry_info_t entry;
-      entry.unique_function_id = unique_function_id;
-      entry.active_mask = active_mask;
-      m_function_call_stack.push(entry);
-    }
-  }
-  void pop_function_call(active_mask_t active_mask) {
-    if (m_function_call_stack.empty()) return;  // vanilla path never pushed
-    m_function_call_stack.top().active_mask ^= active_mask;
-    if (m_function_call_stack.top().active_mask.none()) {
-      m_function_call_stack.pop();
-    }
-  }
-  unsigned int get_current_unique_function_id_call() {
-    if (m_function_call_stack.empty()) return 0;
-    return m_function_call_stack.top().unique_function_id;
-  }
-
-  // MICRO 2025 port: grid-barrier tracking (real state).
-  bool m_gridbar = false;
-  void set_gridbar() { m_gridbar = true; }
-  void clear_gridbar() { m_gridbar = false; }
-  bool get_gridbar() const { return m_gridbar; }
-
-  // MICRO 2025 port (real impls).  is_atomic_pending mirrors waiting()'s
-  // m_n_atomic check.  get_active_mask returns the thread-active bitset.
-  bool is_atomic_pending() const { return m_n_atomic > 0; }
-  const active_mask_t &get_active_mask() const { return m_active_threads; }
-
-  // Stage 1g G1: m_shader_wrapper merged into m_shader; both vanilla and
-  // remodeling paths use the same wrapper* field. get_shader_config/gpu
-  // helpers removed - callers use m_shader->get_config()/get_gpu() directly.
-
- private:
-  class IBuffer_Remodeled *m_IBuffer_remodeled = nullptr;
-  class Dependency_State  *m_dependency_state  = nullptr;
+  std::stack<function_call_entry_info> m_function_call_stack;
+  unsigned long long m_last_unique_inst_id;
+  unsigned int m_kernel_id;
+  Subcore *m_subcore;
 };
 
 inline unsigned hw_tid_from_wid(unsigned wid, unsigned warp_size, unsigned i) {
@@ -426,33 +464,14 @@ inline unsigned wid_from_hw_tid(unsigned tid, unsigned warp_size) {
   return tid / warp_size;
 };
 
-// Stage 1e: WARP_PER_CTA_MAX + warp_set_t now live in shader_core_wrapper.h
-// (included above) so the wrapper doesn't require shader.h — breaking the
-// circular include.  Guarded to avoid re-definition.
-#ifndef WARP_PER_CTA_MAX_DEFINED
-#define WARP_PER_CTA_MAX_DEFINED
-const unsigned WARP_PER_CTA_MAX = 64;
-typedef std::bitset<WARP_PER_CTA_MAX> warp_set_t;
-#endif
 
-unsigned register_bank(int regnum, int wid, unsigned num_banks,
-                       bool sub_core_model, unsigned banks_per_sched,
-                       unsigned sched_id);
+int register_bank(int regnum, int wid, unsigned num_banks,
+                  unsigned bank_warp_shift, bool sub_core_model,
+                  int banks_per_sched, unsigned sched_id);
 
 class shader_core_ctx;
 class shader_core_config;
 class shader_core_stats;
-// MICRO 2025 port: forward declaration so that trace_driven.h can declare
-// `virtual RRS* get_loog_rrs()` without dragging in shader_core_wrapper.h.
-// The full `class RRS` stub lives in stubs.h (Stage 1c).
-class RRS;
-// Stage 1d.4+5: forward declarations for the stats types referenced by
-// shader_core_ctx's newly-added virtual stubs (create_gpu_per_sm_stats,
-// gather_gpu_per_sm_stats, gather_gpu_per_sm_single_stat).  Full definitions
-// live in remodeling/new_stats.h (Element_stats) and stubs.h
-// (coalescingStatsAcrossSms stub).
-class Element_stats;
-class coalescingStatsAcrossSms;
 
 enum scheduler_prioritization_type {
   SCHEDULER_PRIORITIZATION_LRR = 0,   // Loose Round Robin
@@ -480,18 +499,19 @@ class scheduler_unit {  // this can be copied freely, so can be used in std
                         // containers.
  public:
   scheduler_unit(shader_core_stats *stats, shader_core_ctx *shader,
-                 Scoreboard *scoreboard, simt_stack **simt,
+                 Scoreboard *scoreboard, Scoreboard_reads *scoreboard_reads, // MOD. Fix WAR at baseline.
+                 simt_stack **simt,
                  std::vector<shd_warp_t *> *warp, register_set *sp_out,
                  register_set *dp_out, register_set *sfu_out,
                  register_set *int_out, register_set *tensor_core_out,
                  std::vector<register_set *> &spec_cores_out,
-                 register_set *mem_out, int id)
-      : m_supervised_warps(),
-        m_stats(stats),
+                 register_set *mem_out, int id, const concrete_scheduler scheduler)
+      : m_stats(stats),
         m_shader(shader),
         m_scoreboard(scoreboard),
+        m_scoreboard_reads(scoreboard_reads), // MOD. Fix WAR at baseline.
         m_simt_stack(simt),
-        /*m_pipeline_reg(pipe_regs),*/ m_warp(warp),
+        m_warp(warp),
         m_sp_out(sp_out),
         m_dp_out(dp_out),
         m_sfu_out(sfu_out),
@@ -500,10 +520,14 @@ class scheduler_unit {  // this can be copied freely, so can be used in std
         m_mem_out(mem_out),
         m_spec_cores_out(spec_cores_out),
         m_id(id) {}
-  virtual ~scheduler_unit() {}
+
+  virtual ~scheduler_unit() {
+  }
   virtual void add_supervised_warp_id(int i) {
     m_supervised_warps.push_back(&warp(i));
+    warp(i).set_scheduler(this); // MOD. Added L0I
   }
+
   virtual void done_adding_supervised_warps() {
     m_last_supervised_issued = m_supervised_warps.end();
   }
@@ -513,6 +537,8 @@ class scheduler_unit {  // this can be copied freely, so can be used in std
   // modified by changing the contents of the m_next_cycle_prioritized_warps
   // list.
   void cycle();
+
+  shader_core_ctx* get_shader(){return m_shader;}; // MOD. IBuffer_ooo
 
   // These are some common ordering fucntions that the
   // higher order schedulers can take advantage of
@@ -551,12 +577,21 @@ class scheduler_unit {  // this can be copied freely, so can be used in std
   virtual void order_warps() = 0;
 
   int get_schd_id() const { return m_id; }
+  // MOD. IBuffer_ooo. Begin. Ease access to them
+  register_set *get_sp_out() { return m_sp_out; }
+  register_set *get_dp_out() { return m_dp_out; }
+  register_set *get_sfu_out() { return m_sfu_out; }
+  register_set *get_int_out() { return m_int_out; }
+  register_set *get_tensor_core_out() { return m_tensor_core_out; }
+  register_set *get_mem_out() { return m_mem_out; }
+  std::vector<register_set *> &get_spec_cores_out() { return m_spec_cores_out; }
+  // MOD. IBuffer_ooo. End. Ease access to them
 
  protected:
   virtual void do_on_warp_issued(
       unsigned warp_id, unsigned num_issued,
       const std::vector<shd_warp_t *>::const_iterator &prioritized_iter);
-  inline int get_sid() const;
+  inline unsigned int get_sid() const;
 
  protected:
   shd_warp_t &warp(int i);
@@ -576,9 +611,12 @@ class scheduler_unit {  // this can be copied freely, so can be used in std
   // these things should become accessors: but would need a bigger rearchitect
   // of how shader_core_ctx interacts with its parts.
   Scoreboard *m_scoreboard;
+  Scoreboard_reads *m_scoreboard_reads; // MOD. Fix WAR at baseline.
   simt_stack **m_simt_stack;
   // warp_inst_t** m_pipeline_reg;
   std::vector<shd_warp_t *> *m_warp;
+
+  // MOD. IBuffer_ooo. Begin. Ease access to them
   register_set *m_sp_out;
   register_set *m_dp_out;
   register_set *m_sfu_out;
@@ -586,24 +624,28 @@ class scheduler_unit {  // this can be copied freely, so can be used in std
   register_set *m_tensor_core_out;
   register_set *m_mem_out;
   std::vector<register_set *> &m_spec_cores_out;
+  // MOD. IBuffer_ooo. End. Ease access to them
+
   unsigned m_num_issued_last_cycle;
   unsigned m_current_turn_warp;
 
   int m_id;
+
 };
 
 class lrr_scheduler : public scheduler_unit {
  public:
   lrr_scheduler(shader_core_stats *stats, shader_core_ctx *shader,
-                Scoreboard *scoreboard, simt_stack **simt,
+                Scoreboard *scoreboard, Scoreboard_reads *scoreboard_reads, // MOD. Fix WAR at baseline.
+                simt_stack **simt,
                 std::vector<shd_warp_t *> *warp, register_set *sp_out,
                 register_set *dp_out, register_set *sfu_out,
                 register_set *int_out, register_set *tensor_core_out,
                 std::vector<register_set *> &spec_cores_out,
-                register_set *mem_out, int id)
-      : scheduler_unit(stats, shader, scoreboard, simt, warp, sp_out, dp_out,
+                register_set *mem_out, int id, const concrete_scheduler scheduler) 
+      : scheduler_unit(stats, shader, scoreboard, scoreboard_reads, simt, warp, sp_out, dp_out, // MOD. Fix WAR at baseline.
                        sfu_out, int_out, tensor_core_out, spec_cores_out,
-                       mem_out, id) {}
+                       mem_out, id, scheduler) {} // MOD. VPREG
   virtual ~lrr_scheduler() {}
   virtual void order_warps();
   virtual void done_adding_supervised_warps() {
@@ -614,15 +656,16 @@ class lrr_scheduler : public scheduler_unit {
 class rrr_scheduler : public scheduler_unit {
  public:
   rrr_scheduler(shader_core_stats *stats, shader_core_ctx *shader,
-                Scoreboard *scoreboard, simt_stack **simt,
+                Scoreboard *scoreboard, Scoreboard_reads *scoreboard_reads, // MOD. Fix WAR at baseline.
+                simt_stack **simt,
                 std::vector<shd_warp_t *> *warp, register_set *sp_out,
                 register_set *dp_out, register_set *sfu_out,
                 register_set *int_out, register_set *tensor_core_out,
                 std::vector<register_set *> &spec_cores_out,
-                register_set *mem_out, int id)
-      : scheduler_unit(stats, shader, scoreboard, simt, warp, sp_out, dp_out,
+                register_set *mem_out, int id, const concrete_scheduler scheduler) 
+      : scheduler_unit(stats, shader, scoreboard, scoreboard_reads, simt, warp, sp_out, dp_out,
                        sfu_out, int_out, tensor_core_out, spec_cores_out,
-                       mem_out, id) {}
+                       mem_out, id, scheduler) {}
   virtual ~rrr_scheduler() {}
   virtual void order_warps();
   virtual void done_adding_supervised_warps() {
@@ -633,15 +676,16 @@ class rrr_scheduler : public scheduler_unit {
 class gto_scheduler : public scheduler_unit {
  public:
   gto_scheduler(shader_core_stats *stats, shader_core_ctx *shader,
-                Scoreboard *scoreboard, simt_stack **simt,
+                Scoreboard *scoreboard, Scoreboard_reads *scoreboard_reads, // MOD. Fix WAR at baseline.
+                simt_stack **simt,
                 std::vector<shd_warp_t *> *warp, register_set *sp_out,
                 register_set *dp_out, register_set *sfu_out,
                 register_set *int_out, register_set *tensor_core_out,
                 std::vector<register_set *> &spec_cores_out,
-                register_set *mem_out, int id)
-      : scheduler_unit(stats, shader, scoreboard, simt, warp, sp_out, dp_out,
+                register_set *mem_out, int id, const concrete_scheduler scheduler) 
+      : scheduler_unit(stats, shader, scoreboard, scoreboard_reads, simt, warp, sp_out, dp_out, // MOD. Fix WAR at baseline.
                        sfu_out, int_out, tensor_core_out, spec_cores_out,
-                       mem_out, id) {}
+                       mem_out, id, scheduler) {}
   virtual ~gto_scheduler() {}
   virtual void order_warps();
   virtual void done_adding_supervised_warps() {
@@ -652,15 +696,16 @@ class gto_scheduler : public scheduler_unit {
 class oldest_scheduler : public scheduler_unit {
  public:
   oldest_scheduler(shader_core_stats *stats, shader_core_ctx *shader,
-                   Scoreboard *scoreboard, simt_stack **simt,
+                   Scoreboard *scoreboard, Scoreboard_reads *scoreboard_reads, // MOD. Fix WAR at baseline.
+                   simt_stack **simt,
                    std::vector<shd_warp_t *> *warp, register_set *sp_out,
                    register_set *dp_out, register_set *sfu_out,
                    register_set *int_out, register_set *tensor_core_out,
                    std::vector<register_set *> &spec_cores_out,
-                   register_set *mem_out, int id)
-      : scheduler_unit(stats, shader, scoreboard, simt, warp, sp_out, dp_out,
+                   register_set *mem_out, int id, const concrete_scheduler scheduler)
+      : scheduler_unit(stats, shader, scoreboard, scoreboard_reads, simt, warp, sp_out, dp_out, // MOD. Fix WAR at baseline.
                        sfu_out, int_out, tensor_core_out, spec_cores_out,
-                       mem_out, id) {}
+                       mem_out, id, scheduler) {} 
   virtual ~oldest_scheduler() {}
   virtual void order_warps();
   virtual void done_adding_supervised_warps() {
@@ -671,16 +716,17 @@ class oldest_scheduler : public scheduler_unit {
 class two_level_active_scheduler : public scheduler_unit {
  public:
   two_level_active_scheduler(shader_core_stats *stats, shader_core_ctx *shader,
-                             Scoreboard *scoreboard, simt_stack **simt,
+                             Scoreboard *scoreboard, Scoreboard_reads *scoreboard_reads, // MOD. Fix WAR at baseline.
+                             simt_stack **simt,
                              std::vector<shd_warp_t *> *warp,
                              register_set *sp_out, register_set *dp_out,
                              register_set *sfu_out, register_set *int_out,
                              register_set *tensor_core_out,
                              std::vector<register_set *> &spec_cores_out,
-                             register_set *mem_out, int id, char *config_str)
-      : scheduler_unit(stats, shader, scoreboard, simt, warp, sp_out, dp_out,
+                             register_set *mem_out, int id, char *config_str, const concrete_scheduler scheduler)
+      : scheduler_unit(stats, shader, scoreboard, scoreboard_reads, simt, warp, sp_out, dp_out, // MOD. Fix WAR at baseline.
                        sfu_out, int_out, tensor_core_out, spec_cores_out,
-                       mem_out, id),
+                       mem_out, id, scheduler), 
         m_pending_warps() {
     unsigned inner_level_readin;
     unsigned outer_level_readin;
@@ -692,8 +738,10 @@ class two_level_active_scheduler : public scheduler_unit {
         (scheduler_prioritization_type)inner_level_readin;
     m_outer_level_prioritization =
         (scheduler_prioritization_type)outer_level_readin;
+    
   }
-  virtual ~two_level_active_scheduler() {}
+  virtual ~two_level_active_scheduler() {
+  }
   virtual void order_warps();
   void add_supervised_warp_id(int i) {
     if (m_next_cycle_prioritized_warps.size() < m_max_active_warps) {
@@ -722,12 +770,13 @@ class two_level_active_scheduler : public scheduler_unit {
 class swl_scheduler : public scheduler_unit {
  public:
   swl_scheduler(shader_core_stats *stats, shader_core_ctx *shader,
-                Scoreboard *scoreboard, simt_stack **simt,
+                Scoreboard *scoreboard, Scoreboard_reads *scoreboard_reads, // MOD. Fix WAR at baseline.
+                simt_stack **simt,
                 std::vector<shd_warp_t *> *warp, register_set *sp_out,
                 register_set *dp_out, register_set *sfu_out,
                 register_set *int_out, register_set *tensor_core_out,
                 std::vector<register_set *> &spec_cores_out,
-                register_set *mem_out, int id, char *config_string);
+                register_set *mem_out, int id, char *config_string, const concrete_scheduler scheduler);
   virtual ~swl_scheduler() {}
   virtual void order_warps();
   virtual void done_adding_supervised_warps() {
@@ -752,7 +801,7 @@ class opndcoll_rfu_t {  // operand collector based register file unit
   typedef std::vector<unsigned int> uint_vector_t;
   void add_port(port_vector_t &input, port_vector_t &ouput,
                 uint_vector_t cu_sets);
-  void init(unsigned num_banks, shader_core_ctx *shader);
+  void init(unsigned num_banks, shader_core_ctx *shader); 
 
   // modifiers
   bool writeback(warp_inst_t &warp);
@@ -760,7 +809,9 @@ class opndcoll_rfu_t {  // operand collector based register file unit
   void step() {
     dispatch_ready_cu();
     allocate_reads();
-    for (unsigned p = 0; p < m_in_ports.size(); p++) allocate_cu(p);
+    for (unsigned p = 0; p < m_in_ports.size(); p++) {
+      allocate_cu(p);
+    }
     process_banks();
   }
 
@@ -776,6 +827,17 @@ class opndcoll_rfu_t {  // operand collector based register file unit
 
   shader_core_ctx *shader_core() { return m_shader; }
 
+  // MOD. Begin. OPC custom stats
+  void reset_structures_opc_custom_stats();
+  void calculate_opc_custom_stats();
+  // MOD. End. OPC custom stats
+  
+  // MOD. Begin. Improved Result Bus
+  unsigned int get_bank_warp_shift() { return m_bank_warp_shift; }
+  bool get_is_sub_core_model() { return sub_core_model; }
+  unsigned int get_banks_per_sched() { return m_num_banks_per_sched; }
+  // MOD. End. Improved Result bus
+  
  private:
   void process_banks() { m_arbiter.reset_alloction(); }
 
@@ -787,39 +849,57 @@ class opndcoll_rfu_t {  // operand collector based register file unit
 
   class collector_unit_t;
 
+  // MOD. Begin. VPREG
+  bool m_is_vpreg_enabled;
+  bool m_is_vpreg_balanced_banks_mode_enabled;
+  int m_regs_per_bank;
+  int m_banks_per_subcore;
+  // MOD. End. VPREG
+
+  // MOD. Begin. OPC custom stats
+  std::vector<bool> m_has_subcore_allocated_cu;
+  std::vector<bool> m_has_subcore_something_to_allocate_in_cu;
+  std::vector<int> m_num_dispatched_cus_this_cycle;
+  int m_num_cu_units_per_subcore;
+  // MOD. End. OPC custom stats
+
   class op_t {
    public:
-    op_t() { m_valid = false; }
+    op_t() { m_valid = false;} 
     op_t(collector_unit_t *cu, unsigned op, unsigned reg, unsigned num_banks,
-         bool sub_core_model, unsigned banks_per_sched, unsigned sched_id) {
+         unsigned bank_warp_shift, bool sub_core_model,
+         unsigned banks_per_sched, unsigned sched_id,
+         bool is_renamed, rrs_id_type renamed_rrs_id) { // MOD. LOOG
       m_valid = true;
       m_warp = NULL;
       m_cu = cu;
       m_operand = op;
       m_register = reg;
       m_shced_id = sched_id;
-      m_bank = register_bank(reg, cu->get_warp_id(), num_banks, sub_core_model,
-                             banks_per_sched, sched_id);
+      m_bank = register_bank(reg, cu->get_warp_id(), num_banks, bank_warp_shift,
+                             sub_core_model, banks_per_sched, sched_id); 
     }
     op_t(const warp_inst_t *warp, unsigned reg, unsigned num_banks,
-         bool sub_core_model, unsigned banks_per_sched, unsigned sched_id) {
+         unsigned bank_warp_shift, bool sub_core_model,
+         unsigned banks_per_sched, unsigned sched_id,
+         opndcoll_rfu_t* rfu) {
       m_valid = true;
       m_warp = warp;
       m_register = reg;
       m_cu = NULL;
       m_operand = -1;
       m_shced_id = sched_id;
-      m_bank = register_bank(reg, warp->warp_id(), num_banks, sub_core_model,
-                             banks_per_sched, sched_id);
+      m_bank = register_bank(reg, warp->warp_id(), num_banks, bank_warp_shift,
+                             sub_core_model, banks_per_sched, sched_id );
     }
 
     // accessors
     bool valid() const { return m_valid; }
-    unsigned get_reg() const {
+    unsigned int get_reg() const {
       assert(m_valid);
       return m_register;
     }
-    unsigned get_wid() const {
+    unsigned int get_wid() const {
       if (m_warp)
         return m_warp->warp_id();
       else if (m_cu)
@@ -827,8 +907,8 @@ class opndcoll_rfu_t {  // operand collector based register file unit
       else
         abort();
     }
-    unsigned get_sid() const { return m_shced_id; }
-    unsigned get_active_count() const {
+    unsigned int get_sid() const { return m_shced_id; }
+    unsigned int get_active_count() const {
       if (m_warp)
         return m_warp->active_count();
       else if (m_cu)
@@ -844,7 +924,7 @@ class opndcoll_rfu_t {  // operand collector based register file unit
       else
         abort();
     }
-    unsigned get_sp_op() const {
+    unsigned int get_sp_op() const {
       if (m_warp)
         return m_warp->sp_op;
       else if (m_cu)
@@ -880,6 +960,7 @@ class opndcoll_rfu_t {  // operand collector based register file unit
     unsigned m_register;
     unsigned m_bank;
     unsigned m_shced_id;  // scheduler id that has issued this inst
+
   };
 
   enum alloc_t {
@@ -935,7 +1016,7 @@ class opndcoll_rfu_t {  // operand collector based register file unit
       _request = NULL;
       m_last_cu = 0;
     }
-    void init(unsigned num_cu, unsigned num_banks) {
+    void init(unsigned int num_cu, unsigned int num_banks, bool is_opc_improved, unsigned int ports_per_bank, unsigned ports_per_cu) { // MOD. Improved OPC
       assert(num_cu > 0);
       assert(num_banks > 0);
       m_num_collectors = num_cu;
@@ -943,14 +1024,28 @@ class opndcoll_rfu_t {  // operand collector based register file unit
       _inmatch = new int[m_num_banks];
       _outmatch = new int[m_num_collectors];
       _request = new int *[m_num_banks];
-      for (unsigned i = 0; i < m_num_banks; i++)
+      // MOD. Begin. Improved OPC
+      m_allocated_bank = new allocation_t *[num_banks];
+      for (unsigned i = 0; i < m_num_banks; i++) {
         _request[i] = new int[m_num_collectors];
-      m_queue = new std::list<op_t>[num_banks];
-      m_allocated_bank = new allocation_t[num_banks];
+        if(is_opc_improved) {
+          m_allocated_bank[i] = new allocation_t[ports_per_bank];
+        } else  {
+          m_allocated_bank[i] = new allocation_t[1];
+        }
+      }
+      // MOD. End. Improved OPC
+      m_queue = new std::deque<op_t>[num_banks]; // MOD. Improved OPC
+      
       m_allocator_rr_head = new unsigned[num_cu];
       for (unsigned n = 0; n < num_cu; n++)
         m_allocator_rr_head[n] = n % num_banks;
       reset_alloction();
+      // MOD. Begin. Improved OPC
+      m_is_improved_opc = is_opc_improved;
+      m_ports_per_bank = ports_per_bank;
+      m_ports_per_cu = ports_per_cu;
+      // MOD. End. Improved OPC
     }
 
     // accessors
@@ -960,16 +1055,20 @@ class opndcoll_rfu_t {  // operand collector based register file unit
       fprintf(fp, "  requests:\n");
       for (unsigned b = 0; b < m_num_banks; b++) {
         fprintf(fp, "    bank %u : ", b);
-        std::list<op_t>::const_iterator o = m_queue[b].begin();
+        std::deque<op_t>::const_iterator o = m_queue[b].begin(); // MOD. Improved OPC
         for (; o != m_queue[b].end(); o++) {
           o->dump(fp);
         }
         fprintf(fp, "\n");
       }
       fprintf(fp, "  grants:\n");
-      for (unsigned b = 0; b < m_num_banks; b++) {
-        fprintf(fp, "    bank %u : ", b);
-        m_allocated_bank[b].dump(fp);
+      for (unsigned int b = 0; b < m_num_banks; b++) {
+        // MOD. Begin. Improved OPC
+        for(unsigned int p = 0; p < m_ports_per_bank; p++) {
+          fprintf(fp, "    bank %u, port %d : ", b, p);
+          m_allocated_bank[b][p].dump(fp);
+        }
+        // MOD. End. Improved OPC
       }
       fprintf(fp, "\n");
     }
@@ -981,33 +1080,82 @@ class opndcoll_rfu_t {  // operand collector based register file unit
       const op_t *src = cu->get_operands();
       for (unsigned i = 0; i < MAX_REG_OPERANDS * 2; i++) {
         const op_t &op = src[i];
-        if (op.valid()) {
+        bool read_from_rf =  true; 
+        if (op.valid() && read_from_rf) { 
           unsigned bank = op.get_bank();
           m_queue[bank].push_back(op);
         }
       }
     }
+
+    // MOD. Begin. Improved OPC
+    int get_num_free_ports(unsigned bank) const {
+      int res = 0;
+      for(unsigned int p = 0; p < m_ports_per_bank ; p++) {
+        if(m_allocated_bank[bank][p].is_free()) {
+          res++;
+        }
+      }
+      return res;
+    }
+
+    unsigned int get_num_used_ports(unsigned bank) const {
+      unsigned int res = 0;
+      for(unsigned int p = 0; p < m_ports_per_bank ; p++) {
+        if(!m_allocated_bank[bank][p].is_free()) {
+          res++;
+        }
+      }
+      return res;
+    }
+
     bool bank_idle(unsigned bank) const {
-      return m_allocated_bank[bank].is_free();
+      bool is_free = false;
+      for(unsigned int p = 0; (p < m_ports_per_bank) && !is_free ; p++) {
+        is_free = m_allocated_bank[bank][p].is_free();
+      }
+      return is_free;
     }
     void allocate_bank_for_write(unsigned bank, const op_t &op) {
       assert(bank < m_num_banks);
-      m_allocated_bank[bank].alloc_write(op);
+      bool allocated = false;
+      for(unsigned int p = 0; (p < m_ports_per_bank) && !allocated ; p++) {
+        if(m_allocated_bank[bank][p].is_free()) {
+          m_allocated_bank[bank][p].alloc_write(op);
+          allocated = true;
+        }
+      }
+      assert(allocated);
     }
     void allocate_for_read(unsigned bank, const op_t &op) {
       assert(bank < m_num_banks);
-      m_allocated_bank[bank].alloc_read(op);
+      bool allocated = false;
+      for(unsigned int p = 0; (p < m_ports_per_bank) && !allocated ; p++) {
+        if(m_allocated_bank[bank][p].is_free()) {
+          m_allocated_bank[bank][p].alloc_read(op);
+          allocated = true;
+        }
+      }
+      assert(allocated);
     }
     void reset_alloction() {
-      for (unsigned b = 0; b < m_num_banks; b++) m_allocated_bank[b].reset();
+      for (unsigned b = 0; b < m_num_banks; b++) {
+        for(unsigned int p = 0; p < m_ports_per_bank; p++) {
+          m_allocated_bank[b][p].reset();
+        }
+      } 
     }
+    // MOD. End. Improved OPC
+
+    int get_conflicts() {return m_conflicts;} // MOD. VPREG
+    int get_total_requests() {return m_total_req;} // MOD. VPREG
 
    private:
     unsigned m_num_banks;
     unsigned m_num_collectors;
 
-    allocation_t *m_allocated_bank;  // bank # -> register that wins
-    std::list<op_t> *m_queue;
+    allocation_t **m_allocated_bank;  // bank # -> register that wins. MOD. Improved OPC
+    std::deque<op_t> *m_queue; // MOD. Improved OPC
 
     unsigned *
         m_allocator_rr_head;  // cu # -> next bank to check for request (rr-arb)
@@ -1016,6 +1164,12 @@ class opndcoll_rfu_t {  // operand collector based register file unit
     int *_inmatch;
     int *_outmatch;
     int **_request;
+
+    int m_conflicts; // MOD. VPREG
+    int m_total_req; // MOD. VPREG
+    bool m_is_improved_opc; // MOD. Improved OPC
+    unsigned int m_ports_per_bank; // MOD. Improved OPC
+    unsigned int m_ports_per_cu; // MOD. Improved OPC
   };
 
   class input_port_t {
@@ -1042,6 +1196,8 @@ class opndcoll_rfu_t {  // operand collector based register file unit
       m_not_ready.reset();
       m_warp_id = -1;
       m_num_banks = 0;
+      m_bank_warp_shift = 0;
+      m_allocation_cycle = 0; // MOD. CU stats
     }
     // accessors
     bool ready() const;
@@ -1058,18 +1214,25 @@ class opndcoll_rfu_t {  // operand collector based register file unit
     unsigned get_reg_id() const { return m_reg_id; }
 
     // modifiers
-    void init(unsigned n, unsigned num_banks, const core_config *config,
-              opndcoll_rfu_t *rfu, bool m_sub_core_model, unsigned reg_id,
+    void init(unsigned n, unsigned num_banks, unsigned log2_warp_size,
+              const core_config *config, opndcoll_rfu_t *rfu,
+              bool m_sub_core_model, unsigned reg_id,
               unsigned num_banks_per_sched);
     bool allocate(register_set *pipeline_reg, register_set *output_reg);
 
+    bool are_all_operands_ready() { return m_not_ready.none(); } // MOD. OPC custom stats
+    bool is_dispatch_register_free() { return (*m_output_register).has_free(m_sub_core_model, m_reg_id); } // MOD. OPC custom stats
     void collect_operand(unsigned op) { m_not_ready.reset(op); }
     unsigned get_num_operands() const { return m_warp->get_num_operands(); }
     unsigned get_num_regs() const { return m_warp->get_num_regs(); }
     void dispatch();
     bool is_free() { return m_free; }
 
+    opndcoll_rfu_t * get_rfu() { return m_rfu;} // MOD. LOOG
+    warp_inst_t* get_warp_inst() { return m_warp;} // MOD. LOOG
+
    private:
+    unsigned long long m_allocation_cycle; // MOD. CU stats
     bool m_free;
     unsigned m_cuid;  // collector unit hw id
     unsigned m_warp_id;
@@ -1079,6 +1242,7 @@ class opndcoll_rfu_t {  // operand collector based register file unit
     op_t *m_src_op;
     std::bitset<MAX_REG_OPERANDS * 2> m_not_ready;
     unsigned m_num_banks;
+    unsigned m_bank_warp_shift;
     opndcoll_rfu_t *m_rfu;
 
     unsigned m_num_banks_per_sched;
@@ -1103,8 +1267,8 @@ class opndcoll_rfu_t {  // operand collector based register file unit
       // With sub-core enabled round robin starts with the next cu assigned to a
       // different sub-core than the one that dispatched last
       unsigned cusPerSched = m_num_collectors / m_num_warp_scheds;
-      unsigned rr_increment =
-          m_sub_core_model ? cusPerSched - (m_last_cu % cusPerSched) : 1;
+      unsigned rr_increment = m_sub_core_model ?
+                              cusPerSched - (m_last_cu % cusPerSched) : 1;
       for (unsigned n = 0; n < m_num_collectors; n++) {
         unsigned c = (m_last_cu + n + rr_increment) % m_num_collectors;
         if ((*m_collector_units)[c].ready()) {
@@ -1130,6 +1294,7 @@ class opndcoll_rfu_t {  // operand collector based register file unit
   unsigned m_num_collector_sets;
   // unsigned m_num_collectors;
   unsigned m_num_banks;
+  unsigned m_bank_warp_shift;
   unsigned m_warp_size;
   std::vector<collector_unit_t *> m_cu;
   arbiter_t m_arbiter;
@@ -1159,8 +1324,6 @@ class opndcoll_rfu_t {  // operand collector based register file unit
 
 class barrier_set_t {
  public:
-  // Stage 1g G1b: single wrapper ctor. Vanilla shader_core_ctx is a
-  // wrapper subclass so both paths funnel through here.
   barrier_set_t(shader_core_ctx_wrapper *shader, unsigned max_warps_per_core,
                 unsigned max_cta_per_core, unsigned max_barriers_per_cta,
                 unsigned warp_size);
@@ -1213,12 +1376,14 @@ struct ifetch_buffer_t {
     m_pc = pc;
     m_nbytes = nbytes;
     m_warp_id = warp_id;
+    only_read_I2 = false; // MOD. VPREG
   }
 
   bool m_valid;
   address_type m_pc;
   unsigned m_nbytes;
   unsigned m_warp_id;
+  bool only_read_I2; // MOD. VPREG
 };
 
 class shader_core_config;
@@ -1229,7 +1394,7 @@ class simd_function_unit {
   ~simd_function_unit() { delete m_dispatch_reg; }
 
   // modifiers
-  virtual void issue(register_set &source_reg);
+  virtual void issue(register_set &source_reg, unsigned int subcore_id); // MOD. Fixed LDST_Unit model
   virtual void cycle() = 0;
   virtual void active_lanes_in_pipeline() = 0;
 
@@ -1259,11 +1424,11 @@ class pipelined_simd_unit : public simd_function_unit {
  public:
   pipelined_simd_unit(register_set *result_port,
                       const shader_core_config *config, unsigned max_latency,
-                      shader_core_ctx *core, unsigned issue_reg_id);
+                      shader_core_ctx_wrapper *core, unsigned issue_reg_id);
 
   // modifiers
   virtual void cycle();
-  virtual void issue(register_set &source_reg);
+  virtual void issue(register_set &source_reg, unsigned int subcore_id); // MOD. Fixed LDST_Unit model
   virtual unsigned get_active_lanes_in_pipeline();
 
   virtual void active_lanes_in_pipeline() = 0;
@@ -1296,7 +1461,7 @@ class pipelined_simd_unit : public simd_function_unit {
   unsigned m_pipeline_depth;
   warp_inst_t **m_pipeline_reg;
   register_set *m_result_port;
-  class shader_core_ctx *m_core;
+  class shader_core_ctx_wrapper *m_core;
   unsigned m_issue_reg_id;  // if sub_core_model is enabled we can only issue
                             // from a subset of operand collectors
 
@@ -1321,7 +1486,7 @@ class sfu : public pipelined_simd_unit {
     return pipelined_simd_unit::can_issue(inst);
   }
   virtual void active_lanes_in_pipeline();
-  virtual void issue(register_set &source_reg);
+  virtual void issue(register_set &source_reg, unsigned int subcore_id); // MOD. Fixed LDST_Unit model
   bool is_issue_partitioned() { return true; }
 };
 
@@ -1339,7 +1504,7 @@ class dp_unit : public pipelined_simd_unit {
     return pipelined_simd_unit::can_issue(inst);
   }
   virtual void active_lanes_in_pipeline();
-  virtual void issue(register_set &source_reg);
+  virtual void issue(register_set &source_reg, unsigned int subcore_id); // MOD. Fixed LDST_Unit model
   bool is_issue_partitioned() { return true; }
 };
 
@@ -1357,7 +1522,7 @@ class tensor_core : public pipelined_simd_unit {
     return pipelined_simd_unit::can_issue(inst);
   }
   virtual void active_lanes_in_pipeline();
-  virtual void issue(register_set &source_reg);
+  virtual void issue(register_set &source_reg, unsigned int subcore_id); // MOD. Fixed LDST_Unit model
   bool is_issue_partitioned() { return true; }
 };
 
@@ -1389,7 +1554,7 @@ class int_unit : public pipelined_simd_unit {
     return pipelined_simd_unit::can_issue(inst);
   }
   virtual void active_lanes_in_pipeline();
-  virtual void issue(register_set &source_reg);
+  virtual void issue(register_set &source_reg, unsigned int subcore_id); // MOD. Fixed LDST_Unit model
   bool is_issue_partitioned() { return true; }
 };
 
@@ -1419,15 +1584,15 @@ class sp_unit : public pipelined_simd_unit {
     return pipelined_simd_unit::can_issue(inst);
   }
   virtual void active_lanes_in_pipeline();
-  virtual void issue(register_set &source_reg);
+  virtual void issue(register_set &source_reg, unsigned int subcore_id); // MOD. Fixed LDST_Unit model
   bool is_issue_partitioned() { return true; }
 };
 
 class specialized_unit : public pipelined_simd_unit {
  public:
   specialized_unit(register_set *result_port, const shader_core_config *config,
-                   shader_core_ctx *core, int supported_op, char *unit_name,
-                   unsigned latency, unsigned issue_reg_id);
+                   shader_core_ctx *core, int supported_op,
+                   char *unit_name, unsigned latency, unsigned issue_reg_id);
   virtual bool can_issue(const warp_inst_t &inst) const {
     if (inst.op != m_supported_op) {
       return false;
@@ -1435,7 +1600,7 @@ class specialized_unit : public pipelined_simd_unit {
     return pipelined_simd_unit::can_issue(inst);
   }
   virtual void active_lanes_in_pipeline();
-  virtual void issue(register_set &source_reg);
+  virtual void issue(register_set &source_reg, unsigned int subcore_id); // MOD. Fixed LDST_Unit model
   bool is_issue_partitioned() { return true; }
 
  private:
@@ -1452,22 +1617,13 @@ class ldst_unit : public pipelined_simd_unit {
   ldst_unit(mem_fetch_interface *icnt,
             shader_core_mem_fetch_allocator *mf_allocator,
             shader_core_ctx *core, opndcoll_rfu_t *operand_collector,
-            Scoreboard *scoreboard, const shader_core_config *config,
+            Scoreboard *scoreboard, Scoreboard_reads *scoreboard_reads, // MOD. Fix WAR at baseline.
+            const shader_core_config *config,
             const memory_config *mem_config, class shader_core_stats *stats,
-            unsigned sid, unsigned tpc, gpgpu_sim *gpu);
+            unsigned sid, unsigned tpc);
 
-  // Add a structure to record the LDGSTS instructions,
-  // similar to m_pending_writes, but since LDGSTS does not have a output
-  // register to write to, so a new structure needs to be added
-  /* A multi-level map: unsigned (warp_id) -> unsigned (pc) -> unsigned (addr)
-   * -> unsigned (count)
-   */
-  std::map<unsigned /*warp_id*/,
-           std::map<unsigned /*pc*/,
-                    std::map<unsigned /*addr*/, unsigned /*count*/>>>
-      m_pending_ldgsts;
   // modifiers
-  virtual void issue(register_set &inst);
+  virtual void issue(register_set &inst, unsigned int subcore_id); // MOD. Fixed LDST_Unit model
   bool is_issue_partitioned() { return false; }
   virtual void cycle();
 
@@ -1497,6 +1653,8 @@ class ldst_unit : public pipelined_simd_unit {
     return m_dispatch_reg->empty();
   }
 
+  bool is_dispatch_reg_empty() const { return m_dispatch_reg->empty(); }
+
   virtual void active_lanes_in_pipeline();
   virtual bool stallable() const { return true; }
   bool response_buffer_full() const;
@@ -1516,13 +1674,13 @@ class ldst_unit : public pipelined_simd_unit {
   ldst_unit(mem_fetch_interface *icnt,
             shader_core_mem_fetch_allocator *mf_allocator,
             shader_core_ctx *core, opndcoll_rfu_t *operand_collector,
-            Scoreboard *scoreboard, const shader_core_config *config,
+            Scoreboard *scoreboard, Scoreboard_reads *scoreboard_reads, const shader_core_config *config, // MOD. Fix WAR at baseline.
             const memory_config *mem_config, shader_core_stats *stats,
             unsigned sid, unsigned tpc, l1_cache *new_l1d_cache);
   void init(mem_fetch_interface *icnt,
             shader_core_mem_fetch_allocator *mf_allocator,
             shader_core_ctx *core, opndcoll_rfu_t *operand_collector,
-            Scoreboard *scoreboard, const shader_core_config *config,
+            Scoreboard *scoreboard, Scoreboard_reads *scoreboard_reads, const shader_core_config *config, // MOD. Fix WAR at baseline.
             const memory_config *mem_config, shader_core_stats *stats,
             unsigned sid, unsigned tpc);
 
@@ -1544,7 +1702,9 @@ class ldst_unit : public pipelined_simd_unit {
                                                    warp_inst_t &inst);
   mem_stage_stall_type process_memory_access_queue_l1cache(l1_cache *cache,
                                                            warp_inst_t &inst);
-  gpgpu_sim *m_gpu;
+
+  unsigned get_first_key_pending_writes(warp_inst_t *inst); // MOD. LOOG
+  unsigned get_second_key_pending_writes(warp_inst_t *inst, int idx); // MOD. VPREG
 
   const memory_config *m_memory_config;
   class mem_fetch_interface *m_icnt;
@@ -1562,6 +1722,8 @@ class ldst_unit : public pipelined_simd_unit {
   std::list<mem_fetch *> m_response_fifo;
   opndcoll_rfu_t *m_operand_collector;
   Scoreboard *m_scoreboard;
+  Scoreboard_reads *m_scoreboard_reads; // MOD. Fix WAR at baseline.
+  unsigned long long m_dispatch_reg_allocation_cycle; // MOD. Memory stats
 
   mem_fetch *m_next_global;
   warp_inst_t m_next_wb;
@@ -1579,6 +1741,8 @@ class ldst_unit : public pipelined_simd_unit {
 
   std::vector<std::deque<mem_fetch *>> l1_latency_queue;
   void L1_latency_queue_cycle();
+
+  void print_L1_latency_queue(FILE *f); // MOD. VPREG
 };
 
 enum pipeline_stage_name_t {
@@ -1665,28 +1829,12 @@ class shader_core_config : public core_config {
 
     set_pipeline_latency();
 
-    m_L1I_config.init(m_L1I_config.m_config_string, FuncCachePreferNone);
+    m_L0I_config.init(m_L0I_config.m_config_string, FuncCachePreferNone); // MOD. Added L0I
+    m_L1I_L1_half_C_cache_config.init(m_L1I_L1_half_C_cache_config.m_config_string, FuncCachePreferNone);
     m_L1T_config.init(m_L1T_config.m_config_string, FuncCachePreferNone);
     m_L1C_config.init(m_L1C_config.m_config_string, FuncCachePreferNone);
-    m_L1D_config.init(m_L1D_config.m_config_string, FuncCachePreferNone);
-    // Stage 1f (SM path): L0 I-cache is used by
-    // first_level_instruction_cache under is_L0I_enabled=1.  Init here
-    // so get_max_num_lines() etc. don't hit m_valid asserts even when
-    // the SM path is on.  Matches MICRO 2025 shader.h:1856 equivalent.
-    m_L0I_config.init(m_L0I_config.m_config_string, FuncCachePreferNone);
-    // Stage 1f (SM path): L0 const cache (subcore-private).  Same reason.
     m_L0C_config.init(m_L0C_config.m_config_string, FuncCachePreferNone);
-    // Stage 1f: m_L1I_L1_half_C_cache_config is the cache that SM path uses
-    // for its L1I (sm.cc:805).  MICRO 2025 routes `-gpgpu_cache:il1` here,
-    // whereas our vanilla fork routes it to m_L1I_config.  Mirror the L1I
-    // config string into the half-C field so the SM path has a valid config
-    // without diverging the option registration (which would break vanilla).
-    if (!m_L1I_L1_half_C_cache_config.m_config_string) {
-      m_L1I_L1_half_C_cache_config.m_config_string = m_L1I_config.m_config_string;
-    }
-    m_L1I_L1_half_C_cache_config.init(
-        m_L1I_L1_half_C_cache_config.m_config_string,
-        FuncCachePreferNone);
+    m_L1D_config.init(m_L1D_config.m_config_string, FuncCachePreferNone);
     gpgpu_cache_texl1_linesize = m_L1T_config.get_line_sz();
     gpgpu_cache_constl1_linesize = m_L1C_config.get_line_sz();
     m_valid = true;
@@ -1721,8 +1869,8 @@ class shader_core_config : public core_config {
     }
   }
   void reg_options(class OptionParser *opp);
-  unsigned max_cta(const kernel_info_t &k) const;
-  unsigned num_shader() const {
+  unsigned int max_cta(const kernel_info_t &k) const;
+  unsigned int num_shader() const {
     return n_simt_clusters * n_simt_cores_per_cluster;
   }
   unsigned sid_to_cluster(unsigned sid) const {
@@ -1744,9 +1892,9 @@ class shader_core_config : public core_config {
   bool gpgpu_clock_gated_reg_file;
   bool gpgpu_clock_gated_lanes;
   enum divergence_support_t model;
-  unsigned n_thread_per_shader;
-  unsigned n_regfile_gating_group;
-  unsigned max_warps_per_shader;
+  unsigned int n_thread_per_shader;
+  unsigned int n_regfile_gating_group;
+  unsigned int max_warps_per_shader;
   unsigned
       max_cta_per_core;  // Limit on number of concurrent CTAs in shader core
   unsigned max_barriers_per_cta;
@@ -1756,9 +1904,11 @@ class shader_core_config : public core_config {
   char *pipeline_widths_string;
   int pipe_widths[N_PIPELINE_STAGES];
 
-  mutable cache_config m_L1I_config;
+  mutable cache_config m_L0I_config; // MOD. Added L0I
+  mutable cache_config m_L1I_L1_half_C_cache_config;
   mutable cache_config m_L1T_config;
   mutable cache_config m_L1C_config;
+  mutable cache_config m_L0C_config;
   mutable l1d_cache_config m_L1D_config;
 
   bool gpgpu_dwf_reg_bankconflict;
@@ -1774,7 +1924,7 @@ class shader_core_config : public core_config {
   int gpgpu_operand_collector_num_units_sfu;
   int gpgpu_operand_collector_num_units_tensor_core;
   int gpgpu_operand_collector_num_units_mem;
-  int gpgpu_operand_collector_num_units_gen;
+  unsigned int gpgpu_operand_collector_num_units_gen;
   int gpgpu_operand_collector_num_units_int;
 
   unsigned int gpgpu_operand_collector_num_in_ports_sp;
@@ -1840,159 +1990,188 @@ class shader_core_config : public core_config {
   mutable std::vector<specialized_unit_params> m_specialized_unit;
   unsigned m_specialized_unit_num;
 
-  // ============================================================================
-  // MICRO 2025 port additions (Stage 1c.4.2).
-  //
-  // Default-inert values.  When is_SM_remodeling_enabled=0 (default in v2),
-  // none of these fields are read and the vanilla path behaves exactly as before.
-  // Stage 1e will wire option_parser registrations so values can be driven from
-  // gpgpusim.config when the MICRO 2025 path is enabled.
-  // ============================================================================
+  bool is_trace_predication_enabled; // MOD. Predication
+  // MOD. Begin. Fix WAR at baseline.
+  char *scoreboard_war_mode; // Indicates the mode of use of the scoreboard_reads in order to fix the war hazards at the baseline with a string
+  scoreboard_reads_mode scoreboard_war_reads_mode; // Indicates the mode of use of the scoreboard_reads in order to fix the war hazards at the baseline with an enum
+  unsigned int scoreboard_war_max_uses_per_reg; // Maximum of concurrent uses per register in the scoreboard_reads
+  double scoreboard_war_static_power;
+  double scoreboard_war_dynamic_power;
+  // MOD. End
 
-  // Instruction-type latencies (MICRO 2025 Step A parity)
-  unsigned branch_latency = 1;
-  unsigned predicate_latency = 1;
-  unsigned sfu_latency = 1;
-  unsigned tensor_latency = 1;
-  unsigned uniform_latency = 1;
-  unsigned miscellaneous_no_queue_latency = 1;
-  unsigned miscellaneous_queue_latency = 1;
-  unsigned miscellaneous_queue_size = 1;
+  bool is_fix_memory_reordering_enabled_baseline;  // MOD. Fix loads after stores in the baseline.
 
-  // Feature toggles
-  bool is_trace_mode = false;
-  // Stage 1d.4+5: master switch for MICRO 2025 remodeled SM path.  When 0,
-  // vanilla gpgpu-sim dispatch is taken.  When 1, the remodeling/ SM class
-  // hierarchy is used (see shader_core_wrapper.h + remodeling/sm.cc).
-  bool is_SM_remodeling_enabled = false;
-  // Stage 1g G5.3: MICRO 2025 L0I (per-subcore instruction cache) gate.
-  // When 1, each subcore gets its own L0I + an L0_icnt that routes
-  // coalesced misses into the shared L1I_L1_half_C cache.
-  bool is_L0I_enabled = false;
-  // Stage 1d.4+5: number of subcores per SM (normally 4 for Turing/Ampere).
-  // Read by trace_simt_core_cluster::create_shader_core_ctx and related.
-  int num_subcores_in_SM = 4;
-  bool is_loog_enabled = false;
-  bool is_rf_cache_enabled = false;
-  bool is_ibuffer_remodeled_enabled = false;
-  bool is_interwarp_coalescing_enabled = false;
-  bool is_remodeling_scoreboarding_enabled = false;
-  bool is_dp_pipeline_shared_for_subcores = false;
-  bool is_fp32_and_int_unified_pipeline = false;
-  bool is_fp32ops_allowed_in_int_pipeline = false;
-  bool is_instruction_prefetching_enabled = false;
-  bool ibuffer_coalescing = false;
-  bool invalidate_instruction_caches_at_kernel_end = false;
-  bool perfect_instruction_cache = false;
-  bool perfect_constant_cache = false;
+  bool is_L0I_enabled; // MOD. Added L0I
+  bool is_fix_instruction_fetch_misalignment; // MOD. Fix misaligned fetched instructions
+  bool is_fix_different_kernels_pc_addresses; // MOD. Fix instruction addresses of different kernels to have a different address request in memory
+  bool is_fix_not_decoding_not_contiguos_instructions; // MOD. Not decoding instructions that have separated PC.
+  bool is_improved_ldst_unit_enabled; // MOD. Fixed LDST_Unit model.
+  bool is_improved_result_bus; // MOD. Improved Result bus to take into account conflicts with RF banks.
+  int max_request_allowed_to_L1I; // MOD. Added L0I
+  int max_reply_allowed_from_L1I; // MOD. Added L0I
+  int latency_L0_to_L1; // MOD. Added L0I
+  int latency_L1_to_L0; // MOD. Added L0I
+  bool is_fetch_and_decode_improved; // MOD. Improving fetch and decode
+  bool is_opc_improved; // MOD. Improving OPC
+  int cu_num_ports; // MOD. Improving OPC
+  bool is_skip_rf_limit_enabled; // MOD. Skip RF limitation.
+  bool is_relax_barriers_baseline; // MOD. Relax barriers in baseline
 
-  // Fetch / decode / IBuffer
-  unsigned fetch_decode_width = 1;
-  unsigned ibuffer_remodeled_size = 0;
-  unsigned num_wait_barriers_per_warp = 0;
+  concrete_scheduler warp_scheduling_mode;
 
-  // Register-file-cache / RF sizing
-  unsigned max_operands_regular_register_file = 0;
-  unsigned max_latency_regular_register_file_latency = 0;
-  unsigned num_regular_register_file_read_ports_per_bank = 0;
-  unsigned num_regular_register_file_write_ports_per_bank = 0;
-  unsigned max_size_register_file_write_queue_for_fixed_latency_instructions = 0;
-  unsigned max_pops_per_cycle_register_file_write_queue_for_fixed_latency_instructions = 0;
-  unsigned num_threads_granularity_read_regular_register_file_mem_inst = 32;
-  unsigned num_threads_granularity_read_regular_register_file_dp_inst = 32;
-  unsigned num_threads_granularity_read_regular_register_file_sfu_inst = 32;
-  unsigned num_threads_granularity_read_regular_register_file_other_inst = 32;
-  unsigned num_cycles_needed_to_write_a_reg_from_sm_struct_to_subcore = 1;
+  bool is_trace_mode; // MOD. General Config Helper
+  unsigned int filter_first_kernel_id; // If it has a value of 1 or 0 it is disabled
+  unsigned int filter_last_kernel_id; // If it has a value of 1 or 0 it is disabled
 
-  // InterWarp coalescing + PRT selection policies
-  InterWarpCoalescingSelectionPolicies interwarp_coalescing_selection_policy = IWCOAL_OLDEST;
-  PRTSelectionPolicies prt_selection_policy = OLDEST;
-  unsigned num_interwarp_coalescing_tables = 0;
-  unsigned number_of_clusters_for_prt_selection = 0;
-  unsigned max_size_interwarp_coalescing_per_table = 0;
-  unsigned interwarp_coalescing_quanta = 0;
-  float interwarp_coalescing_quanta_warppool_policy_miss_ratio_threshold = 0.0f;
-  // Stage 1e-A1 (post-Codex review): policy *strings* backing the option parser
-  // (OPT_CSTR).  gpgpu_sim_config::init() converts these into the enum fields
-  // above.  Matches MICRO 2025 shader.h:2170-2171.
-  char *interwarp_coalescing_selection_policy_string = nullptr;
-  char *prt_selection_policy_string = nullptr;
-  bool measure_coalescing_potential_stats = false;
-  bool is_vpreg_enabled = false;
-  unsigned memmory_max_concurrent_requests_standard_per_sm = 0;  // typo mirrors upstream
-  unsigned memmory_max_concurrent_requests_shmem_per_sm = 0;
 
-  // Per-subcore memory pipeline
-  unsigned memory_subcore_queue_size = 0;
-  unsigned memory_intermidiate_stages_subcore_unit = 0;
-  unsigned memory_sm_prt_size = 0;
+  // MOD. Begin. Extended IBuffer
+  bool is_extended_ibuffer_enabled;
+  int extended_ibuffer_size;
+  int fetch_decode_width;
+  double extended_ibuffer_static_power;
+  double extended_ibuffer_dynamic_power;
+  // MOD. End. Extended IBuffer
 
-  // DP shared pipeline across subcores
-  unsigned dp_subcore_queue_size = 0;
-  unsigned dp_subcore_max_latency = 0;
-  unsigned dp_shared_intermidiate_stages = 0;
-  unsigned num_cycles_to_wait_to_dispatch_another_inst_from_subcore_to_sm_shared_pipeline_when_is_mem_inst = 0;
-  unsigned num_cycles_to_wait_to_dispatch_another_inst_from_subcore_to_sm_shared_pipeline_when_is_dp_inst = 0;
+  // MOD. Begin. LOOG
+  bool is_loog_enabled;
+  int loog_frontend_size;
+  int loog_rrs_size;
+  int loog_memory_queues_size;
+  // MOD. End. LOOG
 
-  // SM-level stalls (MICRO 2025 Step B)
-  unsigned num_cycles_to_stall_SM_at_gpu_memory_barrier = 0;
-  unsigned num_cycles_to_stall_SM_at_system_memory_barrier = 0;
-  unsigned num_cycles_to_stall_SM_at_cta_memory_barrier = 0;
-  unsigned num_cycles_issue_port_busy_after_imadwide = 0;
-  unsigned num_stall_cycles_wait_after_bits_stall_0_and_yield = 0;
-  unsigned num_const_cache_cycle_misses_before_switch_to_other_warp = 0;
+  // MOD. Begin VPREG
+  char *vpreg_mode_string;
+  bool is_vpreg_enabled;
+  bool is_vpreg_predicated_war_waw_dependencies_ignored;
+  bool is_vpreg_predicated_dest_reg_dependencies_ignored;
+  bool is_vpreg_balanced_banks_mode_enabled;
+  int vpreg_num_virtual_regs_per_sm;
+  int vpreg_num_physical_regs_per_sm;
+  int vpreg_reissue_informed_socgpu_threshold;
+  int vpreg_max_rollback_entries_done_in_a_cycle;
 
-  // L0 caches + prefetch
-  unsigned latency_L0_to_L1 = 0;
-  unsigned latency_L1_to_L0 = 0;
-  unsigned num_instruction_prefetches_per_cycle = 0;
-  unsigned prefetch_per_stream_buffer_size = 0;
-  unsigned prefetch_num_stream_buffers = 0;
-  unsigned max_request_allowed_to_L1I = 0;
-  unsigned max_reply_allowed_from_L1I = 0;
-  mutable cache_config m_L0I_config;
-  mutable cache_config m_L0C_config;
-  mutable cache_config m_L1I_L1_half_C_cache_config;
+  double vpreg_merge_module_static_power;
+  double vpreg_merge_module_dynamic_power;
+  double vpreg_collector_unit_extra_static_power;
+  double vpreg_collector_unit_extra_dynamic_power;
+  // MOD. Begin VPREG
+  // MOD. Begin. Remodeling
+  bool is_SM_remodeling_enabled; 
+  bool is_remodeling_scoreboarding_enabled; 
+  int num_subcores_in_SM;
+  bool is_ibuffer_remodeled_enabled;
+  int ibuffer_remodeled_size;
+  unsigned int num_wait_barriers_per_warp;
+  int sfu_latency;
+  int tensor_latency;
+  int tensor_extra_latency_16816_fp32_1688_fp32;
+  int tensor_rate_per_cycle;
+  int branch_latency;
+  int half_latency;
+  int uniform_latency;
+  unsigned int predicate_latency;
+  int miscellaneous_queue_latency;
+  int miscellaneous_no_queue_latency;
+  int sfu_initiation;
+  int tensor_initiation;
+  int branch_initiation;
+  int half_initiation;
+  int uniform_initiation;
+  int predicate_initiation;
+  int miscellaneous_queue_initiation;
+  int miscellaneous_no_queue_initiation;
+  unsigned int memory_intermidiate_stages_subcore_unit;
+  unsigned int dp_shared_intermidiate_stages;
+  unsigned int miscellaneous_queue_size;
+  unsigned int memory_subcore_queue_size;
+  unsigned int memory_sm_prt_size;
+  unsigned int num_cycles_to_wait_to_dispatch_another_inst_from_subcore_to_sm_shared_pipeline_when_is_mem_inst;
+  unsigned int num_cycles_to_wait_to_dispatch_another_inst_from_subcore_to_sm_shared_pipeline_when_is_dp_inst;
+  unsigned int memory_shared_memory_minimum_latency;
+  unsigned int memory_shared_memory_extra_latency_ldsm_multiple_matrix;
+  unsigned int memmory_max_concurrent_requests_shmem_per_sm;
+  unsigned int memmory_max_concurrent_requests_standard_per_sm;
+  unsigned int sm_memory_unit_l1c_access_queue_size;
+  unsigned int sm_memory_unit_l1t_access_queue_size;
+  unsigned int sm_memory_unit_l1d_access_queue_size;
+  unsigned int sm_memory_unit_shmem_access_queue_size;
+  unsigned int sm_memory_unit_bypass_l1d_directly_go_to_l2_access_queue_size;
+  unsigned int sm_memory_unit_miscellaneous_access_queue_size;
+  unsigned int constant_cache_latency_at_sm_structure;
+  unsigned int constant_cache_miss_latency_at_subcore_to_access_upper_level;
+  unsigned int memory_l1d_minimum_latency;
+  unsigned int memory_global_shared_latency_for_ldgsts;
+  unsigned int memory_l1d_max_lookups_per_cycle_per_bank;
+  unsigned int memory_maximum_coalescing_cycles;
+  unsigned int memory_subcore_extra_latency_load_shared_mem;
+  unsigned int memory_num_scalar_units_per_subcore;
+  unsigned int cycles_needed_for_address_calculation;
+  unsigned int memory_subcore_link_to_sm_byte_size;
+  unsigned int maximum_l1d_latency_at_sm_structure;
+  unsigned int maximum_shared_memory_latency_at_sm_structure;
+  unsigned int dp_subcore_queue_size;
+  unsigned int dp_subcore_max_latency;
+  unsigned int dp_sm_shared_queue_size;
+  bool is_dp_pipeline_shared_for_subcores;
+  bool is_load_half_bandwidth_in_the_subcore_link_to_sm_enabled;
+  bool is_store_half_bandwidth_in_the_subcore_link_to_sm_enabled;
+  bool is_fp32ops_allowed_in_int_pipeline;
+  bool is_fp32_and_int_unified_pipeline;
+  bool is_const_cache_accessed_blocks_tracking_enabled;
+  bool is_global_memory_accesses_blocks_tracking_enabled;
+  bool is_num_virtual_pages_tracking_enabled;
+  unsigned int virtual_page_size_in_bytes;
+  unsigned int num_const_cache_cycle_misses_before_switch_to_other_warp;
+  unsigned int num_cycles_issue_port_busy_after_imadwide;
+  unsigned int num_stall_cycles_wait_after_bits_stall_0_and_yield;
+  unsigned int num_cycles_to_stall_SM_at_gpu_memory_barrier;
+  unsigned int num_cycles_to_stall_SM_at_system_memory_barrier;
+  unsigned int num_cycles_to_stall_SM_at_cta_memory_barrier;
+  
+  int offset_latency_firts_stage_memory_subcore;
 
-  // WAR scoreboard (MICRO 2025 Step F).  MICRO 2025 splits the string form
-  // (from config file) from the parsed enum form.
-  char *scoreboard_war_mode = nullptr;
-  scoreboard_reads_mode scoreboard_war_reads_mode = DISABLED;
-  unsigned scoreboard_war_max_uses_per_reg = 0;
+  bool invalidate_instruction_caches_at_kernel_end;
+  bool ibuffer_coalescing;
+  bool perfect_instruction_cache;
+  bool perfect_constant_cache;
+  bool is_instruction_prefetching_enabled;
+  unsigned int prefetch_per_stream_buffer_size;
+  unsigned int prefetch_num_stream_buffers;
+  unsigned int num_instruction_prefetches_per_cycle;
 
-  // Memory unit per-subcore access queues (MICRO 2025 Step E)
-  unsigned maximum_shared_memory_latency_at_sm_structure = 0;
-  unsigned maximum_l1d_latency_at_sm_structure = 0;
-  unsigned constant_cache_latency_at_sm_structure = 0;
-  unsigned memory_global_shared_latency_for_ldgsts = 0;
-  unsigned memory_l1d_max_lookups_per_cycle_per_bank = 0;
-  unsigned number_of_coalescers = 0;
+  bool is_rf_cache_enabled;
+  int max_operands_regular_register_file; 
+  int max_latency_regular_register_file_latency; 
+  int num_regular_register_file_read_ports_per_bank;
+  int num_regular_register_file_write_ports_per_bank;
+  int max_size_register_file_write_queue_for_fixed_latency_instructions;
+  int max_pops_per_cycle_register_file_write_queue_for_fixed_latency_instructions;
+  int num_threads_granularity_read_regular_register_file_dp_inst;
+  int num_threads_granularity_read_regular_register_file_mem_inst;
+  int num_threads_granularity_read_regular_register_file_sfu_inst;
+  int num_threads_granularity_read_regular_register_file_other_inst;
+  int num_cycles_needed_to_write_a_reg_from_sm_struct_to_subcore;
+  // MOD. End. Remodeling
 
-  // More Step E fields (read by warp_inst_t::generate_*_latencies ported
-  // from MICRO 2025 abstract_hardware_model.cc).
-  unsigned memory_subcore_link_to_sm_byte_size = 0;
-  bool is_store_half_bandwidth_in_the_subcore_link_to_sm_enabled = false;
-  bool is_load_half_bandwidth_in_the_subcore_link_to_sm_enabled = false;
-  unsigned cycles_needed_for_address_calculation = 1;
-  unsigned memory_shared_memory_minimum_latency = 1;
-  unsigned memory_shared_memory_extra_latency_ldsm_multiple_matrix = 0;
-  unsigned memory_l1d_minimum_latency = 1;
-  // Stage 1e-A1: MICRO 2025 derivative-input params (shader.h:2155-2157
-  // equivalent).  Used by gpgpu_sim_config::init() to compute
-  // cycles_needed_for_address_calculation + maximum_*_at_sm_structure.
-  unsigned memory_num_scalar_units_per_subcore = 8;
-  unsigned memory_maximum_coalescing_cycles = 1;
-  unsigned memory_subcore_extra_latency_load_shared_mem = 0;
-  unsigned offset_latency_firts_stage_memory_subcore = 0;  // typo mirrors upstream
-  unsigned dp_sm_shared_queue_size = 0;
-  unsigned tensor_rate_per_cycle = 1;
-  unsigned tensor_extra_latency_16816_fp32_1688_fp32 = 0;
-  unsigned sm_memory_unit_shmem_access_queue_size = 0;
-  unsigned sm_memory_unit_l1d_access_queue_size = 0;
-  unsigned sm_memory_unit_l1t_access_queue_size = 0;
-  unsigned sm_memory_unit_l1c_access_queue_size = 0;
-  unsigned sm_memory_unit_miscellaneous_access_queue_size = 0;
-  unsigned sm_memory_unit_bypass_l1d_directly_go_to_l2_access_queue_size = 0;
+  // MOD. Begin. Parallelism
+  bool is_custom_omp_scheduler_enabled;
+  float custom_omp_scheduler_ratio_to_dynamic;
+  // MOD. End. Parallelism
+
+  // MOD. Begin. InterWarp coalescing
+  bool measure_coalescing_potential_stats;
+  bool is_interwarp_coalescing_enabled;
+  unsigned int num_interwarp_coalescing_tables;
+  unsigned int max_size_interwarp_coalescing_per_table;
+  unsigned int interwarp_coalescing_quanta;
+  double interwarp_coalescing_quanta_warppool_policy_miss_ratio_threshold;
+  unsigned int number_of_coalescers;
+  unsigned int number_of_clusters_for_prt_selection;
+  char* interwarp_coalescing_selection_policy_string;
+  char* prt_selection_policy_string;
+  InterWarpCoalescingSelectionPolicies interwarp_coalescing_selection_policy;
+  PRTSelectionPolicies prt_selection_policy;
+  // MOD. End. InterWarp coalescing
 };
 
 struct shader_core_stats_pod {
@@ -2000,6 +2179,174 @@ struct shader_core_stats_pod {
       shader_core_stats_pod_start[0];  // DO NOT MOVE FROM THE TOP - spaceless
                                        // pointer to the start of this structure
   unsigned long long *shader_cycles;
+
+  // MOD. Begin. Custom Stats
+  //First dimension is the number of kernel. Second dimension is the number of SM of the GPU
+  std::vector<std::vector<unsigned long long>> m_num_sim_winsn_per_shader_per_kernel;
+  std::vector<std::vector<unsigned long long>> shader_active_warps_per_kernel;
+  std::vector<std::vector<unsigned long long>> shader_maximum_theoretical_warps_per_kernel;
+  std::vector<std::vector<unsigned long long>> shader_cycles_per_kernel;
+  std::vector<std::vector<double>> shader_warp_ipc_per_kernel;
+  std::vector<std::vector<double>> shader_occupancy_per_kernel;
+  std::vector<unsigned long long> gpu_cycles_per_kernel;
+  std::vector<double> weighted_average_shader_warp_ipc_per_kernel;
+  std::vector<double> weighted_average_shader_occupancy_per_kernel;
+  std::vector<double> average_num_shader_active_per_kernel;
+  std::vector<unsigned long long> number_of_warps_per_kernel;
+  std::vector<unsigned long long> m_num_sim_winsn_per_shader;
+  std::vector<double> shader_warp_ipc_per_shader;
+
+  double total_weighted_average_warp_ipc_between_shaders;
+  double total_weighted_average_shader_warp_ipc_with_kernels;
+  double total_weighted_average_shader_occupancy;
+  double total_weighted_average_num_shader_active;
+
+  long double total_weighted_average_warps_per_kernel;
+
+  unsigned long long number_of_total_warps;
+
+  unsigned m_last_kernel_id;
+  unsigned m_current_kernel_pos;
+  unsigned numEffectiveIncompleteWarps;
+  unsigned numberOfTotalWarps;
+
+  unsigned long long tot_scheduler_cycles;
+  unsigned long long tot_scheduler_issues;
+
+  unsigned long long tot_num_expected_wb; // MOD. Custom stats
+  unsigned long long tot_num_allocated_wb; // MOD. Custom stats
+
+  unsigned long long tot_fetch_instruction_misalignments; // MOD. Fix misaligned fetched instructions
+  unsigned long long tot_fetch_requests; // MOD. Fix misaligned fetched instructions
+
+  unsigned num_scoreboard_reads_check_collision;// MOD. Scoreboard_reads
+  unsigned num_scoreboard_reads_collision_due_to_max_uses_per_reg;// MOD. Scoreboard_reads
+  unsigned num_scheduler_stall_cycle_due_to_war_scoreboard; // MOD. Scoreboard_reads
+  unsigned num_scheduler_stall_cycle_dependencies_other_reasons_not_war_scoreboard; // MOD. Scoreboard_reads
+
+
+  // MOD. Begin. IBuffer_ooo stats
+  // First dimension is kernel, second is shader id, third dimension is warp
+   
+  std::vector<std::vector<std::vector<unsigned long long>>> ins_issued_per_kernel_per_sid_per_warp;
+  std::vector<std::vector<std::vector<unsigned long long>>> ins_released_wb_per_kernel_per_sid_per_warp;
+  std::vector<std::vector<std::vector<unsigned long long>>> ins_released_opc_per_kernel_per_sid_per_warp;
+  std::vector<std::vector<std::vector<unsigned long long>>> num_flushes_kernel_per_sid_per_warp;
+  std::vector<std::vector<std::vector<unsigned long long>>> num_times_ibooo_empty;
+  std::vector<std::vector<std::vector<unsigned long long>>> num_times_ibooo_empty_evaluated;
+  std::vector<std::vector<std::vector<unsigned long long>>> num_times_ibooo_full;
+  std::vector<std::vector<std::vector<unsigned long long>>> num_times_fetch_ibooo_tried;
+
+  unsigned long long total_ins_issued_per_kernel_per_sid_per_warp;
+  unsigned long long total_ins_released_wb_per_kernel_per_sid_per_warp;
+  unsigned long long total_ins_released_opc_per_kernel_per_sid_per_warp;
+  unsigned long long total_num_flushes_kernel_per_sid_per_warp;
+  unsigned long long total_num_barriers;
+  unsigned long long total_num_returns;
+  unsigned long long total_num_branches;
+  unsigned long long total_num_jumps;
+  unsigned long long total_num_warpsyncs;
+  unsigned long long total_num_bsyncs;
+  unsigned long long total_num_rpcmovs;
+  unsigned long long total_num_yields;
+  unsigned long long total_num_barriers_and_controlflows;
+  unsigned long long total_num_times_ibooo_empty;
+  unsigned long long total_num_times_ibooo_empty_evaluated;
+  unsigned long long total_num_times_ibooo_full;
+  unsigned long long total_num_times_fetch_ibooo_tried;
+  unsigned long long total_ibooo_num_entries_valid_and_not_issued;
+  unsigned long long total_ibooo_num_entries_valid_not_issued_and_ready;
+  unsigned long long total_ibooo_num_entries;
+  unsigned long long total_ibooo_num_times_without_any_candidate;
+  unsigned long long total_ibooo_num_times_without_any_ready_candidate;
+  unsigned long long total_ibooo_evaluations_compute_selection_stats;
+  double total_percentage_ibooo_full;
+  double total_percentage_ibooo_empty;
+  unsigned long long total_instructions_inserted_in_ibooo;
+  unsigned long long total_war_waw_dependencies;
+  unsigned long long total_raw_dependencies;
+  unsigned long long total_stop_point_dependencies;
+  unsigned long long total_memory_reordering_dependencies;
+
+  unsigned long long last_ins_issued_per_kernel_per_sid_per_warp;
+  unsigned long long last_ins_released_wb_per_kernel_per_sid_per_warp;
+  unsigned long long last_ins_released_opc_per_kernel_per_sid_per_warp;
+  unsigned long long last_num_flushes_kernel_per_sid_per_warp;
+  unsigned long long last_num_times_ibooo_empty;
+  unsigned long long last_num_times_ibooo_empty_evaluated;
+  unsigned long long last_num_times_ibooo_full;
+  unsigned long long last_num_times_fetch_ibooo_tried;
+  double last_percentage_ibooo_full;
+  double last_percentage_ibooo_empty;
+  // MOD. End. IBuffer_ooo stats
+
+  // MOD. Begin. VPREG
+  unsigned long long total_vpreg_predication_dependencies;
+  unsigned long long total_vpreg_merges;
+  unsigned long long total_vpreg_extra_rf_reads;
+  unsigned long long total_rf_reads;
+  unsigned int total_number_of_kernels_limited_by_regs;
+  unsigned int total_number_of_kernels_limited_by_ctas;
+  unsigned int total_number_of_kernels_limited_by_threads;
+  unsigned int total_number_of_kernels_limited_by_shared_memory;
+  unsigned int total_number_of_vpreg_decode_rollbacks;
+  unsigned int total_number_of_vpreg_reissues;
+  unsigned int total_number_of_vpreg_not_enough_virtual_at_decode;
+  int max_vpreg_virtual_regs_used_in_subcore;
+  int max_vpreg_physical_regs_used_in_subcore;
+  int max_vpreg_physical_freepool_usage_in_bank;
+  int max_vpreg_number_of_consumers;
+  // MOD. End. VPREG
+
+  // MOD. Begin. OPC custom stats
+  unsigned long long total_number_of_opc_conflicts;
+  unsigned long long total_number_of_opc_requests;
+  
+  unsigned long long num_times_cu_subcore_custom_stats_evaluated;
+  unsigned long long num_times_no_cu_dispatched;
+  unsigned long long num_times_no_cu_allocated_and_nothing_to_allocate;
+  unsigned long long num_times_no_cu_allocated;
+  unsigned long long num_times_no_cu_allocated_due_to_cus_are_full;
+  unsigned long long num_times_no_cu_dispatched_due_to_dispatch_reg_full;
+  unsigned long long num_times_no_cu_dispatched_due_to_no_ready_operands;
+  unsigned long long num_times_no_cu_dispatched_due_to_all_cus_empty;
+  unsigned long long num_times_no_cu_dispatched_and_all_cus_full;
+  unsigned long long num_times_no_cu_dispatched_and_all_cus_full_and_at_least_one_ready;
+  unsigned long long num_times_no_cu_dispatched_and_all_cus_full_and_not_any_ready;
+  unsigned long long num_times_no_cu_dispatched_due_to_dispatch_reg_full_is_mem_op_and_ldst_unit_stalled;
+  unsigned long long num_times_no_cu_dispatched_and_all_cus_full_and_at_least_one_ready_mem_dispatch_full_and_ldst_unit_stalled;
+  unsigned long long total_num_try_ldst_unit_dispatches;
+  unsigned long long total_num_ldst_unit_dispatches_failed_due_to_not_empty_dispatch_reg;
+  // MOD. End. OPC custom stats
+
+  // MOD. Begin. Memory stats
+  std::vector<std::vector<unsigned long long>> l1d_accesses_per_sid_per_bank;
+  std::vector<std::vector<unsigned long long>> l1d_evals_per_sid_per_bank;
+  long double total_avg_usage_l1d_bank;
+  double max_avg_usage_l1d_bank;
+  unsigned long long total_shared_mem_evals;
+  unsigned long long total_shared_mem_accesses;
+  unsigned long long total_num_dp_instructions;
+  unsigned long long total_num_ldst_unit_instructions;
+  unsigned long long total_num_warp_instructions;
+  unsigned long long total_l1d_instructions;
+  unsigned long long total_accesses_l1d_instructions;
+  unsigned long long total_avg_cycles_to_schedule_accesses;
+  unsigned long long total_shared_instructions;
+  unsigned long long total_conflicts_shared_instructions;
+  unsigned long long total_cycles_instructions_in_ldst_unit_dispatch_reg;
+  unsigned long long total_cycles_instructions_in_ldst_unit_arbiter_latch; // MOD. Fixed LDST_Unit model.
+  // MOD. End. Memory stats
+
+  unsigned long long total_cycles_instructions_in_cu; // MOD. CU stats
+
+  // First dimension SM, second warp ID
+  std::vector<std::vector<unsigned long long>> warp_issues_from_last_power_sample; // MOD. Custom powermodel stats
+  std::vector<std::vector<unsigned long long>> bank_wb_from_last_power_sample; // MOD. Custom powermodel stats 
+  std::vector<std::vector<unsigned long long>> collector_unit_allocations_from_last_power_sample; // MOD. Custom powermodel stats 
+  // MOD. End. custom Stats
+
+
   unsigned *m_num_sim_insn;   // number of scalar thread instructions committed
                               // by this shader core
   unsigned *m_num_sim_winsn;  // number of warp instructions committed by this
@@ -2049,31 +2396,33 @@ struct shader_core_stats_pod {
   unsigned *m_active_tensor_core_lanes;
   unsigned *m_active_fu_lanes;
   unsigned *m_active_fu_mem_lanes;
-  double *m_active_exu_threads;  // For power model
-  double *m_active_exu_warps;    // For power model
+  double *m_active_exu_threads; //For power model
+  double *m_active_exu_warps; //For power model
   unsigned *m_n_diverge;  // number of divergence occurring in this shader
-  unsigned gpgpu_n_load_insn;
-  unsigned gpgpu_n_store_insn;
-  unsigned gpgpu_n_shmem_insn;
-  unsigned gpgpu_n_sstarr_insn;
-  unsigned gpgpu_n_tex_insn;
-  unsigned gpgpu_n_const_insn;
-  unsigned gpgpu_n_param_insn;
-  unsigned gpgpu_n_shmem_bkconflict;
-  unsigned gpgpu_n_l1cache_bkconflict;
+  unsigned long long gpgpu_n_load_insn;
+  unsigned long long gpgpu_n_store_insn;
+  unsigned long long gpgpu_n_shmem_insn;
+  unsigned long long gpgpu_n_sstarr_insn;
+  unsigned long long gpgpu_n_tex_insn;
+  unsigned long long gpgpu_n_const_insn;
+  unsigned long long gpgpu_n_param_insn;
+  unsigned long long gpgpu_n_shmem_bkconflict;
+  unsigned long long gpgpu_n_l1cache_bkconflict;
+  unsigned long long gpgpu_n_l1cache_coalescing_conflicts;
   int gpgpu_n_intrawarp_mshr_merge;
   unsigned gpgpu_n_cmem_portconflict;
+  unsigned gpgpu_n_cmem_coalescing_conflicts;
   unsigned gpu_stall_shd_mem_breakdown[N_MEM_STAGE_ACCESS_TYPE]
                                       [N_MEM_STAGE_STALL_TYPE];
   unsigned gpu_reg_bank_conflict_stalls;
   unsigned *shader_cycle_distro;
   unsigned *last_shader_cycle_distro;
   unsigned *num_warps_issuable;
-  unsigned gpgpu_n_stall_shd_mem;
+  unsigned gpgpu_n_stall_dispatch_to_subpipeline_mem;
   unsigned *single_issue_nums;
   unsigned *dual_issue_nums;
 
-  std::atomic<unsigned> ctas_completed;
+  unsigned ctas_completed;
   // memory access classification
   int gpgpu_n_mem_read_local;
   int gpgpu_n_mem_write_local;
@@ -2093,18 +2442,220 @@ struct shader_core_stats_pod {
   unsigned *gpgpu_n_shmem_bank_access;
   long *n_simt_to_mem;  // Interconnect power stats
   long *n_mem_to_simt;
+
+  // MOD. Begin. Remodeling
+  unsigned long long total_num_register_file_cache_hits;
+  unsigned long long total_num_register_file_cache_allocations;
+  unsigned long long total_num_regular_regfile_reads;
+  unsigned long long total_num_regular_regfile_writes;
+  unsigned long long total_num_uniform_regfile_reads;
+  unsigned long long total_num_uniform_regfile_writes;
+  unsigned long long total_num_predicate_regfile_reads;
+  unsigned long long total_num_predicate_regfile_writes;
+  unsigned long long total_num_uniform_predicate_regfile_reads;
+  unsigned long long total_num_uniform_predicate_regfile_writes;
+  unsigned long long total_num_constant_cache_reads;
+  std::set<new_addr_type> all_const_cache_accessed_blocks;
+  std::set<new_addr_type> all_global_memory_accessed_blocks;
+  std::set<unsigned int> all_virtual_pages_accessed;
+
+  unsigned long long total_num_times_wb_evaluated;
+  unsigned long long total_num_times_wb_port_conflict;
+
+  unsigned long long total_num_cycles_issue_stage_evaluated;
+  unsigned long long total_num_cycles_issue_stage_issuing;
+  unsigned long long total_num_cycles_issue_stage_stall_issue_port_busy;
+  unsigned long long total_num_cycles_issue_stage_stall_no_valid_instruction;
+  unsigned long long total_num_cycles_issue_stage_stall_no_warps_ready;
+
+  unsigned long long total_num_cycles_issue_stage_stall_at_least_one_warp_with_fu_occupied;
+  unsigned long long total_num_cycles_issue_stage_stall_at_least_one_warp_waiting_inst_barrier;
+  unsigned long long total_num_cycles_issue_stage_stall_at_least_one_warp_waiting_wait_barrier;
+  unsigned long long total_num_cycles_issue_stage_stall_at_least_one_warp_waiting_yield;
+  unsigned long long total_num_cycles_issue_stage_stall_at_least_one_warp_waiting_stall_count;
+  unsigned long long total_num_cycles_issue_stage_stall_at_least_one_warp_waiting_l1c;
+
+  unsigned int num_kernel_not_in_binary;
+  // MOD. End. Remodeling
+
 };
 
 class shader_core_stats : public shader_core_stats_pod {
  public:
-  shader_core_stats(const shader_core_config *config) {
+  shader_core_stats(const shader_core_config *config, gpgpu_sim *gpu) {
     m_config = config;
     shader_core_stats_pod *pod = reinterpret_cast<shader_core_stats_pod *>(
         this->shader_core_stats_pod_start);
-    memset(pod, 0, sizeof(shader_core_stats_pod));
+    memset(reinterpret_cast<void *>(pod), 0, sizeof(shader_core_stats_pod));
     shader_cycles = (unsigned long long *)calloc(config->num_shader(),
                                                  sizeof(unsigned long long));
     m_num_sim_insn = (unsigned *)calloc(config->num_shader(), sizeof(unsigned));
+
+    // MOD.. Begin. Custom Stats
+    m_last_kernel_id = 0;
+    total_weighted_average_warp_ipc_between_shaders = 0;
+    total_weighted_average_shader_occupancy = 0;
+    total_weighted_average_shader_warp_ipc_with_kernels = 0;
+    total_weighted_average_num_shader_active = 0;
+    m_num_sim_winsn_per_shader.resize(m_config->num_shader());
+    shader_warp_ipc_per_shader.resize(m_config->num_shader());
+
+    tot_scheduler_cycles = 0;
+    tot_scheduler_issues = 0;
+
+    tot_num_expected_wb = 0; // MOD. Custom stats
+    tot_num_allocated_wb = 0; // MOD. Custom stats
+
+    tot_fetch_instruction_misalignments = 0; // MOD. Fix misaligned fetched instructions
+    tot_fetch_requests = 0; // MOD. Fix misaligned fetched instructions
+
+    numEffectiveIncompleteWarps = 0;
+
+    num_scoreboard_reads_check_collision = 0;// MOD. Scoreboard_reads
+    num_scoreboard_reads_collision_due_to_max_uses_per_reg = 0;// MOD. Scoreboard_reads
+    num_scheduler_stall_cycle_due_to_war_scoreboard = 0;// MOD. Scoreboard_reads
+    num_scheduler_stall_cycle_dependencies_other_reasons_not_war_scoreboard = 0;// MOD. Scoreboard_reads
+
+    // MOD. Begin. IBuffer_ooo stats
+    total_ins_issued_per_kernel_per_sid_per_warp = 0;
+    total_ins_released_wb_per_kernel_per_sid_per_warp = 0;
+    total_ins_released_opc_per_kernel_per_sid_per_warp = 0;
+    total_num_flushes_kernel_per_sid_per_warp = 0;
+    total_num_barriers = 0;
+    total_num_returns = 0;
+    total_num_branches = 0;
+    total_num_barriers_and_controlflows = 0;
+    total_num_times_ibooo_empty = 0;
+    total_num_times_ibooo_empty_evaluated = 0;
+    total_num_times_ibooo_full = 0;
+    total_num_times_fetch_ibooo_tried = 0;
+    total_percentage_ibooo_full = 0;
+    total_percentage_ibooo_empty = 0;
+    total_instructions_inserted_in_ibooo = 0;
+    total_war_waw_dependencies = 0;
+    total_raw_dependencies = 0;
+    total_stop_point_dependencies = 0;
+    total_memory_reordering_dependencies = 0;
+    // MOD. End. IBuffer_ooo stats
+
+    // MOD. Begin. VPREG stats
+    total_vpreg_merges = 0;
+    total_vpreg_extra_rf_reads = 0;
+    total_rf_reads = 0;
+    total_number_of_kernels_limited_by_regs = 0;
+    total_number_of_vpreg_decode_rollbacks = 0;
+    total_number_of_vpreg_reissues = 0;
+    total_number_of_vpreg_not_enough_virtual_at_decode = 0;
+    max_vpreg_virtual_regs_used_in_subcore = 0;
+    max_vpreg_physical_regs_used_in_subcore = 0;
+    max_vpreg_physical_freepool_usage_in_bank = 0;
+    max_vpreg_number_of_consumers = 0;
+    total_vpreg_predication_dependencies = 0;
+    // MOD. End. VPREG stats
+
+    // MOD. Begin. OPC custom stats
+    total_number_of_opc_conflicts = 0;
+    total_number_of_opc_requests = 0;
+    num_times_cu_subcore_custom_stats_evaluated = 0;
+    num_times_no_cu_dispatched = 0;
+    num_times_no_cu_allocated_and_nothing_to_allocate = 0;
+    num_times_no_cu_allocated = 0;
+    num_times_no_cu_allocated_due_to_cus_are_full = 0;
+    num_times_no_cu_dispatched_due_to_dispatch_reg_full = 0;
+    num_times_no_cu_dispatched_due_to_no_ready_operands = 0;
+    num_times_no_cu_dispatched_due_to_all_cus_empty = 0;
+    num_times_no_cu_dispatched_and_all_cus_full = 0;
+    num_times_no_cu_dispatched_and_all_cus_full_and_at_least_one_ready = 0;
+    num_times_no_cu_dispatched_and_all_cus_full_and_not_any_ready = 0;
+    num_times_no_cu_dispatched_due_to_dispatch_reg_full_is_mem_op_and_ldst_unit_stalled = 0;
+    num_times_no_cu_dispatched_and_all_cus_full_and_at_least_one_ready_mem_dispatch_full_and_ldst_unit_stalled = 0;
+    total_num_try_ldst_unit_dispatches = 0;
+    total_num_ldst_unit_dispatches_failed_due_to_not_empty_dispatch_reg = 0;
+    total_cycles_instructions_in_cu = 0; // MOD. CU stats
+    // MOD. End. OPC custom stats
+
+    // MOD. Begin. Memory stats
+    l1d_accesses_per_sid_per_bank.resize(m_config->num_shader());
+    l1d_evals_per_sid_per_bank.resize(m_config->num_shader());
+    max_avg_usage_l1d_bank = 0;
+    total_shared_mem_evals = 0;
+    total_shared_mem_accesses = 0;
+    total_num_ldst_unit_instructions = 0;
+    total_num_dp_instructions = 0;
+    total_num_warp_instructions = 0;
+    total_l1d_instructions = 0;
+    total_accesses_l1d_instructions = 0;
+    total_avg_cycles_to_schedule_accesses = 0;
+    total_cycles_instructions_in_ldst_unit_dispatch_reg = 0;
+    total_cycles_instructions_in_ldst_unit_arbiter_latch = 0; // MOD. Fixed LDST_Unit model.
+    total_shared_instructions = 0;
+    total_conflicts_shared_instructions = 0;
+    // MOD. End. Memory stats
+
+    // MOD. Begin. Custom powermodel stats
+    warp_issues_from_last_power_sample.resize(m_config->num_shader());
+    bank_wb_from_last_power_sample.resize(m_config->num_shader());
+    collector_unit_allocations_from_last_power_sample.resize(m_config->num_shader());
+
+    unsigned int max_num_j_iters = std::max(std::max(m_config->max_warps_per_shader, m_config->gpgpu_num_reg_banks), (unsigned int)m_config->gpgpu_operand_collector_num_units_gen);
+    for(unsigned int i = 0; i < m_config->num_shader(); i++) {
+        warp_issues_from_last_power_sample[i].resize(m_config->max_warps_per_shader);
+        bank_wb_from_last_power_sample[i].resize(m_config->gpgpu_num_reg_banks);
+        collector_unit_allocations_from_last_power_sample[i].resize(m_config->gpgpu_operand_collector_num_units_gen);
+        
+        for(unsigned int j = 0; j < max_num_j_iters; j++) {
+          if(j < m_config->max_warps_per_shader) {
+            warp_issues_from_last_power_sample[i][j] = 0;
+          }
+          if(j < m_config->gpgpu_num_reg_banks) {
+            bank_wb_from_last_power_sample[i][j] = 0;
+          }
+          if(j < m_config->gpgpu_operand_collector_num_units_gen) {
+            collector_unit_allocations_from_last_power_sample[i][j] = 0;
+          }
+        }
+        l1d_accesses_per_sid_per_bank[i].resize( m_config->m_L1D_config.l1_banks); // MOD. Memory stats
+        l1d_evals_per_sid_per_bank[i].resize( m_config->m_L1D_config.l1_banks); // MOD. Memory stats
+    }
+    // MOD. End. Custom powermodel stats
+
+    // MOD. Begin. Remodeling
+    total_num_register_file_cache_hits = 0;
+    total_num_register_file_cache_allocations = 0;
+    total_num_regular_regfile_reads = 0;
+    total_num_regular_regfile_writes = 0;
+    total_num_uniform_regfile_reads = 0;
+    total_num_uniform_regfile_writes = 0;
+    total_num_predicate_regfile_reads = 0;
+    total_num_predicate_regfile_writes = 0;
+    total_num_uniform_predicate_regfile_reads = 0;
+    total_num_uniform_predicate_regfile_writes = 0;
+    total_num_constant_cache_reads = 0;
+    all_const_cache_accessed_blocks.clear();
+    all_global_memory_accessed_blocks.clear();
+    all_virtual_pages_accessed.clear();
+
+    total_num_times_wb_evaluated = 0;
+    total_num_times_wb_port_conflict = 0;
+
+    total_num_cycles_issue_stage_evaluated = 0;
+    total_num_cycles_issue_stage_issuing = 0;
+    total_num_cycles_issue_stage_stall_issue_port_busy = 0;
+    total_num_cycles_issue_stage_stall_no_valid_instruction = 0;
+    total_num_cycles_issue_stage_stall_no_warps_ready = 0;
+
+    total_num_cycles_issue_stage_stall_at_least_one_warp_with_fu_occupied = 0;
+    total_num_cycles_issue_stage_stall_at_least_one_warp_waiting_inst_barrier = 0;
+    total_num_cycles_issue_stage_stall_at_least_one_warp_waiting_wait_barrier = 0;
+    total_num_cycles_issue_stage_stall_at_least_one_warp_waiting_yield = 0;
+    total_num_cycles_issue_stage_stall_at_least_one_warp_waiting_stall_count = 0;
+    total_num_cycles_issue_stage_stall_at_least_one_warp_waiting_l1c = 0;
+
+    num_kernel_not_in_binary = 0;
+    // MOD. End. Remodeling
+
+    // Mod. End. Custom Stats
+
     m_num_sim_winsn =
         (unsigned *)calloc(config->num_shader(), sizeof(unsigned));
     m_last_num_sim_winsn =
@@ -2121,41 +2672,56 @@ class shader_core_stats : public shader_core_stats_pod {
         (unsigned *)calloc(config->num_shader(), sizeof(unsigned));
     m_num_loadqueued_insn =
         (unsigned *)calloc(config->num_shader(), sizeof(unsigned));
-    m_num_tex_inst = (unsigned *)calloc(config->num_shader(), sizeof(unsigned));
+    m_num_tex_inst = 
+        (unsigned *)calloc(config->num_shader(), sizeof(unsigned));
     m_num_INTdecoded_insn =
         (unsigned *)calloc(config->num_shader(), sizeof(unsigned));
-    m_num_ialu_acesses = (double *)calloc(config->num_shader(), sizeof(double));
-    m_num_fp_acesses = (double *)calloc(config->num_shader(), sizeof(double));
-    m_num_imul_acesses = (double *)calloc(config->num_shader(), sizeof(double));
+    m_num_ialu_acesses =
+        (double *)calloc(config->num_shader(), sizeof(double));
+    m_num_fp_acesses =
+        (double *)calloc(config->num_shader(), sizeof(double));
+    m_num_imul_acesses =
+        (double *)calloc(config->num_shader(), sizeof(double));
     m_num_imul24_acesses =
         (double *)calloc(config->num_shader(), sizeof(double));
     m_num_imul32_acesses =
         (double *)calloc(config->num_shader(), sizeof(double));
     m_num_fpmul_acesses =
         (double *)calloc(config->num_shader(), sizeof(double));
-    m_num_idiv_acesses = (double *)calloc(config->num_shader(), sizeof(double));
+    m_num_idiv_acesses =
+        (double *)calloc(config->num_shader(), sizeof(double));
     m_num_fpdiv_acesses =
         (double *)calloc(config->num_shader(), sizeof(double));
-    m_num_dp_acesses = (double *)calloc(config->num_shader(), sizeof(double));
-    m_num_dpmul_acesses =
+    m_num_dp_acesses = 
+        (double*) calloc(config->num_shader(),sizeof(double));
+    m_num_dpmul_acesses = 
+        (double*) calloc(config->num_shader(),sizeof(double));
+    m_num_dpdiv_acesses = 
+        (double*) calloc(config->num_shader(),sizeof(double));
+    m_num_sp_acesses =
         (double *)calloc(config->num_shader(), sizeof(double));
-    m_num_dpdiv_acesses =
+    m_num_sfu_acesses =
         (double *)calloc(config->num_shader(), sizeof(double));
-    m_num_sp_acesses = (double *)calloc(config->num_shader(), sizeof(double));
-    m_num_sfu_acesses = (double *)calloc(config->num_shader(), sizeof(double));
-    m_num_tensor_core_acesses =
+    m_num_tensor_core_acesses = 
         (double *)calloc(config->num_shader(), sizeof(double));
     m_num_const_acesses =
         (double *)calloc(config->num_shader(), sizeof(double));
-    m_num_tex_acesses = (double *)calloc(config->num_shader(), sizeof(double));
-    m_num_sqrt_acesses = (double *)calloc(config->num_shader(), sizeof(double));
-    m_num_log_acesses = (double *)calloc(config->num_shader(), sizeof(double));
-    m_num_sin_acesses = (double *)calloc(config->num_shader(), sizeof(double));
-    m_num_exp_acesses = (double *)calloc(config->num_shader(), sizeof(double));
-    m_num_mem_acesses = (double *)calloc(config->num_shader(), sizeof(double));
+    m_num_tex_acesses =
+        (double *)calloc(config->num_shader(), sizeof(double));
+    m_num_sqrt_acesses = 
+        (double*) calloc(config->num_shader(),sizeof(double));
+    m_num_log_acesses = 
+        (double*) calloc(config->num_shader(),sizeof(double));
+    m_num_sin_acesses = 
+        (double*) calloc(config->num_shader(),sizeof(double));
+    m_num_exp_acesses = 
+        (double*) calloc(config->num_shader(),sizeof(double));
+    m_num_mem_acesses =
+        (double *)calloc(config->num_shader(), sizeof(double));
     m_num_sp_committed =
         (unsigned *)calloc(config->num_shader(), sizeof(unsigned));
-    m_num_tlb_hits = (unsigned *)calloc(config->num_shader(), sizeof(unsigned));
+    m_num_tlb_hits = 
+        (unsigned *)calloc(config->num_shader(), sizeof(unsigned));
     m_num_tlb_accesses =
         (unsigned *)calloc(config->num_shader(), sizeof(unsigned));
     m_active_sp_lanes =
@@ -2168,7 +2734,8 @@ class shader_core_stats : public shader_core_stats_pod {
         (unsigned *)calloc(config->num_shader(), sizeof(unsigned));
     m_active_exu_threads =
         (double *)calloc(config->num_shader(), sizeof(double));
-    m_active_exu_warps = (double *)calloc(config->num_shader(), sizeof(double));
+    m_active_exu_warps =
+        (double *)calloc(config->num_shader(), sizeof(double));
     m_active_fu_mem_lanes =
         (unsigned *)calloc(config->num_shader(), sizeof(unsigned));
     m_num_sfu_committed =
@@ -2183,11 +2750,12 @@ class shader_core_stats : public shader_core_stats_pod {
         (unsigned *)calloc(config->num_shader(), sizeof(unsigned));
     m_non_rf_operands =
         (unsigned *)calloc(config->num_shader(), sizeof(unsigned));
-    m_n_diverge = (unsigned *)calloc(config->num_shader(), sizeof(unsigned));
+    m_n_diverge = 
+        (unsigned *)calloc(config->num_shader(), sizeof(unsigned));
     shader_cycle_distro =
         (unsigned *)calloc(config->warp_size + 3, sizeof(unsigned));
     last_shader_cycle_distro =
-        (unsigned *)calloc(m_config->warp_size + 3, sizeof(unsigned));
+        (unsigned *)calloc(config->warp_size + 3, sizeof(unsigned));
     single_issue_nums =
         (unsigned *)calloc(config->gpgpu_num_sched_per_core, sizeof(unsigned));
     dual_issue_nums =
@@ -2205,25 +2773,7 @@ class shader_core_stats : public shader_core_stats_pod {
 
     m_shader_dynamic_warp_issue_distro.resize(config->num_shader());
     m_shader_warp_slot_issue_distro.resize(config->num_shader());
-
-    // Stage 1f P0-A: MICRO 2025 shader.h:2577-2619 — memory stats indexed by
-    // [sid][bank] in ldst_unit_sm::L1_latency_queue_cycle (line 515, 538).
-    l1d_accesses_per_sid_per_bank.resize(m_config->num_shader());
-    l1d_evals_per_sid_per_bank.resize(m_config->num_shader());
-    // Stage 1g G5.5: MICRO 2025 shader.h:2596-2615 power-model per-cycle
-    // samples. SM::issue_warp reads warp_issues_from_last_power_sample[sid][wid].
-    warp_issues_from_last_power_sample.resize(m_config->num_shader());
-    bank_wb_from_last_power_sample.resize(m_config->num_shader());
-    collector_unit_allocations_from_last_power_sample.resize(m_config->num_shader());
-    // Stage 1g G5.6: 1D [sid] vector used by SM::warp_inst_complete (sm.cc:1470).
-    m_num_sim_winsn_per_shader.resize(m_config->num_shader());
-    for (unsigned i = 0; i < m_config->num_shader(); i++) {
-      l1d_accesses_per_sid_per_bank[i].resize(m_config->m_L1D_config.l1_banks);
-      l1d_evals_per_sid_per_bank[i].resize(m_config->m_L1D_config.l1_banks);
-      warp_issues_from_last_power_sample[i].resize(m_config->max_warps_per_shader);
-      bank_wb_from_last_power_sample[i].resize(m_config->gpgpu_num_reg_banks);
-      collector_unit_allocations_from_last_power_sample[i].resize(m_config->gpgpu_operand_collector_num_units_gen);
-    }
+    m_gpu = gpu;
   }
 
   ~shader_core_stats() {
@@ -2231,6 +2781,8 @@ class shader_core_stats : public shader_core_stats_pod {
     delete m_incoming_traffic_stats;
     free(m_num_sim_insn);
     free(m_num_sim_winsn);
+    free(m_pipeline_duty_cycle);
+    free(m_num_decoded_insn);
     free(m_num_FPdecoded_insn);
     free(m_num_INTdecoded_insn);
     free(m_num_storequeued_insn);
@@ -2276,7 +2828,94 @@ class shader_core_stats : public shader_core_stats_pod {
     free(m_n_diverge);
     free(shader_cycle_distro);
     free(last_shader_cycle_distro);
+    free(n_simt_to_mem);
+    free(n_mem_to_simt);
+    free(shader_cycles);
+    free(m_last_num_sim_insn);
+    free(single_issue_nums);
+    free(dual_issue_nums);
+
+    free(gpgpu_n_shmem_bank_access);
+    free(m_last_num_sim_winsn);
   }
+
+  // MOD. Begin. Custom Stats
+  void allocate_for_a_new_kernel() {
+    m_last_kernel_id +=1;
+    m_current_kernel_pos = m_last_kernel_id - 1;
+
+    gpu_cycles_per_kernel.resize(m_last_kernel_id);
+    weighted_average_shader_warp_ipc_per_kernel.resize(m_last_kernel_id);
+    weighted_average_shader_occupancy_per_kernel.resize(m_last_kernel_id);
+    average_num_shader_active_per_kernel.resize(m_last_kernel_id);
+    number_of_warps_per_kernel.resize(m_last_kernel_id);
+
+    m_num_sim_winsn_per_shader_per_kernel.resize(m_last_kernel_id);
+    shader_active_warps_per_kernel.resize(m_last_kernel_id);
+    shader_maximum_theoretical_warps_per_kernel.resize(m_last_kernel_id);
+    shader_cycles_per_kernel.resize(m_last_kernel_id);
+    shader_warp_ipc_per_kernel.resize(m_last_kernel_id);
+    shader_occupancy_per_kernel.resize(m_last_kernel_id);
+
+    m_num_sim_winsn_per_shader_per_kernel[m_current_kernel_pos].resize(m_config->num_shader());
+    shader_active_warps_per_kernel[m_current_kernel_pos].resize(m_config->num_shader());
+    shader_maximum_theoretical_warps_per_kernel[m_current_kernel_pos].resize(m_config->num_shader());
+    shader_cycles_per_kernel[m_current_kernel_pos].resize(m_config->num_shader());
+    shader_warp_ipc_per_kernel[m_current_kernel_pos].resize(m_config->num_shader());
+    shader_occupancy_per_kernel[m_current_kernel_pos].resize(m_config->num_shader());
+    // MOD. IBuffer_ooo. Begin stats
+    ins_issued_per_kernel_per_sid_per_warp.resize(m_last_kernel_id);
+    ins_released_opc_per_kernel_per_sid_per_warp.resize(m_last_kernel_id);
+    ins_released_wb_per_kernel_per_sid_per_warp.resize(m_last_kernel_id);
+    num_flushes_kernel_per_sid_per_warp.resize(m_last_kernel_id);
+    num_times_ibooo_empty.resize(m_last_kernel_id);
+    num_times_ibooo_empty_evaluated.resize(m_last_kernel_id);
+    num_times_ibooo_full.resize(m_last_kernel_id);
+    num_times_fetch_ibooo_tried.resize(m_last_kernel_id);
+    ins_issued_per_kernel_per_sid_per_warp[m_current_kernel_pos].resize(m_config->num_shader());
+    ins_released_opc_per_kernel_per_sid_per_warp[m_current_kernel_pos].resize(m_config->num_shader());
+    ins_released_wb_per_kernel_per_sid_per_warp[m_current_kernel_pos].resize(m_config->num_shader());
+    num_flushes_kernel_per_sid_per_warp[m_current_kernel_pos].resize(m_config->num_shader());
+    num_times_ibooo_empty[m_current_kernel_pos].resize(m_config->num_shader());
+    num_times_ibooo_empty_evaluated[m_current_kernel_pos].resize(m_config->num_shader());
+    num_times_ibooo_full[m_current_kernel_pos].resize(m_config->num_shader());
+    num_times_fetch_ibooo_tried[m_current_kernel_pos].resize(m_config->num_shader());
+    for(unsigned int i = 0; i < m_config->num_shader(); i++)
+    {
+      ins_issued_per_kernel_per_sid_per_warp[m_current_kernel_pos][i].resize(m_config->max_warps_per_shader);
+      ins_released_opc_per_kernel_per_sid_per_warp[m_current_kernel_pos][i].resize(m_config->max_warps_per_shader);
+      ins_released_wb_per_kernel_per_sid_per_warp[m_current_kernel_pos][i].resize(m_config->max_warps_per_shader);
+      num_flushes_kernel_per_sid_per_warp[m_current_kernel_pos][i].resize(m_config->max_warps_per_shader);
+      num_times_ibooo_empty[m_current_kernel_pos][i].resize(m_config->max_warps_per_shader);
+      num_times_ibooo_empty_evaluated[m_current_kernel_pos][i].resize(m_config->max_warps_per_shader);
+      num_times_ibooo_full[m_current_kernel_pos][i].resize(m_config->max_warps_per_shader);
+      num_times_fetch_ibooo_tried[m_current_kernel_pos][i].resize(m_config->max_warps_per_shader);
+      for(unsigned int j = 0; j < m_config->max_warps_per_shader; j++)
+      {
+        ins_issued_per_kernel_per_sid_per_warp[m_current_kernel_pos][i][j] = 0;
+        ins_released_opc_per_kernel_per_sid_per_warp[m_current_kernel_pos][i][j] = 0;
+        ins_released_wb_per_kernel_per_sid_per_warp[m_current_kernel_pos][i][j] = 0;
+        num_flushes_kernel_per_sid_per_warp[m_current_kernel_pos][i][j] = 0;
+        num_times_ibooo_empty[m_current_kernel_pos][i][j] = 0;
+        num_times_ibooo_empty_evaluated[m_current_kernel_pos][i][j] = 0;
+        num_times_ibooo_full[m_current_kernel_pos][i][j] = 0;
+        num_times_fetch_ibooo_tried[m_current_kernel_pos][i][j] = 0;
+      }
+    }
+    // MOD. IBuffer_ooo. Begin stats
+  }
+
+  void print_custom_shader_stats(FILE *fout) const; // MOD.
+  void print_remodeling_stats(FILE *fout); // MOD. Remodeling
+  void print_coalescing_stats(FILE *fout); 
+  void compute_ibuffer_ooo_stats(); // MOD. IBuffer_ooo
+  void print_ibuffer_ooo_stats(FILE *fout) const; // MOD. IBuffer_ooo
+  void print_vpreg_stats(FILE *fout) const; // MOD. VPREG
+  void print_single_custom_shader_stat_long(FILE *fout, std::string stat_name, std::vector<std::vector<unsigned long long>> vector_stat) const;
+  void print_single_custom_shader_stat_double(FILE *fout, std::string stat_name, std::vector<std::vector<double>> vector_stat) const;
+  void compute_derived_custom_stats();
+
+  // MOD. End. Custom Stats
 
   void new_grid() {}
 
@@ -2285,7 +2924,7 @@ class shader_core_stats : public shader_core_stats_pod {
 
   void visualizer_print(gzFile visualizer_file);
 
-  void print(FILE *fout) const;
+  void print(FILE *fout);
 
   const std::vector<std::vector<unsigned>> &get_dynamic_warp_issue() const {
     return m_shader_dynamic_warp_issue_distro;
@@ -2295,11 +2934,13 @@ class shader_core_stats : public shader_core_stats_pod {
     return m_shader_warp_slot_issue_distro;
   }
 
- private:
-  const shader_core_config *m_config;
-
   traffic_breakdown *m_outgoing_traffic_stats;  // core to memory partitions
   traffic_breakdown *m_incoming_traffic_stats;  // memory partition to core
+
+ private:
+  const shader_core_config *my_custom_config; // MOD. Declared attribute to prevent crashing due to segFault because of adding to many stats doesn't like it
+  const shader_core_config *m_config;
+
 
   // Counts the instructions issued for each dynamic warp.
   std::vector<std::vector<unsigned>> m_shader_dynamic_warp_issue_distro;
@@ -2307,56 +2948,15 @@ class shader_core_stats : public shader_core_stats_pod {
   std::vector<std::vector<unsigned>> m_shader_warp_slot_issue_distro;
   std::vector<unsigned> m_last_shader_warp_slot_issue_distro;
 
+  gpgpu_sim *m_gpu;
+
   friend class power_stat_t;
   friend class shader_core_ctx;
   friend class ldst_unit;
   friend class simt_core_cluster;
-  friend class sst_simt_core_cluster;
   friend class scheduler_unit;
   friend class TwoLevelScheduler;
   friend class LooseRoundRobbinScheduler;
-
-  // MICRO 2025 port: per-kernel stat-array index used by SM::cycle() to bump
-  // shader_cycles_per_kernel[m_current_kernel_pos][sid].
- public:
-  unsigned m_current_kernel_pos = 0;
-  unsigned m_last_kernel_id = 0;
-
-  std::vector<std::vector<unsigned long long>> m_num_sim_winsn_per_shader_per_kernel;
-  std::vector<std::vector<unsigned long long>> shader_active_warps_per_kernel;
-  std::vector<std::vector<unsigned long long>> shader_maximum_theoretical_warps_per_kernel;
-  std::vector<std::vector<unsigned long long>> shader_cycles_per_kernel;
-  std::vector<unsigned long long> number_of_warps_per_kernel;
-  std::vector<unsigned long long> m_num_sim_winsn_per_shader;
-
-  // MICRO 2025 shader.h:2843 — called from gpgpu_sim::launch() on every new
-  // kernel so per_kernel_pos indexing in SM::cycle/init_warps always has a
-  // valid slot. We only resize vectors we actually port (OoO IBuffer stats
-  // intentionally skipped).
-  void allocate_for_a_new_kernel() {
-    m_last_kernel_id += 1;
-    m_current_kernel_pos = m_last_kernel_id - 1;
-
-    number_of_warps_per_kernel.resize(m_last_kernel_id);
-    m_num_sim_winsn_per_shader_per_kernel.resize(m_last_kernel_id);
-    shader_active_warps_per_kernel.resize(m_last_kernel_id);
-    shader_maximum_theoretical_warps_per_kernel.resize(m_last_kernel_id);
-    shader_cycles_per_kernel.resize(m_last_kernel_id);
-
-    m_num_sim_winsn_per_shader_per_kernel[m_current_kernel_pos].resize(m_config->num_shader());
-    shader_active_warps_per_kernel[m_current_kernel_pos].resize(m_config->num_shader());
-    shader_maximum_theoretical_warps_per_kernel[m_current_kernel_pos].resize(m_config->num_shader());
-    shader_cycles_per_kernel[m_current_kernel_pos].resize(m_config->num_shader());
-  }
-  unsigned num_scoreboard_reads_check_collision = 0;
-  unsigned num_scoreboard_reads_collision_due_to_max_uses_per_reg = 0;
-  std::vector<std::vector<unsigned long long>> l1d_accesses_per_sid_per_bank;
-  std::vector<std::vector<unsigned long long>> l1d_evals_per_sid_per_bank;
-  std::vector<std::vector<unsigned long long>> warp_issues_from_last_power_sample;
-  // Stage 1g G5.5: MICRO 2025 shader.h:2596-2604 power-model per-cycle samples,
-  // resized in ctor below. Accessed by SM::issue_warp / SM::cycle.
-  std::vector<std::vector<unsigned long long>> bank_wb_from_last_power_sample;
-  std::vector<std::vector<unsigned long long>> collector_unit_allocations_from_last_power_sample;
 };
 
 class memory_config;
@@ -2369,20 +2969,18 @@ class shader_core_mem_fetch_allocator : public mem_fetch_allocator {
     m_memory_config = config;
   }
   mem_fetch *alloc(new_addr_type addr, mem_access_type type, unsigned size,
-                   bool wr, unsigned long long cycle,
-                   unsigned long long streamID) const;
+                   bool wr, unsigned long long cycle) const;
   mem_fetch *alloc(new_addr_type addr, mem_access_type type,
                    const active_mask_t &active_mask,
                    const mem_access_byte_mask_t &byte_mask,
                    const mem_access_sector_mask_t &sector_mask, unsigned size,
                    bool wr, unsigned long long cycle, unsigned wid,
-                   unsigned sid, unsigned tpc, mem_fetch *original_mf,
-                   unsigned long long streamID) const;
+                   unsigned sid, unsigned tpc, mem_fetch *original_mf) const;
   mem_fetch *alloc(const warp_inst_t &inst, const mem_access_t &access,
                    unsigned long long cycle) const {
     warp_inst_t inst_copy = inst;
     mem_fetch *mf = new mem_fetch(
-        access, &inst_copy, inst.get_streamID(),
+        access, &inst_copy,
         access.is_write() ? WRITE_PACKET_SIZE : READ_PACKET_SIZE,
         inst.warp_id(), m_core_id, m_cluster_id, m_memory_config, cycle);
     return mf;
@@ -2394,42 +2992,6 @@ class shader_core_mem_fetch_allocator : public mem_fetch_allocator {
   const memory_config *m_memory_config;
 };
 
-// Per-SM local stats for OpenMP parallelization.
-// Accumulated locally during parallel region, flushed to globals in serial.
-// Aligned to cache line to avoid false sharing between SMs.
-struct alignas(64) per_sm_local_stats {
-  unsigned long long gpu_sim_insn = 0;
-  unsigned made_write_mfs = 0;
-  unsigned made_read_mfs = 0;
-  int gpgpu_n_mem_read_local = 0;
-  int gpgpu_n_mem_write_local = 0;
-  int gpgpu_n_mem_texture = 0;
-  int gpgpu_n_mem_const = 0;
-  int gpgpu_n_mem_read_global = 0;
-  int gpgpu_n_mem_write_global = 0;
-  int gpgpu_n_mem_read_inst = 0;
-  int gpgpu_n_mem_l2_writeback = 0;
-  int gpgpu_n_mem_l1_write_allocate = 0;
-  int gpgpu_n_mem_l2_write_allocate = 0;
-  // Per-SM instruction counters (moved from shared arrays to avoid
-  // false sharing between adjacent SM ids).
-  unsigned m_num_sim_insn = 0;
-  unsigned m_num_sim_winsn = 0;
-  unsigned m_last_num_sim_insn = 0;
-  unsigned m_last_num_sim_winsn = 0;
-  unsigned m_num_decoded_insn = 0;
-  unsigned m_num_INTdecoded_insn = 0;
-  unsigned m_num_FPdecoded_insn = 0;
-  unsigned m_num_sp_committed = 0;
-  unsigned m_num_sfu_committed = 0;
-  unsigned m_num_mem_committed = 0;
-};
-
-// Stage 1e: multi-inheritance to match MICRO 2025 (shader.h:2995).  Adding
-// shader_core_ctx_wrapper as a second base lets m_core / m_shader dispatch
-// through the abstract wrapper interface, so trace_shader_core_ctx and SM
-// (remodeling/) can both be treated uniformly.  core_t kept for legacy PTX
-// functional-sim plumbing.
 class shader_core_ctx : public core_t, public shader_core_ctx_wrapper {
  public:
   // creator:
@@ -2437,73 +2999,25 @@ class shader_core_ctx : public core_t, public shader_core_ctx_wrapper {
                   unsigned shader_id, unsigned tpc_id,
                   const shader_core_config *config,
                   const memory_config *mem_config, shader_core_stats *stats);
+  void init() override {};
+  bool  warp_waiting_grid_barrier(unsigned warp_id) override { return false; }
+  void num_cycles_to_stall_SM(unsigned int num_cycles) override {};
+  Scoreboard_reads* get_Scoreboard_reads(); // MOD. Fix WAR at baseline
+  shader_core_stats* get_stats() {return m_stats;} // MOD. VPREG
+  ldst_unit* get_ldst_unit() {return m_ldst_unit;} // MOD. OPC stats
 
-  // MICRO 2025 port (Stage 1d.4+5): LOOG virtuals — stubbed to "disabled"
-  // in the vanilla core. `trace_shader_core_ctx` (trace_driven.h) overrides
-  // them with the same impl, matching MICRO 2025's shader.h:3555-3556.
-  // LOOG itself is not yet implemented; the config field `is_loog_enabled`
-  // stays false until a future step wires it up.
-  // Stage 1e: explicit disambiguation for methods inherited from BOTH core_t
-  // and shader_core_ctx_wrapper.  Matches MICRO 2025 shader.h:3017-3021.
-  kernel_info_t *get_kernel_info() override {
-    return this->core_t::get_kernel_info();
-  }
+  bool is_subcore_active(unsigned sub_core_id); // MOD.
+
+  void create_gpu_per_sm_stats(Element_stats &all_stats) override {}
+  void reset_cycless_access_history() override {}
+  void gather_gpu_per_sm_stats(Element_stats &all_stats, coalescingStatsAcrossSms& coal_stats_l1d, coalescingStatsAcrossSms& coal_stats_const, coalescingStatsAcrossSms& coal_stats_sharedmem) override {}
+  void gather_gpu_per_sm_single_stat(Element_stats &all_stats, std::string stat_name) override {}
+  void increment_sm_stat_by_integer(std::string stat_name, int val_to_increment) override {}
+
+  kernel_info_t *get_kernel_info() override { return this->core_t::get_kernel_info(); }
   gpgpu_sim *get_gpu() override { return this->core_t::get_gpu(); }
   bool ptx_thread_done(unsigned hw_thread_id) const override {
     return this->core_t::ptx_thread_done(hw_thread_id);
-  }
-
-  // MICRO 2025 port (Stage 1d.4+5): LOOG virtuals — stubbed to "disabled"
-  // in the vanilla core. `trace_shader_core_ctx` (trace_driven.h) overrides
-  // them with the same impl, matching MICRO 2025's shader.h:3555-3556.
-  RRS* get_loog_rrs() override { return nullptr; }
-  bool get_is_loog_enabled() override { return m_config->is_loog_enabled; }
-
-  // MICRO 2025 port (Stage 1d.4+5): overridable init hook + per-SM stats
-  // collection API (matches shader.h:3002-3013 in MICRO 2025).  Vanilla
-  // shader_core_ctx keeps these as no-ops; remodeling/ SM class provides
-  // the real impl.  trace_driven.cc calls init() + create_gpu_per_sm_stats
-  // per shader at cluster setup.
-  void init() override {}
-  void create_gpu_per_sm_stats(Element_stats &all_stats) override {}
-  void gather_gpu_per_sm_stats(
-      Element_stats &all_stats,
-      coalescingStatsAcrossSms &coal_stats_l1d,
-      coalescingStatsAcrossSms &coal_stats_const,
-      coalescingStatsAcrossSms &coal_stats_sharedmem) override {}
-  void gather_gpu_per_sm_single_stat(
-      Element_stats &all_stats, std::string stat_name) override {}
-  // Stage 1e: additional wrapper pure-virtuals stubbed to no-ops / safe
-  // defaults in the vanilla path; remodeling/SM provides real impls.
-  bool warp_waiting_grid_barrier(unsigned warp_id) override { return false; }
-  void num_cycles_to_stall_SM(unsigned int num_cycles) override {}
-  void reset_cycless_access_history() override {}
-  void increment_sm_stat_by_integer(std::string stat_name,
-                                    int val_to_increment) override {}
-  // Stage 1e: remaining wrapper pure-virtuals.  MICRO 2025 inlines these in
-  // shader_core_ctx; we mirror that (shader.h:3006, 3056, 3361, 3364, 3368,
-  // 3508 and the per-stats collector).
-  shader_core_stats *get_stats() override { return m_stats; }
-  shd_warp_t *get_shd_warp(int id) override { return m_warp[id]; }
-  void set_subcore_req_fetch_L1I_priority(int /*prio*/) override {}
-  unsigned int get_num_subcores() override {
-    // Vanilla: 1 subcore per SM (no sub-core partition).  Remodeling/SM
-    // overrides with m_config->num_subcores_in_SM.
-    return 1;
-  }
-  void get_L0I_sub_stats(struct cache_sub_stats &/*css*/) const override {}
-  // Defined out-of-line in shader.cc because gpgpu_sim is incomplete here.
-  unsigned long long get_current_gpu_cycle() override;
-  // Trace-driven kernels don't rewrite PCs; identity mapping is fine for
-  // both vanilla and trace-driven.  MICRO 2025 SM path overrides when
-  // compiled with LOOG enabled.
-  address_type from_local_pc_to_global_pc_address(address_type local_pc,
-                                                  unsigned int /*unique_function_id*/) override {
-    return local_pc;
-  }
-  address_type from_global_pc_address_to_local_pc(address_type global_pc,
-                                                  unsigned int /*unique_function_id*/) override {
-    return global_pc;
   }
 
   // used by simt_core_cluster:
@@ -2539,14 +3053,11 @@ class shader_core_ctx : public core_t, public shader_core_ctx_wrapper {
       return 0;
   }
   kernel_info_t *get_kernel() { return m_kernel; }
-  unsigned get_sid() const { return m_sid; }
+  unsigned int get_sid() const override { return m_sid; }
 
   // used by functional simulation:
   // modifiers
   virtual void warp_exit(unsigned warp_id);
-
-  // Ni: Unset ldgdepbar
-  void unset_depbar(const warp_inst_t &inst);
 
   // accessors
   virtual bool warp_waiting_at_barrier(unsigned warp_id) const;
@@ -2566,15 +3077,17 @@ class shader_core_ctx : public core_t, public shader_core_ctx_wrapper {
   bool warp_waiting_at_mem_barrier(unsigned warp_id);
   void set_max_cta(const kernel_info_t &kernel);
   void warp_inst_complete(const warp_inst_t &inst);
+  void customStatsWarpActiveLanes(const warp_inst_t &inst); // MOD. Custom Stats
 
   // accessors
   std::list<unsigned> get_regs_written(const inst_t &fvt) const;
-  const shader_core_config *get_config() const { return m_config; }
+  const shader_core_config *get_config() const override { return m_config; }
   void print_cache_stats(FILE *fp, unsigned &dl1_accesses,
                          unsigned &dl1_misses);
 
   void get_cache_stats(cache_stats &cs);
   void get_L1I_sub_stats(struct cache_sub_stats &css) const;
+  void get_L0I_sub_stats(struct cache_sub_stats &css) const; // MOD. L0I
   void get_L1D_sub_stats(struct cache_sub_stats &css) const;
   void get_L1C_sub_stats(struct cache_sub_stats &css) const;
   void get_L1T_sub_stats(struct cache_sub_stats &css) const;
@@ -2587,244 +3100,206 @@ class shader_core_ctx : public core_t, public shader_core_ctx_wrapper {
 
   void incload_stat() { m_stats->m_num_loadqueued_insn[m_sid]++; }
   void incstore_stat() { m_stats->m_num_storequeued_insn[m_sid]++; }
-  void incialu_stat(unsigned active_count, double latency) {
-    if (m_config->gpgpu_clock_gated_lanes == false) {
-      m_stats->m_num_ialu_acesses[m_sid] =
-          m_stats->m_num_ialu_acesses[m_sid] + (double)active_count * latency +
-          inactive_lanes_accesses_nonsfu(active_count, latency);
-    } else {
-      m_stats->m_num_ialu_acesses[m_sid] =
-          m_stats->m_num_ialu_acesses[m_sid] + (double)active_count * latency;
+  void incialu_stat(unsigned active_count,double latency) {
+    if(m_config->gpgpu_clock_gated_lanes==false){
+      m_stats->m_num_ialu_acesses[m_sid]=m_stats->m_num_ialu_acesses[m_sid]+(double)active_count*latency
+        + inactive_lanes_accesses_nonsfu(active_count, latency);
+    }else {
+      m_stats->m_num_ialu_acesses[m_sid]=m_stats->m_num_ialu_acesses[m_sid]+(double)active_count*latency;
     }
-    m_stats->m_active_exu_threads[m_sid] += active_count;
+    m_stats->m_active_exu_threads[m_sid]+=active_count;
     m_stats->m_active_exu_warps[m_sid]++;
   }
-  void incimul_stat(unsigned active_count, double latency) {
-    if (m_config->gpgpu_clock_gated_lanes == false) {
-      m_stats->m_num_imul_acesses[m_sid] =
-          m_stats->m_num_imul_acesses[m_sid] + (double)active_count * latency +
-          inactive_lanes_accesses_nonsfu(active_count, latency);
-    } else {
-      m_stats->m_num_imul_acesses[m_sid] =
-          m_stats->m_num_imul_acesses[m_sid] + (double)active_count * latency;
+  void incimul_stat(unsigned active_count,double latency) {
+    if(m_config->gpgpu_clock_gated_lanes==false){
+      m_stats->m_num_imul_acesses[m_sid]=m_stats->m_num_imul_acesses[m_sid]+(double)active_count*latency
+        + inactive_lanes_accesses_nonsfu(active_count, latency);
+    }else {
+      m_stats->m_num_imul_acesses[m_sid]=m_stats->m_num_imul_acesses[m_sid]+(double)active_count*latency;
     }
-    m_stats->m_active_exu_threads[m_sid] += active_count;
+    m_stats->m_active_exu_threads[m_sid]+=active_count;
     m_stats->m_active_exu_warps[m_sid]++;
   }
-  void incimul24_stat(unsigned active_count, double latency) {
-    if (m_config->gpgpu_clock_gated_lanes == false) {
-      m_stats->m_num_imul24_acesses[m_sid] =
-          m_stats->m_num_imul24_acesses[m_sid] +
-          (double)active_count * latency +
-          inactive_lanes_accesses_nonsfu(active_count, latency);
-    } else {
-      m_stats->m_num_imul24_acesses[m_sid] =
-          m_stats->m_num_imul24_acesses[m_sid] + (double)active_count * latency;
+  void incimul24_stat(unsigned active_count,double latency) {
+  if(m_config->gpgpu_clock_gated_lanes==false){
+    m_stats->m_num_imul24_acesses[m_sid]=m_stats->m_num_imul24_acesses[m_sid]+(double)active_count*latency
+        + inactive_lanes_accesses_nonsfu(active_count, latency);
+    }else {
+      m_stats->m_num_imul24_acesses[m_sid]=m_stats->m_num_imul24_acesses[m_sid]+(double)active_count*latency;
     }
-    m_stats->m_active_exu_threads[m_sid] += active_count;
+    m_stats->m_active_exu_threads[m_sid]+=active_count;
+    m_stats->m_active_exu_warps[m_sid]++;    
+   }
+   void incimul32_stat(unsigned active_count,double latency) {
+    if(m_config->gpgpu_clock_gated_lanes==false){
+      m_stats->m_num_imul32_acesses[m_sid]=m_stats->m_num_imul32_acesses[m_sid]+(double)active_count*latency
+         + inactive_lanes_accesses_sfu(active_count, latency);          
+    }else{
+      m_stats->m_num_imul32_acesses[m_sid]=m_stats->m_num_imul32_acesses[m_sid]+(double)active_count*latency;
+    }
+    m_stats->m_active_exu_threads[m_sid]+=active_count;
     m_stats->m_active_exu_warps[m_sid]++;
   }
-  void incimul32_stat(unsigned active_count, double latency) {
-    if (m_config->gpgpu_clock_gated_lanes == false) {
-      m_stats->m_num_imul32_acesses[m_sid] =
-          m_stats->m_num_imul32_acesses[m_sid] +
-          (double)active_count * latency +
-          inactive_lanes_accesses_sfu(active_count, latency);
-    } else {
-      m_stats->m_num_imul32_acesses[m_sid] =
-          m_stats->m_num_imul32_acesses[m_sid] + (double)active_count * latency;
+   void incidiv_stat(unsigned active_count,double latency) {
+    if(m_config->gpgpu_clock_gated_lanes==false){
+      m_stats->m_num_idiv_acesses[m_sid]=m_stats->m_num_idiv_acesses[m_sid]+(double)active_count*latency
+         + inactive_lanes_accesses_sfu(active_count, latency); 
+    }else {
+      m_stats->m_num_idiv_acesses[m_sid]=m_stats->m_num_idiv_acesses[m_sid]+(double)active_count*latency;
     }
-    m_stats->m_active_exu_threads[m_sid] += active_count;
-    m_stats->m_active_exu_warps[m_sid]++;
+    m_stats->m_active_exu_threads[m_sid]+=active_count;
+    m_stats->m_active_exu_warps[m_sid]++;    
   }
-  void incidiv_stat(unsigned active_count, double latency) {
-    if (m_config->gpgpu_clock_gated_lanes == false) {
-      m_stats->m_num_idiv_acesses[m_sid] =
-          m_stats->m_num_idiv_acesses[m_sid] + (double)active_count * latency +
-          inactive_lanes_accesses_sfu(active_count, latency);
-    } else {
-      m_stats->m_num_idiv_acesses[m_sid] =
-          m_stats->m_num_idiv_acesses[m_sid] + (double)active_count * latency;
+   void incfpalu_stat(unsigned active_count,double latency) {
+    if(m_config->gpgpu_clock_gated_lanes==false){
+      m_stats->m_num_fp_acesses[m_sid]=m_stats->m_num_fp_acesses[m_sid]+(double)active_count*latency
+         + inactive_lanes_accesses_nonsfu(active_count, latency);
+    }else {
+    m_stats->m_num_fp_acesses[m_sid]=m_stats->m_num_fp_acesses[m_sid]+(double)active_count*latency;
     }
-    m_stats->m_active_exu_threads[m_sid] += active_count;
-    m_stats->m_active_exu_warps[m_sid]++;
+    m_stats->m_active_exu_threads[m_sid]+=active_count;
+    m_stats->m_active_exu_warps[m_sid]++;     
   }
-  void incfpalu_stat(unsigned active_count, double latency) {
-    if (m_config->gpgpu_clock_gated_lanes == false) {
-      m_stats->m_num_fp_acesses[m_sid] =
-          m_stats->m_num_fp_acesses[m_sid] + (double)active_count * latency +
-          inactive_lanes_accesses_nonsfu(active_count, latency);
-    } else {
-      m_stats->m_num_fp_acesses[m_sid] =
-          m_stats->m_num_fp_acesses[m_sid] + (double)active_count * latency;
+   void incfpmul_stat(unsigned active_count,double latency) {
+              // printf("FP MUL stat increament\n");
+    if(m_config->gpgpu_clock_gated_lanes==false){
+      m_stats->m_num_fpmul_acesses[m_sid]=m_stats->m_num_fpmul_acesses[m_sid]+(double)active_count*latency
+        + inactive_lanes_accesses_nonsfu(active_count, latency);
+    }else {
+    m_stats->m_num_fpmul_acesses[m_sid]=m_stats->m_num_fpmul_acesses[m_sid]+(double)active_count*latency;
     }
-    m_stats->m_active_exu_threads[m_sid] += active_count;
+    m_stats->m_active_exu_threads[m_sid]+=active_count;
     m_stats->m_active_exu_warps[m_sid]++;
-  }
-  void incfpmul_stat(unsigned active_count, double latency) {
-    // printf("FP MUL stat increament\n");
-    if (m_config->gpgpu_clock_gated_lanes == false) {
-      m_stats->m_num_fpmul_acesses[m_sid] =
-          m_stats->m_num_fpmul_acesses[m_sid] + (double)active_count * latency +
-          inactive_lanes_accesses_nonsfu(active_count, latency);
-    } else {
-      m_stats->m_num_fpmul_acesses[m_sid] =
-          m_stats->m_num_fpmul_acesses[m_sid] + (double)active_count * latency;
+   }
+   void incfpdiv_stat(unsigned active_count,double latency) {
+    if(m_config->gpgpu_clock_gated_lanes==false){
+      m_stats->m_num_fpdiv_acesses[m_sid]=m_stats->m_num_fpdiv_acesses[m_sid]+(double)active_count*latency
+        + inactive_lanes_accesses_sfu(active_count, latency); 
+    }else {
+      m_stats->m_num_fpdiv_acesses[m_sid]=m_stats->m_num_fpdiv_acesses[m_sid]+(double)active_count*latency;
     }
-    m_stats->m_active_exu_threads[m_sid] += active_count;
+    m_stats->m_active_exu_threads[m_sid]+=active_count;
     m_stats->m_active_exu_warps[m_sid]++;
-  }
-  void incfpdiv_stat(unsigned active_count, double latency) {
-    if (m_config->gpgpu_clock_gated_lanes == false) {
-      m_stats->m_num_fpdiv_acesses[m_sid] =
-          m_stats->m_num_fpdiv_acesses[m_sid] + (double)active_count * latency +
-          inactive_lanes_accesses_sfu(active_count, latency);
-    } else {
-      m_stats->m_num_fpdiv_acesses[m_sid] =
-          m_stats->m_num_fpdiv_acesses[m_sid] + (double)active_count * latency;
+   }
+   void incdpalu_stat(unsigned active_count,double latency) {
+    if(m_config->gpgpu_clock_gated_lanes==false){
+      m_stats->m_num_dp_acesses[m_sid]=m_stats->m_num_dp_acesses[m_sid]+(double)active_count*latency
+         + inactive_lanes_accesses_nonsfu(active_count, latency);
+    }else {
+    m_stats->m_num_dp_acesses[m_sid]=m_stats->m_num_dp_acesses[m_sid]+(double)active_count*latency;
     }
-    m_stats->m_active_exu_threads[m_sid] += active_count;
+    m_stats->m_active_exu_threads[m_sid]+=active_count;
+    m_stats->m_active_exu_warps[m_sid]++; 
+   }
+   void incdpmul_stat(unsigned active_count,double latency) {
+              // printf("FP MUL stat increament\n");
+    if(m_config->gpgpu_clock_gated_lanes==false){
+      m_stats->m_num_dpmul_acesses[m_sid]=m_stats->m_num_dpmul_acesses[m_sid]+(double)active_count*latency
+        + inactive_lanes_accesses_nonsfu(active_count, latency);
+    }else {
+    m_stats->m_num_dpmul_acesses[m_sid]=m_stats->m_num_dpmul_acesses[m_sid]+(double)active_count*latency;
+    }
+    m_stats->m_active_exu_threads[m_sid]+=active_count;
     m_stats->m_active_exu_warps[m_sid]++;
-  }
-  void incdpalu_stat(unsigned active_count, double latency) {
-    if (m_config->gpgpu_clock_gated_lanes == false) {
-      m_stats->m_num_dp_acesses[m_sid] =
-          m_stats->m_num_dp_acesses[m_sid] + (double)active_count * latency +
-          inactive_lanes_accesses_nonsfu(active_count, latency);
-    } else {
-      m_stats->m_num_dp_acesses[m_sid] =
-          m_stats->m_num_dp_acesses[m_sid] + (double)active_count * latency;
+   }
+   void incdpdiv_stat(unsigned active_count,double latency) {
+    if(m_config->gpgpu_clock_gated_lanes==false){
+      m_stats->m_num_dpdiv_acesses[m_sid]=m_stats->m_num_dpdiv_acesses[m_sid]+(double)active_count*latency
+        + inactive_lanes_accesses_sfu(active_count, latency); 
+    }else {
+      m_stats->m_num_dpdiv_acesses[m_sid]=m_stats->m_num_dpdiv_acesses[m_sid]+(double)active_count*latency;
     }
-    m_stats->m_active_exu_threads[m_sid] += active_count;
+    m_stats->m_active_exu_threads[m_sid]+=active_count;
     m_stats->m_active_exu_warps[m_sid]++;
-  }
-  void incdpmul_stat(unsigned active_count, double latency) {
-    // printf("FP MUL stat increament\n");
-    if (m_config->gpgpu_clock_gated_lanes == false) {
-      m_stats->m_num_dpmul_acesses[m_sid] =
-          m_stats->m_num_dpmul_acesses[m_sid] + (double)active_count * latency +
-          inactive_lanes_accesses_nonsfu(active_count, latency);
-    } else {
-      m_stats->m_num_dpmul_acesses[m_sid] =
-          m_stats->m_num_dpmul_acesses[m_sid] + (double)active_count * latency;
+   }
+
+   void incsqrt_stat(unsigned active_count,double latency) {
+    if(m_config->gpgpu_clock_gated_lanes==false){
+      m_stats->m_num_sqrt_acesses[m_sid]=m_stats->m_num_sqrt_acesses[m_sid]+(double)active_count*latency
+        + inactive_lanes_accesses_sfu(active_count, latency); 
+    }else{
+      m_stats->m_num_sqrt_acesses[m_sid]=m_stats->m_num_sqrt_acesses[m_sid]+(double)active_count*latency;
     }
-    m_stats->m_active_exu_threads[m_sid] += active_count;
+    m_stats->m_active_exu_threads[m_sid]+=active_count;
     m_stats->m_active_exu_warps[m_sid]++;
-  }
-  void incdpdiv_stat(unsigned active_count, double latency) {
-    if (m_config->gpgpu_clock_gated_lanes == false) {
-      m_stats->m_num_dpdiv_acesses[m_sid] =
-          m_stats->m_num_dpdiv_acesses[m_sid] + (double)active_count * latency +
-          inactive_lanes_accesses_sfu(active_count, latency);
-    } else {
-      m_stats->m_num_dpdiv_acesses[m_sid] =
-          m_stats->m_num_dpdiv_acesses[m_sid] + (double)active_count * latency;
+   }
+
+   void inclog_stat(unsigned active_count,double latency) {
+    if(m_config->gpgpu_clock_gated_lanes==false){
+      m_stats->m_num_log_acesses[m_sid]=m_stats->m_num_log_acesses[m_sid]+(double)active_count*latency
+        + inactive_lanes_accesses_sfu(active_count, latency); 
+    }else{
+      m_stats->m_num_log_acesses[m_sid]=m_stats->m_num_log_acesses[m_sid]+(double)active_count*latency;
     }
-    m_stats->m_active_exu_threads[m_sid] += active_count;
+    m_stats->m_active_exu_threads[m_sid]+=active_count;
+    m_stats->m_active_exu_warps[m_sid]++;
+   }
+
+   void incexp_stat(unsigned active_count,double latency) {
+    if(m_config->gpgpu_clock_gated_lanes==false){
+      m_stats->m_num_exp_acesses[m_sid]=m_stats->m_num_exp_acesses[m_sid]+(double)active_count*latency
+        + inactive_lanes_accesses_sfu(active_count, latency); 
+    }else{
+      m_stats->m_num_exp_acesses[m_sid]=m_stats->m_num_exp_acesses[m_sid]+(double)active_count*latency;
+    }
+    m_stats->m_active_exu_threads[m_sid]+=active_count;
     m_stats->m_active_exu_warps[m_sid]++;
   }
 
-  void incsqrt_stat(unsigned active_count, double latency) {
-    if (m_config->gpgpu_clock_gated_lanes == false) {
-      m_stats->m_num_sqrt_acesses[m_sid] =
-          m_stats->m_num_sqrt_acesses[m_sid] + (double)active_count * latency +
-          inactive_lanes_accesses_sfu(active_count, latency);
-    } else {
-      m_stats->m_num_sqrt_acesses[m_sid] =
-          m_stats->m_num_sqrt_acesses[m_sid] + (double)active_count * latency;
+   void incsin_stat(unsigned active_count,double latency) {
+    if(m_config->gpgpu_clock_gated_lanes==false){
+      m_stats->m_num_sin_acesses[m_sid]=m_stats->m_num_sin_acesses[m_sid]+(double)active_count*latency
+        + inactive_lanes_accesses_sfu(active_count, latency); 
+    }else{
+      m_stats->m_num_sin_acesses[m_sid]=m_stats->m_num_sin_acesses[m_sid]+(double)active_count*latency;
     }
-    m_stats->m_active_exu_threads[m_sid] += active_count;
+    m_stats->m_active_exu_threads[m_sid]+=active_count;
     m_stats->m_active_exu_warps[m_sid]++;
   }
 
-  void inclog_stat(unsigned active_count, double latency) {
-    if (m_config->gpgpu_clock_gated_lanes == false) {
-      m_stats->m_num_log_acesses[m_sid] =
-          m_stats->m_num_log_acesses[m_sid] + (double)active_count * latency +
-          inactive_lanes_accesses_sfu(active_count, latency);
-    } else {
-      m_stats->m_num_log_acesses[m_sid] =
-          m_stats->m_num_log_acesses[m_sid] + (double)active_count * latency;
+
+   void inctensor_stat(unsigned active_count,double latency) {
+    if(m_config->gpgpu_clock_gated_lanes==false){
+      m_stats->m_num_tensor_core_acesses[m_sid]=m_stats->m_num_tensor_core_acesses[m_sid]+(double)active_count*latency
+        + inactive_lanes_accesses_sfu(active_count, latency); 
+    }else{
+      m_stats->m_num_tensor_core_acesses[m_sid]=m_stats->m_num_tensor_core_acesses[m_sid]+(double)active_count*latency;
     }
-    m_stats->m_active_exu_threads[m_sid] += active_count;
+    m_stats->m_active_exu_threads[m_sid]+=active_count;
     m_stats->m_active_exu_warps[m_sid]++;
   }
 
-  void incexp_stat(unsigned active_count, double latency) {
-    if (m_config->gpgpu_clock_gated_lanes == false) {
-      m_stats->m_num_exp_acesses[m_sid] =
-          m_stats->m_num_exp_acesses[m_sid] + (double)active_count * latency +
-          inactive_lanes_accesses_sfu(active_count, latency);
-    } else {
-      m_stats->m_num_exp_acesses[m_sid] =
-          m_stats->m_num_exp_acesses[m_sid] + (double)active_count * latency;
+  void inctex_stat(unsigned active_count,double latency) {
+    if(m_config->gpgpu_clock_gated_lanes==false){
+      m_stats->m_num_tex_acesses[m_sid]=m_stats->m_num_tex_acesses[m_sid]+(double)active_count*latency
+        + inactive_lanes_accesses_sfu(active_count, latency); 
+    }else{
+      m_stats->m_num_tex_acesses[m_sid]=m_stats->m_num_tex_acesses[m_sid]+(double)active_count*latency;
     }
-    m_stats->m_active_exu_threads[m_sid] += active_count;
-    m_stats->m_active_exu_warps[m_sid]++;
-  }
-
-  void incsin_stat(unsigned active_count, double latency) {
-    if (m_config->gpgpu_clock_gated_lanes == false) {
-      m_stats->m_num_sin_acesses[m_sid] =
-          m_stats->m_num_sin_acesses[m_sid] + (double)active_count * latency +
-          inactive_lanes_accesses_sfu(active_count, latency);
-    } else {
-      m_stats->m_num_sin_acesses[m_sid] =
-          m_stats->m_num_sin_acesses[m_sid] + (double)active_count * latency;
-    }
-    m_stats->m_active_exu_threads[m_sid] += active_count;
-    m_stats->m_active_exu_warps[m_sid]++;
-  }
-
-  void inctensor_stat(unsigned active_count, double latency) {
-    if (m_config->gpgpu_clock_gated_lanes == false) {
-      m_stats->m_num_tensor_core_acesses[m_sid] =
-          m_stats->m_num_tensor_core_acesses[m_sid] +
-          (double)active_count * latency +
-          inactive_lanes_accesses_sfu(active_count, latency);
-    } else {
-      m_stats->m_num_tensor_core_acesses[m_sid] =
-          m_stats->m_num_tensor_core_acesses[m_sid] +
-          (double)active_count * latency;
-    }
-    m_stats->m_active_exu_threads[m_sid] += active_count;
-    m_stats->m_active_exu_warps[m_sid]++;
-  }
-
-  void inctex_stat(unsigned active_count, double latency) {
-    if (m_config->gpgpu_clock_gated_lanes == false) {
-      m_stats->m_num_tex_acesses[m_sid] =
-          m_stats->m_num_tex_acesses[m_sid] + (double)active_count * latency +
-          inactive_lanes_accesses_sfu(active_count, latency);
-    } else {
-      m_stats->m_num_tex_acesses[m_sid] =
-          m_stats->m_num_tex_acesses[m_sid] + (double)active_count * latency;
-    }
-    m_stats->m_active_exu_threads[m_sid] += active_count;
+    m_stats->m_active_exu_threads[m_sid]+=active_count;
     m_stats->m_active_exu_warps[m_sid]++;
   }
 
   void inc_const_accesses(unsigned active_count) {
-    m_stats->m_num_const_acesses[m_sid] =
-        m_stats->m_num_const_acesses[m_sid] + active_count;
+    m_stats->m_num_const_acesses[m_sid]=m_stats->m_num_const_acesses[m_sid]+active_count;
   }
 
   void incsfu_stat(unsigned active_count, double latency) {
     m_stats->m_num_sfu_acesses[m_sid] =
-        m_stats->m_num_sfu_acesses[m_sid] + (double)active_count * latency;
+        m_stats->m_num_sfu_acesses[m_sid] + (double)active_count*latency;
   }
   void incsp_stat(unsigned active_count, double latency) {
     m_stats->m_num_sp_acesses[m_sid] =
-        m_stats->m_num_sp_acesses[m_sid] + (double)active_count * latency;
+        m_stats->m_num_sp_acesses[m_sid] + (double)active_count*latency;
   }
   void incmem_stat(unsigned active_count, double latency) {
     if (m_config->gpgpu_clock_gated_lanes == false) {
       m_stats->m_num_mem_acesses[m_sid] =
-          m_stats->m_num_mem_acesses[m_sid] + (double)active_count * latency +
+          m_stats->m_num_mem_acesses[m_sid] + (double)active_count*latency +
           inactive_lanes_accesses_nonsfu(active_count, latency);
     } else {
       m_stats->m_num_mem_acesses[m_sid] =
-          m_stats->m_num_mem_acesses[m_sid] + (double)active_count * latency;
+          m_stats->m_num_mem_acesses[m_sid] + (double)active_count*latency;
     }
   }
   void incexecstat(warp_inst_t *&inst);
@@ -2850,7 +3325,7 @@ class shader_core_ctx : public core_t, public shader_core_ctx_wrapper {
     m_stats->m_active_sfu_lanes[m_sid] =
         m_stats->m_active_sfu_lanes[m_sid] + active_count;
   }
-  void incfuactivelanes_stat(unsigned active_count) {
+  void incfuactivelanes_stat(unsigned active_count) override {
     m_stats->m_active_fu_lanes[m_sid] =
         m_stats->m_active_fu_lanes[m_sid] + active_count;
   }
@@ -2882,6 +3357,18 @@ class shader_core_ctx : public core_t, public shader_core_ctx_wrapper {
 
   void decode();
 
+
+  unsigned long long get_current_gpu_cycle() override;
+
+  // Not implemented in the old model, just to complete interface for the new model
+  address_type from_local_pc_to_global_pc_address(address_type local_pc, unsigned int unique_function_id) override {
+    return local_pc;
+  }
+  // Not implemented in the old model, just to complete interface for the new model
+  address_type from_global_pc_address_to_local_pc(address_type global_pc, unsigned int unique_function_id) override {
+    return global_pc;
+  }
+
   void issue();
   friend class scheduler_unit;  // this is needed to use private issue warp.
   friend class TwoLevelScheduler;
@@ -2912,12 +3399,9 @@ class shader_core_ctx : public core_t, public shader_core_ctx_wrapper {
 
   virtual void create_shd_warp() = 0;
 
-  // Stage 1e-B3 (W3): match MICRO 2025 shader.h:3402 — drop const, add
-  // `decrement_trace_pc` pure virtual.  The old const was a v2-local
-  // hack; trace_shader_core_ctx already returns mutable warp_inst_t*
-  // and its decrement_trace_pc was only consumed via a concrete override.
-  virtual warp_inst_t *get_next_inst(unsigned warp_id, address_type pc) = 0;
-  virtual void decrement_trace_pc(unsigned warp_id) = 0;
+  virtual warp_inst_t *get_next_inst(unsigned warp_id, // MOD. VPREG
+                                           address_type pc) = 0;
+  virtual void decrement_trace_pc(unsigned warp_id) = 0; // MOD. VPREG                                       
   virtual void get_pdom_stack_top_info(unsigned warp_id, const warp_inst_t *pI,
                                        unsigned *pc, unsigned *rpc) = 0;
   virtual const active_mask_t &get_active_mask(unsigned warp_id,
@@ -2964,19 +3448,25 @@ class shader_core_ctx : public core_t, public shader_core_ctx_wrapper {
   thread_ctx_t *m_threadState;
 
   // interconnect interface
+  mem_fetch_interface *m_icnt_L0I; // MOD. Added L0I
   mem_fetch_interface *m_icnt;
   shader_core_mem_fetch_allocator *m_mem_fetch_allocator;
 
   // fetch
   read_only_cache *m_L1I;  // instruction cache
+  std::vector<read_only_cache*> m_L0I;  // MOD. Added L0I
   int m_last_warp_fetched;
 
   // decode/dispatch
   std::vector<shd_warp_t *> m_warp;  // per warp information array
   barrier_set_t m_barriers;
   ifetch_buffer_t m_inst_fetch_buffer;
+  std::vector<ifetch_buffer_t> m_improved_fetch_decode_inst_fetch_buffer; // MOD. Improving fetch and decode
+  std::vector<int> m_improved_fetch_decode_last_warp_fetched; // MOD. Improving fetch and decode
+  int m_subcore_req_fetch_L1I_priority; // MOD. Added L0I
   std::vector<register_set> m_pipeline_reg;
   Scoreboard *m_scoreboard;
+  Scoreboard_reads *m_scoreboard_reads; // MOD. Fix WAR at baseline.
   opndcoll_rfu_t m_operand_collector;
   int m_active_warps;
   std::vector<register_set *> m_specilized_dispatch_reg;
@@ -2998,6 +3488,8 @@ class shader_core_ctx : public core_t, public shader_core_ctx_wrapper {
   unsigned num_result_bus;
   std::vector<std::bitset<MAX_ALU_LATENCY> *> m_result_bus;
 
+  ResultBusses m_res_bus_improved;  // MOD. Improved Result bus to take into account conflicts with RF banks
+
   // used for local address mapping with single kernel launch
   unsigned kernel_max_cta_per_shader;
   unsigned kernel_padded_threads_per_cta;
@@ -3013,9 +3505,10 @@ class shader_core_ctx : public core_t, public shader_core_ctx_wrapper {
   bool occupy_shader_resource_1block(kernel_info_t &kernel, bool occupy);
   void release_shader_resource_1block(unsigned hw_ctaid, kernel_info_t &kernel);
   int find_available_hwtid(unsigned int cta_size, bool occupy);
-
-  // OpenMP: per-SM local stats, flushed to globals after parallel region
-  per_sm_local_stats m_local_stats;
+  shd_warp_t *get_shd_warp(int id) override { return m_warp[id];} // MOD. IBuffer_ooo
+  unsigned int get_num_subcores() { return (m_config->sub_core_model ? m_config->gpgpu_num_sched_per_core : 1) ; } // MOD. Added L0I.
+  int get_subcore_req_fetch_L1I_priority() { return m_subcore_req_fetch_L1I_priority; } // MOD. Added L0I
+  void set_subcore_req_fetch_L1I_priority(int new_subcore_req_fetch_L1I_priority) { m_subcore_req_fetch_L1I_priority = new_subcore_req_fetch_L1I_priority; } // MOD. Added L0I
 
  private:
   unsigned int m_occupied_n_threads;
@@ -3051,14 +3544,16 @@ class exec_shader_core_ctx : public shader_core_ctx {
                                    unsigned hw_cta_id, unsigned hw_warp_id,
                                    gpgpu_t *gpu);
   virtual void create_shd_warp();
-  // Stage 1e-B3 (W3): match shader_core_ctx base-class signature (non-const).
-  virtual warp_inst_t *get_next_inst(unsigned warp_id, address_type pc);
-  // Stage 1e-B3 (W3): exec-path has no trace PC to decrement; no-op stub.
-  virtual void decrement_trace_pc(unsigned /*warp_id*/) override {}
+  virtual warp_inst_t *get_next_inst(unsigned warp_id, address_type pc); // MOD. VPREG
+  virtual void decrement_trace_pc(unsigned warp_id); // MOD. VPREG
   virtual void get_pdom_stack_top_info(unsigned warp_id, const warp_inst_t *pI,
                                        unsigned *pc, unsigned *rpc);
   virtual const active_mask_t &get_active_mask(unsigned warp_id,
                                                const warp_inst_t *pI);
+  
+  // Implementation of pure virtual functions from shader_core_ctx_wrapper
+  virtual RRS* get_loog_rrs() override { return nullptr; }
+  virtual bool get_is_loog_enabled() override { return m_config->is_loog_enabled; }
 };
 
 class simt_core_cluster {
@@ -3067,6 +3562,32 @@ class simt_core_cluster {
                     const shader_core_config *config,
                     const memory_config *mem_config, shader_core_stats *stats,
                     memory_stats_t *mstats);
+  virtual ~simt_core_cluster() {
+    for(unsigned int i = 0; i < m_core.size(); i++) {
+      delete m_core[i];
+    }
+  }
+
+  void reset_cycless_access_history() {
+    for(unsigned i = 0; i < m_core.size(); i++) {
+      m_core[i]->reset_cycless_access_history();
+    }
+  }
+
+  void gather_stats(Element_stats &all_stats, coalescingStatsAcrossSms& coal_stats_l1d, coalescingStatsAcrossSms& coal_stats_const, coalescingStatsAcrossSms& coal_stats_sharedmem) {
+    for(unsigned i = 0; i < m_core.size(); i++) {
+      m_core[i]->gather_gpu_per_sm_stats(all_stats, coal_stats_l1d, coal_stats_const, coal_stats_sharedmem);
+    }
+  }
+
+  void gather_single_stat(Element_stats &all_stats, std::string stat_name) {
+    for(unsigned i = 0; i < m_core.size(); i++) {
+      m_core[i]->gather_gpu_per_sm_single_stat(all_stats, stat_name);
+    }
+  }
+
+  traffic_breakdown& get_incomming_traffic_stats() { return m_incoming_traffic_stats; }
+  traffic_breakdown& get_outgoing_traffic_stats() { return m_outgoing_traffic_stats; }
 
   void core_cycle();
   void icnt_cycle();
@@ -3077,33 +3598,6 @@ class simt_core_cluster {
   void cache_invalidate();
   bool icnt_injection_buffer_full(unsigned size, bool write);
   void icnt_inject_request_packet(class mem_fetch *mf);
-  void update_icnt_stats(class mem_fetch *mf);
-
-  // OpenMP: flush per-SM/cluster local stats to globals
-  void flush_local_stats();
-
-  // Stage 1e-A2 (Codex review follow-up): gather per-SM Element_stats across
-  // all cluster cores.  Mirrors MICRO 2025 shader.h:3571-3587 verbatim.
-  void reset_cycless_access_history() {
-    for (unsigned i = 0; i < m_core.size(); i++) {
-      m_core[i]->reset_cycless_access_history();
-    }
-  }
-  void gather_stats(Element_stats &all_stats,
-                    coalescingStatsAcrossSms &coal_stats_l1d,
-                    coalescingStatsAcrossSms &coal_stats_const,
-                    coalescingStatsAcrossSms &coal_stats_sharedmem) {
-    for (unsigned i = 0; i < m_core.size(); i++) {
-      m_core[i]->gather_gpu_per_sm_stats(all_stats, coal_stats_l1d,
-                                         coal_stats_const,
-                                         coal_stats_sharedmem);
-    }
-  }
-  void gather_single_stat(Element_stats &all_stats, std::string stat_name) {
-    for (unsigned i = 0; i < m_core.size(); i++) {
-      m_core[i]->gather_gpu_per_sm_single_stat(all_stats, stat_name);
-    }
-  }
 
   // for perfect memory interface
   bool response_queue_full() {
@@ -3128,6 +3622,7 @@ class simt_core_cluster {
 
   void get_cache_stats(cache_stats &cs) const;
   void get_L1I_sub_stats(struct cache_sub_stats &css) const;
+  void get_L0I_sub_stats(struct cache_sub_stats &css) const; // MOD. L0I
   void get_L1D_sub_stats(struct cache_sub_stats &css) const;
   void get_L1C_sub_stats(struct cache_sub_stats &css) const;
   void get_L1T_sub_stats(struct cache_sub_stats &css) const;
@@ -3137,25 +3632,24 @@ class simt_core_cluster {
                               unsigned long long &total) const;
   virtual void create_shader_core_ctx() = 0;
 
+  void create_gpu_per_cluster_stats(Element_stats &all_stats);
+
  protected:
   unsigned m_cluster_id;
   gpgpu_sim *m_gpu;
   const shader_core_config *m_config;
   shader_core_stats *m_stats;
   memory_stats_t *m_memory_stats;
-  // Stage 1e: m_core now holds `shader_core_ctx_wrapper*` to match MICRO
-  // 2025 (shader.h:3643).  Both `shader_core_ctx` (via the new multi-
-  // inheritance chain core_t + shader_core_ctx_wrapper) and `SM` (from
-  // remodeling/) derive from wrapper, so a single vector can host either.
-  std::vector<shader_core_ctx_wrapper*> m_core;
+  std::vector<shader_core_ctx_wrapper *> m_core;
   const memory_config *m_mem_config;
 
   unsigned m_cta_issue_next_core;
   std::list<unsigned> m_core_sim_order;
   std::list<mem_fetch *> m_response_fifo;
 
-  // OpenMP: per-cluster local icnt stats, flushed after parallel region
-  per_sm_local_stats m_local_icnt_stats;
+  Element_stats m_cluster_stats;
+  traffic_breakdown m_outgoing_traffic_stats;//("coretomem");  // core to memory partitions
+  traffic_breakdown m_incoming_traffic_stats;//("memtocore");  // memory partition to core
 };
 
 class exec_simt_core_cluster : public simt_core_cluster {
@@ -3172,63 +3666,22 @@ class exec_simt_core_cluster : public simt_core_cluster {
   virtual void create_shader_core_ctx();
 };
 
-/**
- * @brief SST cluster class
- *
- */
-class sst_simt_core_cluster : public exec_simt_core_cluster {
- public:
-  sst_simt_core_cluster(class gpgpu_sim *gpu, unsigned cluster_id,
-                        const shader_core_config *config,
-                        const memory_config *mem_config,
-                        class shader_core_stats *stats,
-                        class memory_stats_t *mstats)
-      : exec_simt_core_cluster(gpu, cluster_id, config, mem_config, stats,
-                               mstats) {}
-
-  /**
-   * @brief Check if SST memory request injection
-   *        buffer is full by using extern
-   *        function is_SST_buffer_full()
-   *        defined in Balar
-   *
-   * @param size
-   * @param write
-   * @param type
-   * @return true
-   * @return false
-   */
-  bool SST_injection_buffer_full(unsigned size, bool write,
-                                 mem_access_type type);
-
-  /**
-   * @brief Send memory request packets to SST
-   *        memory
-   *
-   * @param mf
-   */
-  void icnt_inject_request_packet_to_SST(class mem_fetch *mf);
-
-  /**
-   * @brief Advance ICNT between core and SST
-   *
-   */
-  void icnt_cycle_SST();
-};
-
 class shader_memory_interface : public mem_fetch_interface {
  public:
-  // Stage 1g G1b: single wrapper-typed m_core field; both vanilla
-  // shader_core_ctx and remodeling SM dispatch through the wrapper virtuals.
   shader_memory_interface(shader_core_ctx_wrapper *core, simt_core_cluster *cluster) {
     m_core = core;
     m_cluster = cluster;
   }
+  ~shader_memory_interface() override {}
   virtual bool full(unsigned size, bool write) const {
     return m_cluster->icnt_injection_buffer_full(size, write);
   }
-  virtual void push(mem_fetch *mf);
-  virtual void flush() override {}
+  virtual void push(mem_fetch *mf) {
+    m_core->inc_simt_to_mem(mf->get_num_flits(true));
+    m_cluster->icnt_inject_request_packet(mf);
+  }
+
+  virtual void flush() {}
 
  private:
   shader_core_ctx_wrapper *m_core;
@@ -3237,80 +3690,28 @@ class shader_memory_interface : public mem_fetch_interface {
 
 class perfect_memory_interface : public mem_fetch_interface {
  public:
-  // Stage 1g G1b: single wrapper-typed m_core field.
   perfect_memory_interface(shader_core_ctx_wrapper *core, simt_core_cluster *cluster) {
     m_core = core;
     m_cluster = cluster;
   }
+  ~perfect_memory_interface() override {}
   virtual bool full(unsigned size, bool write) const {
     return m_cluster->response_queue_full();
   }
-  virtual void push(mem_fetch *mf);
-  virtual void flush() override {}
+  virtual void push(mem_fetch *mf) {
+    if (mf && mf->isatomic())
+      mf->do_atomic();  // execute atomic inside the "memory subsystem"
+    m_core->inc_simt_to_mem(mf->get_num_flits(true));
+    m_cluster->push_response_fifo(mf);
+  }
+
+  virtual void flush() {}
 
  private:
   shader_core_ctx_wrapper *m_core;
   simt_core_cluster *m_cluster;
 };
 
-/**
- * @brief SST memory interface
- *
- */
-class sst_memory_interface : public mem_fetch_interface {
- public:
-  sst_memory_interface(shader_core_ctx *core, sst_simt_core_cluster *cluster) {
-    m_core = core;
-    m_cluster = cluster;
-  }
-  /**
-   * @brief For constant, inst, tex cache access
-   *
-   * @param size
-   * @param write
-   * @return true
-   * @return false
-   */
-  virtual bool full(unsigned size, bool write) const {
-    assert(false && "Use the full() method with access type instead!");
-    return true;
-  }
-
-  /**
-   * @brief With SST, the core will direct all mem access except for
-   *        constant, tex, and inst reads to SST mem system
-   *        (i.e. not modeling constant mem right now), thus
-   *        requiring the mem_access_type information to be passed in
-   *
-   * @param size
-   * @param write
-   * @param type
-   * @return true
-   * @return false
-   */
-  bool full(unsigned size, bool write, mem_access_type type) const {
-    return m_cluster->SST_injection_buffer_full(size, write, type);
-  }
-
-  /**
-   * @brief Push memory request to SST memory system and
-   *        update stats
-   *
-   * @param mf
-   */
-  virtual void push(mem_fetch *mf) {
-    m_core->inc_simt_to_mem(mf->get_num_flits(true));
-    m_cluster->icnt_inject_request_packet_to_SST(mf);
-  }
-  // Stage 1e-B3 (W1): empty-body flush stub.  SST path never needs a flush;
-  // upstream stubs MICRO 2025-style.
-  virtual void flush() override {}
-
- private:
-  shader_core_ctx *m_core;
-  sst_simt_core_cluster *m_cluster;
-};
-
-inline int scheduler_unit::get_sid() const { return m_shader->get_sid(); }
+inline unsigned int scheduler_unit::get_sid() const { return m_shader->get_sid(); }
 
 #endif /* SHADER_H */

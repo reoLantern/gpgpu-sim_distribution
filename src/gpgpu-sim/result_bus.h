@@ -1,5 +1,5 @@
-// Copyright (c) 2009-2011, Tor M. Aamodt, Wilson W.L. Fung,
-// The University of British Columbia
+// Copyright (c) 2021-2023, Mojtaba Abaie and Rodrigo Huerta
+// Universitat Politecnica de Catalunya
 // All rights reserved.
 //
 // Redistribution and use in source and binary forms, with or without
@@ -26,17 +26,43 @@
 // ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 // POSSIBILITY OF SUCH DAMAGE.
 
-#ifndef VISUALIZER_H_INCLUDED
-#define VISUALIZER_H_INCLUDED
+#pragma once
 
-#include <stdio.h>
-#include <zlib.h>
+#include <bitset>
+#include <vector>
 
-void time_vector_create(int size);
-void time_vector_destroy(void);
-void time_vector_print(void);
-void time_vector_update(unsigned int uid, int slot, long int cycle, int type);
-void check_time_vector_update(unsigned int uid, int slot, long int latency,
-                              int type);
+#include "../abstract_hardware_model.h"
 
-#endif
+class opndcoll_rfu_t;
+
+static const unsigned MAX_ALU_LATENCY = 512;
+
+
+class ResultBus {
+    public:
+        ResultBus(unsigned int max_allowed_wb_ports_rf);
+        void cycle();
+        bool test(unsigned latency) const;
+        void set(unsigned latency);
+
+    private:
+        unsigned int m_max_allowed_wb_ports_rf;
+        std::vector<unsigned int> m_pipelined_latency;
+};
+
+class ResultBusses {
+public:
+    ~ResultBusses();
+    void init(unsigned width, unsigned num_banks, opndcoll_rfu_t *rf);
+    void cycle();
+    int test(const warp_inst_t *inst);
+private:
+    void find_reg_banks(const warp_inst_t *inst, int &regbank1, int &regbank2) const;
+    unsigned num_free_slots(unsigned latency) const;
+
+    unsigned m_width; //max writebacks = m_width
+    unsigned m_num_banks; // #RF_banks
+    opndcoll_rfu_t *m_rf; //reference to register file
+
+    std::vector<ResultBus*> m_res_busses;
+};

@@ -42,6 +42,14 @@ class frfcfs_scheduler {
  public:
   frfcfs_scheduler(const memory_config *config, dram_t *dm,
                    memory_stats_t *stats);
+  
+  ~frfcfs_scheduler() {
+    delete[] m_queue;
+    delete[] m_bins;
+    delete[] m_last_row;
+    delete[] curr_row_service_time;
+    delete[] row_service_timestamp;
+  }
   void add_req(dram_req_t *req);
   void data_collection(unsigned bank);
   dram_req_t *schedule(unsigned bank, unsigned curr_row);

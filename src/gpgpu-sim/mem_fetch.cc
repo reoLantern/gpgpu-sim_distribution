@@ -32,37 +32,31 @@
 #include "shader.h"
 #include "visualizer.h"
 
-std::atomic<unsigned> mem_fetch::sm_next_mf_request_uid{1};
+unsigned mem_fetch::sm_next_mf_request_uid = 1;
 
 mem_fetch::mem_fetch(const mem_access_t &access, const warp_inst_t *inst,
-                     unsigned long long streamID, unsigned ctrl_size,
-                     unsigned wid, unsigned sid, unsigned tpc,
-                     const memory_config *config, unsigned long long cycle,
-                     mem_fetch *m_original_mf, mem_fetch *m_original_wr_mf)
+                     unsigned ctrl_size, unsigned wid, unsigned sid,
+                     unsigned tpc, const memory_config *config,
+                     unsigned long long cycle, mem_fetch *m_original_mf,
+                     mem_fetch *m_original_wr_mf, unsigned int unique_function_id)
     : m_access(access)
 
 {
   m_request_uid = sm_next_mf_request_uid++;
+  // std::cerr << "Creating mem_fetch: " << m_request_uid << std::endl; fflush(stdout);
   m_access = access;
   if (inst) {
     m_inst = *inst;
     assert(wid == m_inst.warp_id());
   }
-  m_streamID = streamID;
   m_data_size = access.get_size();
   m_ctrl_size = ctrl_size;
   m_sid = sid;
   m_tpc = tpc;
   m_wid = wid;
-
-  if (!config->is_SST_mode()) {
-    // In SST memory model, the SST memory hierarchy is
-    // responsible to generate the correct address mapping
-    config->m_address_mapping.addrdec_tlx(access.get_addr(), &m_raw_addr);
-    m_partition_addr =
-        config->m_address_mapping.partition_address(access.get_addr());
-  }
-
+  config->m_address_mapping.addrdec_tlx(access.get_addr(), &m_raw_addr);
+  m_partition_addr =
+      config->m_address_mapping.partition_address(access.get_addr());
   m_type = m_access.is_write() ? WRITE_REQUEST : READ_REQUEST;
   m_timestamp = cycle;
   m_timestamp2 = 0;
@@ -76,9 +70,23 @@ mem_fetch::mem_fetch(const mem_access_t &access, const warp_inst_t *inst,
     m_raw_addr.chip = m_original_mf->get_tlx_addr().chip;
     m_raw_addr.sub_partition = m_original_mf->get_tlx_addr().sub_partition;
   }
+  m_subcore = -1; // MOD. Added L0I
+  m_is_filling_L0 = false; // MOD. Added L0I
+  m_is_fixed_latency_constant_access= false;
+  m_unique_function_id = unique_function_id;
+  m_is_prefetch = false;
+  m_stream_buffer_id = std::numeric_limits<unsigned int>::max();
+  m_kernel_id = 0;
+
+  m_tlb_set_idx = -1;
+  m_tlb_way_idx = -1;
+  m_tlb_tag = 0;
 }
 
-mem_fetch::~mem_fetch() { m_status = MEM_FETCH_DELETED; }
+mem_fetch::~mem_fetch() {
+  // std::cerr << "Destroying mem_fetch: " << m_request_uid << std::endl; fflush(stdout);
+  m_status = MEM_FETCH_DELETED; 
+}
 
 #define MF_TUP_BEGIN(X) static const char *Status_str[] = {
 #define MF_TUP(X) #X
@@ -91,10 +99,6 @@ mem_fetch::~mem_fetch() { m_status = MEM_FETCH_DELETED; }
 #undef MF_TUP_END
 
 void mem_fetch::print(FILE *fp, bool print_inst) const {
-  // if (this == NULL) { // doenst make sense!
-  //   fprintf(fp, " <NULL mem_fetch pointer>\n");
-  //   return;
-  // }
   fprintf(fp, "  mf: uid=%6u, sid%02u:w%02u, part=%u, ", m_request_uid, m_sid,
           m_wid, m_raw_addr.chip);
   m_access.print(fp);

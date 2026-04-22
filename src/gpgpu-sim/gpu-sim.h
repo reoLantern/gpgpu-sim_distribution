@@ -1,18 +1,47 @@
-// Copyright (c) 2009-2021, Tor M. Aamodt, Wilson W.L. Fung, Vijay Kandiah,
-// Nikos Hardavellas Mahmoud Khairy, Junrui Pan, Timothy G. Rogers The
-// University of British Columbia, Northwestern University, Purdue University
+// Copyright (c) 2023-2025, Rodrigo Huerta, Mojtaba Abaie Shoushtary, Josep-Llorenç Cruz, Antonio González
+// Universitat Politecnica de Catalunya
 // All rights reserved.
 //
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are met:
 //
-// 1. Redistributions of source code must retain the above copyright notice,
-// this
+// Redistributions of source code must retain the above copyright notice, this
+// list of conditions and the following disclaimer.
+// Redistributions in binary form must reproduce the above copyright notice,
+// this list of conditions and the following disclaimer in the documentation
+// and/or other materials provided with the distribution. Neither the name of
+// The Universitat Politecnica de Catalunya nor the names of its contributors may be
+// used to endorse or promote products derived from this software without
+// specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+// ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+// CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+// SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+// INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+// CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+// ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+// POSSIBILITY OF SUCH DAMAGE.
+
+
+
+// Copyright (c) 2009-2021, Tor M. Aamodt, Wilson W.L. Fung, Vijay Kandiah, Nikos Hardavellas
+// Mahmoud Khairy, Junrui Pan, Timothy G. Rogers
+// The University of British Columbia, Northwestern University, Purdue University
+// All rights reserved.
+//
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met:
+//
+// 1. Redistributions of source code must retain the above copyright notice, this
 //    list of conditions and the following disclaimer;
 // 2. Redistributions in binary form must reproduce the above copyright notice,
 //    this list of conditions and the following disclaimer in the documentation
 //    and/or other materials provided with the distribution;
-// 3. Neither the names of The University of British Columbia, Northwestern
+// 3. Neither the names of The University of British Columbia, Northwestern 
 //    University nor the names of their contributors may be used to
 //    endorse or promote products derived from this software without specific
 //    prior written permission.
@@ -29,35 +58,29 @@
 // ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 // POSSIBILITY OF SUCH DAMAGE.
 
+
 #ifndef GPU_SIM_H
 #define GPU_SIM_H
 
-#include <atomic>
-#include <stdint.h>
 #include <stdio.h>
 #include <fstream>
 #include <iostream>
 #include <list>
-#include <memory>
-#include <omp.h>
-#include <queue>
-#include <set>
 #include "../abstract_hardware_model.h"
-// MICRO 2025 port: Stage 1d.4+5 — real traced_execution now lives under
-// util/traces_enhanced/src/ (shared with the tracer and the new
-// trace-parser).  Drops the temporary Stage 1b stub.
-#include "../../../../util/traces_enhanced/src/traced_execution.h"
 #include "../option_parser.h"
 #include "../trace.h"
+#include "../constants.h" // MOD. Do not duplicate somo constants declarations
 #include "addrdec.h"
 #include "gpu-cache.h"
 #include "shader.h"
-// MICRO 2025 port (Stage 1d.4+5): Element_stats is the gpu_per_sm stats bucket
-// used by trace_driven.cc and shader.cc total_* stats collection.
+
 #include "remodeling/new_stats.h"
-// Stage 1e-B1: full ports of coalescing stats classes from fusedMemory/.
-// m_coalescing_stats_across_sms_* fields below need the full class def.
+
 #include "remodeling/fusedMemory/coalescingStats.h"
+
+#include "../../../../util/traces_enhanced/src/traced_execution.h" // MOD. Improved tracer
+
+#include <omp.h>
 
 // constants for statistics printouts
 #define GPU_RSTAT_SHD_INFO 0x1
@@ -85,50 +108,10 @@ class gpgpu_context;
 
 extern tr1_hash_map<new_addr_type, unsigned> address_random_interleaving;
 
-// SST communication functions
-/**
- * @brief Check if SST requests buffer is full
- *
- * @param core_id
- * @return true
- * @return false
- */
-extern bool is_SST_buffer_full(unsigned core_id);
-__attribute__((weak)) bool is_SST_buffer_full(unsigned core_id) {
-  return false;
-}
-
-/**
- * @brief Send loads to SST memory backend
- *
- * @param core_id
- * @param address
- * @param size
- * @param mem_req
- */
-extern void send_read_request_SST(unsigned core_id, uint64_t address,
-                                  size_t size, void *mem_req);
-__attribute__((weak)) void send_read_request_SST(unsigned core_id,
-                                                 uint64_t address, size_t size,
-                                                 void *mem_req) {}
-/**
- * @brief Send stores to SST memory backend
- *
- * @param core_id
- * @param address
- * @param size
- * @param mem_req
- */
-extern void send_write_request_SST(unsigned core_id, uint64_t address,
-                                   size_t size, void *mem_req);
-__attribute__((weak)) void send_write_request_SST(unsigned core_id,
-                                                  uint64_t address, size_t size,
-                                                  void *mem_req) {}
-
 enum dram_ctrl_t { DRAM_FIFO = 0, DRAM_FRFCFS = 1 };
 
 enum hw_perf_t {
-  HW_BENCH_NAME = 0,
+  HW_BENCH_NAME=0,
   HW_KERNEL_NAME,
   HW_L1_RH,
   HW_L1_RM,
@@ -151,7 +134,34 @@ enum hw_perf_t {
 };
 
 struct power_config {
-  power_config() { m_valid = true; }
+  power_config() { 
+    m_valid = true;
+    g_use_nonlinear_model = false;
+    g_steady_state_tracking_filename = nullptr;
+    g_power_trace_filename = nullptr;
+    g_power_filename = nullptr;
+    g_metric_trace_filename = nullptr;
+  }
+
+  ~power_config() {
+    if (g_power_filename) {
+      free(g_power_filename);
+      g_power_filename = nullptr;
+    }
+    if (g_power_trace_filename) {
+      free(g_power_trace_filename);
+      g_power_trace_filename = nullptr;
+    }
+    if (g_metric_trace_filename) {
+      free(g_metric_trace_filename);
+      g_metric_trace_filename = nullptr;
+    }
+    if (g_steady_state_tracking_filename) {
+      free(g_steady_state_tracking_filename);
+      g_steady_state_tracking_filename = nullptr;
+    }
+  }
+
   void init() {
     // initialize file name if it is not set
     time_t curr_time;
@@ -164,19 +174,33 @@ struct power_config {
       s++;
     }
     char buf1[1024];
-    // snprintf(buf1, 1024, "accelwattch_power_report__%s.log", date);
+    //snprintf(buf1, 1024, "accelwattch_power_report__%s.log", date);
     snprintf(buf1, 1024, "accelwattch_power_report.log");
+
+    if(g_power_filename != nullptr) {
+      free(g_power_filename);
+    }
     g_power_filename = strdup(buf1);
     char buf2[1024];
     snprintf(buf2, 1024, "gpgpusim_power_trace_report__%s.log.gz", date);
+    if(g_power_trace_filename != nullptr) {
+      free(g_power_trace_filename);
+    }
     g_power_trace_filename = strdup(buf2);
     char buf3[1024];
     snprintf(buf3, 1024, "gpgpusim_metric_trace_report__%s.log.gz", date);
+    if(g_metric_trace_filename != nullptr) {
+      free(g_metric_trace_filename);
+    }
     g_metric_trace_filename = strdup(buf3);
     char buf4[1024];
     snprintf(buf4, 1024, "gpgpusim_steady_state_tracking_report__%s.log.gz",
              date);
+    if(g_steady_state_tracking_filename != nullptr) {
+      free(g_steady_state_tracking_filename);
+    }
     g_steady_state_tracking_filename = strdup(buf4);
+    
     // for(int i =0; i< hw_perf_t::HW_TOTAL_STATS; i++){
     //   accelwattch_hybrid_configuration[i] = 0;
     // }
@@ -188,9 +212,10 @@ struct power_config {
 
     // NOTE: After changing the nonlinear model to only scaling idle core,
     // NOTE: The min_inc_per_active_sm is not used any more
-    // if (g_use_nonlinear_model)
-    //   sscanf(gpu_nonlinear_model_config, "%lf:%lf", &gpu_idle_core_power,
-    //          &gpu_min_inc_per_active_sm);
+    if (g_use_nonlinear_model) {
+      sscanf(gpu_nonlinear_model_config, "%lf:%lf", &gpu_idle_core_power,
+             &gpu_min_inc_per_active_sm);
+    }
   }
   void reg_options(class OptionParser *opp);
 
@@ -210,6 +235,7 @@ struct power_config {
   char *gpu_steady_state_definition;
   double gpu_steady_power_deviation;
   double gpu_steady_min_period;
+
 
   char *g_hw_perf_file_name;
   char *g_hw_perf_bench_name;
@@ -330,14 +356,6 @@ class memory_config {
   }
   void reg_options(class OptionParser *opp);
 
-  /**
-   * @brief Check if the config script is in SST mode
-   *
-   * @return true
-   * @return false
-   */
-  bool is_SST_mode() const { return SST_mode; }
-
   bool m_valid;
   mutable l2_cache_config m_L2_config;
   bool m_L2_texure_only;
@@ -415,7 +433,7 @@ class memory_config {
   unsigned write_low_watermark;
   bool m_perf_sim_memcpy;
   bool simple_dram_model;
-  bool SST_mode;
+
   gpgpu_context *gpgpu_ctx;
 };
 
@@ -428,6 +446,13 @@ class gpgpu_sim_config : public power_config,
       : m_shader_config(ctx), m_memory_config(ctx) {
     m_valid = false;
     gpgpu_ctx = ctx;
+    g_visualizer_filename = nullptr;
+  }
+  ~gpgpu_sim_config() {
+    if (g_visualizer_filename) {
+      free(g_visualizer_filename);
+      g_visualizer_filename = nullptr;
+    }
   }
   void reg_options(class OptionParser *opp);
   void init() {
@@ -454,64 +479,20 @@ class gpgpu_sim_config : public power_config,
     }
     char buf[1024];
     snprintf(buf, 1024, "gpgpusim_visualizer__%s.log.gz", date);
+    if(g_visualizer_filename != nullptr) {
+      free(g_visualizer_filename);
+    }
     g_visualizer_filename = strdup(buf);
-
-    // Stage 1e-A1 (Codex review follow-up): derived shader-config values +
-    // IWC / PRT policy-string parsing, mirrored from MICRO 2025 gpu-sim.h:
-    // 585-614.  Must happen after m_shader_config.init() so that all input
-    // fields (minimum latencies, coalescing cycles, policy strings) are
-    // populated.
-    m_shader_config.cycles_needed_for_address_calculation =
-        ceil((double)m_shader_config.warp_size /
-             m_shader_config.memory_num_scalar_units_per_subcore);
-    m_shader_config.maximum_l1d_latency_at_sm_structure =
-        m_shader_config.memory_l1d_minimum_latency +
-        m_shader_config.memory_maximum_coalescing_cycles;
-    m_shader_config.maximum_shared_memory_latency_at_sm_structure =
-        m_shader_config.memory_shared_memory_minimum_latency +
-        m_shader_config.memory_maximum_coalescing_cycles +
-        m_shader_config.memory_shared_memory_extra_latency_ldsm_multiple_matrix;
-
-    if (m_shader_config.interwarp_coalescing_selection_policy_string) {
-      std::string iwc_policy_str =
-          m_shader_config.interwarp_coalescing_selection_policy_string;
-      m_shader_config.interwarp_coalescing_selection_policy =
-          iwc_policy_str.find("GTL_WARPID") != std::string::npos ? GTL_WARPID
-        : iwc_policy_str.find("SAME_LAST_LEADER_INST_PC_THEN_OLDEST") != std::string::npos ? SAME_LAST_LEADER_INST_PC_THEN_OLDEST
-        : iwc_policy_str.find("WARPPOOL_HYBRID") != std::string::npos ? WARPPOOL_HYBRID
-        : iwc_policy_str.find("DEP_COUNT_WAIT_OLDEST_INST_IBUFFER_GENERIC") != std::string::npos ? DEP_COUNT_WAIT_OLDEST_INST_IBUFFER_GENERIC
-        : iwc_policy_str.find("DEP_COUNT_WAIT_OLDEST_INST_IBUFFER_CHECKING_WARP_ID") != std::string::npos ? DEP_COUNT_WAIT_OLDEST_INST_IBUFFER_CHECKING_WARP_ID
-        : iwc_policy_str.find("DEP_COUNT_WAIT_DETECTED_AT_DECODE_GENERIC") != std::string::npos ? DEP_COUNT_WAIT_DETECTED_AT_DECODE_GENERIC
-        : iwc_policy_str.find("DEP_COUNT_WAIT_DETECTED_AT_DECODE_CHECKING_WARP_ID") != std::string::npos ? DEP_COUNT_WAIT_DETECTED_AT_DECODE_CHECKING_WARP_ID
-        : IWCOAL_OLDEST;
-    }
-    if (m_shader_config.prt_selection_policy_string) {
-      std::string prt_sel_policy_str =
-          m_shader_config.prt_selection_policy_string;
-      m_shader_config.prt_selection_policy =
-          prt_sel_policy_str.find("SAME_LAST_WARP_ID_THEN_OLDEST") != std::string::npos ? SAME_LAST_WARP_ID_THEN_OLDEST
-        : prt_sel_policy_str.find("SAME_LAST_INST_PC_THEN_OLDEST") != std::string::npos ? SAME_LAST_INST_PC_THEN_OLDEST
-        : prt_sel_policy_str.find("WARPID_N_CLUSTERS_WITH_OLDEST") != std::string::npos ? WARPID_N_CLUSTERS_WITH_OLDEST
-        : prt_sel_policy_str.find("DEP_COUNT_WAIT_GENERIC_THEN_OLDEST") != std::string::npos ? DEP_COUNT_WAIT_GENERIC_THEN_OLDEST
-        : prt_sel_policy_str.find("DEP_COUNT_WAIT_CHECKING_WARP_ID_THEN_OLDEST") != std::string::npos ? DEP_COUNT_WAIT_CHECKING_WARP_ID_THEN_OLDEST
-        : OLDEST;
-    }
 
     m_valid = true;
   }
   unsigned get_core_freq() const { return core_freq; }
+  double get_core_period() const { return core_period; } // MOD. Energy
+  double get_dram_period() const { return dram_period; } // MOD. Enegy
+  int get_gpu_stat_sample_freq() const { return gpu_stat_sample_freq;}; // MOD. Energy
   unsigned num_shader() const { return m_shader_config.num_shader(); }
   unsigned num_cluster() const { return m_shader_config.n_simt_clusters; }
   unsigned get_max_concurrent_kernel() const { return max_concurrent_kernel; }
-
-  /**
-   * @brief Check if we are in SST mode
-   *
-   * @return true
-   * @return false
-   */
-  bool is_SST_mode() const { return m_memory_config.SST_mode; }
-
   unsigned checkpoint_option;
 
   size_t stack_limit() const { return stack_size_limit; }
@@ -521,7 +502,120 @@ class gpgpu_sim_config : public power_config,
     return runtime_pending_launch_count_limit;
   }
 
+  const shader_core_config& get_gpgpu_sim_config() const { return m_shader_config; }
+
   bool flush_l1() const { return gpgpu_flush_l1_cache; }
+
+  void set_custom_options(bool is_trace_mode) {
+    m_shader_config.is_trace_mode = is_trace_mode; // MOD. General Config Helper
+
+    // MOD. Begin. Fix WAR at baseline.
+    std::string scb_r_mode_config = m_shader_config.scoreboard_war_mode;
+    m_shader_config.scoreboard_war_reads_mode = scb_r_mode_config.find("wb") != std::string::npos ? scoreboard_reads_mode::RELEASE_AT_WB
+                                  : scb_r_mode_config.find("opc") != std::string::npos ? scoreboard_reads_mode::RELEASE_AT_OPC
+                                  : scoreboard_reads_mode::DISABLED;
+    // MOD. End
+
+    // MOD. Begin. Added L0I
+    if(m_shader_config.is_L0I_enabled) {
+      if(!m_shader_config.is_fetch_and_decode_improved) {
+        std::cout << "Error. If -is_L0I_enabled is set to 1, -is_fetch_and_decode_improved must be set to 1 too." << std::endl;
+        fflush(stdout);
+        abort();
+      }
+    }
+    // MOD. End. Added L0I
+
+    // MOD. Begin. Fix misaligned fetched instructions
+    if(m_shader_config.is_fix_instruction_fetch_misalignment) {
+      if(!m_shader_config.is_fetch_and_decode_improved) {
+        std::cout << "Error. If -is_fix_instruction_fetch_misalignment is set to 1, -is_fetch_and_decode_improved must be set to 1 too." << std::endl;
+        fflush(stdout);
+        abort();
+      }
+    }
+    // MOD. End. Fix misaligned fetched instructions
+
+    // MOD. Begin. Instruction addresses of different kernels have a different address request in memory
+    if(m_shader_config.is_fix_different_kernels_pc_addresses) {
+      if(!m_shader_config.is_fetch_and_decode_improved) {
+        std::cout << "Error. If -is_fix_different_kernels_pc_addresses is set to 1, -is_fetch_and_decode_improved must be set to 1 too." << std::endl;
+        fflush(stdout);
+        abort();
+      }
+    }
+    // MOD. End.
+
+    // MOD. Begin. Fix not decoding not contiguos instructions
+    if(m_shader_config.is_fix_not_decoding_not_contiguos_instructions) {
+      if(!m_shader_config.is_fetch_and_decode_improved) {
+        std::cout << "Error. If -is_fix_not_decoding_not_contiguos_instructions is set to 1, -is_fetch_and_decode_improved must be set to 1 too." << std::endl;
+        fflush(stdout);
+        abort();
+      }
+    }
+    // MOD. End.
+
+    if(m_shader_config.is_instruction_prefetching_enabled && (m_shader_config.prefetch_per_stream_buffer_size == 0)) {
+      std::cout << "Error. If -is_instruction_prefetching_enabled is set to 1, -prefetch_per_stream_buffer_size must be set to a value greater than 0." << std::endl;
+      fflush(stdout);
+      abort();
+    }
+
+    // MOD. Begin. General parse options
+    // scedulers
+    // must currently occur after all inputs have been initialized.
+    std::string sched_config = m_shader_config.gpgpu_scheduler_string;
+    const concrete_scheduler scheduler =
+        sched_config.find("lrr") != std::string::npos
+            ? CONCRETE_SCHEDULER_LRR
+            : sched_config.find("two_level_active") != std::string::npos
+                  ? CONCRETE_SCHEDULER_TWO_LEVEL_ACTIVE
+                  : sched_config.find("gto") != std::string::npos
+                        ? CONCRETE_SCHEDULER_GTO
+                        : sched_config.find("rrr") != std::string::npos
+                              ? CONCRETE_SCHEDULER_RRR
+                        : sched_config.find("old") != std::string::npos
+                              ? CONCRETE_SCHEDULER_OLDEST_FIRST
+                              : sched_config.find("warp_limiting") !=
+                                        std::string::npos
+                                    ? CONCRETE_SCHEDULER_WARP_LIMITING
+                                    : NUM_CONCRETE_SCHEDULERS;
+    assert(scheduler != NUM_CONCRETE_SCHEDULERS);
+    m_shader_config.warp_scheduling_mode = scheduler;
+    // MOD. End. General parse options
+
+    m_shader_config.cycles_needed_for_address_calculation = ceil(m_shader_config.warp_size / m_shader_config.memory_num_scalar_units_per_subcore);
+    m_shader_config.maximum_l1d_latency_at_sm_structure = m_shader_config.memory_l1d_minimum_latency + m_shader_config.memory_maximum_coalescing_cycles;
+    m_shader_config.maximum_shared_memory_latency_at_sm_structure = m_shader_config.memory_shared_memory_minimum_latency + m_shader_config.memory_maximum_coalescing_cycles + m_shader_config.memory_shared_memory_extra_latency_ldsm_multiple_matrix;
+  
+    // Parse inter-warp coalescing selection policy
+    std::string iwc_policy_str = m_shader_config.interwarp_coalescing_selection_policy_string;
+    m_shader_config.interwarp_coalescing_selection_policy = 
+        iwc_policy_str.find("GTL_WARPID") != std::string::npos ? InterWarpCoalescingSelectionPolicies::GTL_WARPID
+        : iwc_policy_str.find("SAME_LAST_LEADER_INST_PC_THEN_OLDEST") != std::string::npos ? InterWarpCoalescingSelectionPolicies::SAME_LAST_LEADER_INST_PC_THEN_OLDEST
+        : iwc_policy_str.find("WARPPOOL_HYBRID") != std::string::npos ? InterWarpCoalescingSelectionPolicies::WARPPOOL_HYBRID
+        : iwc_policy_str.find("DEP_COUNT_WAIT_OLDEST_INST_IBUFFER_GENERIC") != std::string::npos ? InterWarpCoalescingSelectionPolicies::DEP_COUNT_WAIT_OLDEST_INST_IBUFFER_GENERIC
+        : iwc_policy_str.find("DEP_COUNT_WAIT_OLDEST_INST_IBUFFER_CHECKING_WARP_ID") != std::string::npos ? InterWarpCoalescingSelectionPolicies::DEP_COUNT_WAIT_OLDEST_INST_IBUFFER_CHECKING_WARP_ID
+        : iwc_policy_str.find("DEP_COUNT_WAIT_DETECTED_AT_DECODE_GENERIC") != std::string::npos ? InterWarpCoalescingSelectionPolicies::DEP_COUNT_WAIT_DETECTED_AT_DECODE_GENERIC
+        : iwc_policy_str.find("DEP_COUNT_WAIT_DETECTED_AT_DECODE_CHECKING_WARP_ID") != std::string::npos ? InterWarpCoalescingSelectionPolicies::DEP_COUNT_WAIT_DETECTED_AT_DECODE_CHECKING_WARP_ID
+        : InterWarpCoalescingSelectionPolicies::IWCOAL_OLDEST; // Default to OLDEST if not matching any other policy
+    
+    std::string prt_sel_policy_str = m_shader_config.prt_selection_policy_string;
+    m_shader_config.prt_selection_policy = 
+        prt_sel_policy_str.find("SAME_LAST_WARP_ID_THEN_OLDEST") != std::string::npos ? PRTSelectionPolicies::SAME_LAST_WARP_ID_THEN_OLDEST
+        : prt_sel_policy_str.find("SAME_LAST_INST_PC_THEN_OLDEST") != std::string::npos ? PRTSelectionPolicies::SAME_LAST_INST_PC_THEN_OLDEST
+        : prt_sel_policy_str.find("WARPID_N_CLUSTERS_WITH_OLDEST") != std::string::npos ? PRTSelectionPolicies::WARPID_N_CLUSTERS_WITH_OLDEST
+        : prt_sel_policy_str.find("DEP_COUNT_WAIT_GENERIC_THEN_OLDEST") != std::string::npos ? PRTSelectionPolicies::DEP_COUNT_WAIT_GENERIC_THEN_OLDEST
+        : prt_sel_policy_str.find("DEP_COUNT_WAIT_CHECKING_WARP_ID_THEN_OLDEST") != std::string::npos ? PRTSelectionPolicies::DEP_COUNT_WAIT_CHECKING_WARP_ID_THEN_OLDEST
+        : PRTSelectionPolicies::OLDEST; // Default to OLDEST if not matching any other policy
+    if( (m_shader_config.prt_selection_policy == PRTSelectionPolicies::DEP_COUNT_WAIT_GENERIC_THEN_OLDEST) || (m_shader_config.prt_selection_policy == PRTSelectionPolicies::DEP_COUNT_WAIT_CHECKING_WARP_ID_THEN_OLDEST) ) {
+      assert(m_shader_config.is_interwarp_coalescing_enabled);
+      assert((m_shader_config.interwarp_coalescing_selection_policy == InterWarpCoalescingSelectionPolicies::DEP_COUNT_WAIT_OLDEST_INST_IBUFFER_GENERIC) || (m_shader_config.interwarp_coalescing_selection_policy == InterWarpCoalescingSelectionPolicies::DEP_COUNT_WAIT_OLDEST_INST_IBUFFER_CHECKING_WARP_ID) || (m_shader_config.interwarp_coalescing_selection_policy == InterWarpCoalescingSelectionPolicies::DEP_COUNT_WAIT_DETECTED_AT_DECODE_GENERIC) || (m_shader_config.interwarp_coalescing_selection_policy == InterWarpCoalescingSelectionPolicies::DEP_COUNT_WAIT_DETECTED_AT_DECODE_CHECKING_WARP_ID));
+    }
+    assert(!m_shader_config.is_fp32_and_int_unified_pipeline || (m_shader_config.is_fp32_and_int_unified_pipeline && !m_shader_config.is_fp32ops_allowed_in_int_pipeline));
+  }
+  
 
  private:
   void init_clock_domains(void);
@@ -530,14 +624,6 @@ class gpgpu_sim_config : public power_config,
   class gpgpu_context *gpgpu_ctx;
   bool m_valid;
   shader_core_config m_shader_config;
-
- public:
-  // MICRO 2025 port: their ported code calls
-  // gpu->get_config().get_gpgpu_sim_config() to reach the inner
-  // shader_core_config.  Provide that accessor here.
-  const shader_core_config &get_gpgpu_sim_config() const { return m_shader_config; }
-
- private:
   memory_config m_memory_config;
   // clock domains - frequency
   double core_freq;
@@ -584,7 +670,6 @@ class gpgpu_sim_config : public power_config,
   unsigned long long liveness_message_freq;
 
   friend class gpgpu_sim;
-  friend class sst_gpgpu_sim;
 };
 
 struct occupancy_stats {
@@ -637,15 +722,9 @@ class watchpoint_event {
   const ptx_instruction *m_inst;
 };
 
-// Stage 1e-A3 (Codex review follow-up): grid-level barrier tracking.  Byte-
-// for-byte from MICRO 2025 gpu-sim.h:720-750.  Populated by launch(),
-// erased by set_kernel_done(), tickled per CTA in issue_block2core
-// (increase) and CTA-complete (decrease), and finally drained by
-// register_grid_barrier_arrivement when a GRID_BARRIER_OP mem_fetch arrives.
 struct grid_barrier_notify_info {
-  grid_barrier_notify_info() : kernel_id(0), sm_ids_to_notify() {}
-  grid_barrier_notify_info(unsigned int kernel_id,
-                           std::set<unsigned int> sm_ids_to_notify)
+  grid_barrier_notify_info() : kernel_id(0), sm_ids_to_notify(std::set<unsigned int>()) {}
+  grid_barrier_notify_info(unsigned int kernel_id, std::set<unsigned int> sm_ids_to_notify)
       : kernel_id(kernel_id), sm_ids_to_notify(sm_ids_to_notify) {}
 
   unsigned int kernel_id;
@@ -653,17 +732,9 @@ struct grid_barrier_notify_info {
 };
 
 struct grid_barrier_status {
-  grid_barrier_status()
-      : kernel_id(0),
-        num_threads_kernel(0),
-        num_threads_arrived(0),
-        active(false) {}
-  grid_barrier_status(unsigned int kernel_id,
-                      unsigned long long num_threads_kernel)
-      : kernel_id(kernel_id),
-        num_threads_kernel(num_threads_kernel),
-        num_threads_arrived(0),
-        active(false) {}
+  grid_barrier_status() : kernel_id(0), num_threads_kernel(0), num_threads_arrived(0), active(false) {}
+  grid_barrier_status(unsigned int kernel_id, unsigned long long num_threads_kernel)
+      : kernel_id(kernel_id), num_threads_kernel(num_threads_kernel), num_threads_arrived(0), active(false) {}
 
   bool barrier_completed() {
     return num_threads_arrived == num_threads_kernel;
@@ -679,9 +750,14 @@ struct grid_barrier_status {
 class gpgpu_sim : public gpgpu_t {
  public:
   gpgpu_sim(const gpgpu_sim_config &config, gpgpu_context *ctx);
-
+  virtual ~gpgpu_sim();
   void set_prop(struct cudaDeviceProp *prop);
 
+  unsigned long long get_current_gpu_cycle() {
+    return gpu_sim_cycle + gpu_tot_sim_cycle;
+  }
+
+  std::map<std::string, address_type> *get_kernel_adresses_map() { return &m_first_pc_of_each_defined_kernel; } // MOD. Instruction addresses of different kernels have a different address request in memory
   void launch(kernel_info_t *kinfo);
   bool can_start_kernel();
   unsigned finished_kernel();
@@ -689,6 +765,9 @@ class gpgpu_sim : public gpgpu_t {
   void stop_all_running_kernels();
 
   void init();
+  std::unique_ptr<grid_barrier_notify_info> register_grid_barrier_arrivement(mem_fetch *mf);
+  void increase_num_threads_kernel(unsigned kernel_id, unsigned num_threads);
+  void decrease_num_threads_kernel(unsigned kernel_id, unsigned num_threads);
   void cycle();
   bool active();
   bool cycle_insn_cta_max_hit() {
@@ -701,10 +780,10 @@ class gpgpu_sim : public gpgpu_t {
            (m_config.gpu_max_completed_cta_opt &&
             (gpu_completed_cta >= m_config.gpu_max_completed_cta_opt));
   }
-  void print_stats(unsigned long long streamID);
+  void print_stats();
   void update_stats();
   void deadlock_check();
-  void inc_completed_cta() { gpu_completed_cta.fetch_add(1); }
+  void inc_completed_cta() { gpu_completed_cta++; }
   void get_pdom_stack_top_info(unsigned sid, unsigned tid, unsigned *pc,
                                unsigned *rpc);
 
@@ -730,7 +809,7 @@ class gpgpu_sim : public gpgpu_t {
   void decrement_kernel_latency();
 
   const gpgpu_sim_config &get_config() const { return m_config; }
-  void gpu_print_stat(unsigned long long streamID);
+  void gpu_print_stat();
   void dump_pipeline(int mask, int s, int m) const;
 
   void perf_memcpy_to_gpu(size_t dst_start_addr, size_t count);
@@ -762,18 +841,31 @@ class gpgpu_sim : public gpgpu_t {
   void hit_watchpoint(unsigned watchpoint_num, ptx_thread_info *thd,
                       const ptx_instruction *pI);
 
-  /**
-   * @brief Check if we are in SST mode
-   *
-   * @return true
-   * @return false
-   */
-  bool is_SST_mode() { return m_config.is_SST_mode(); }
-
   // backward pointer
   class gpgpu_context *gpgpu_ctx;
+  
+  shader_core_stats* get_shader_stats(){ return m_shader_stats;} // MOD. VPREG
 
- protected:
+  traced_execution& get_extra_trace_info() { return m_extra_trace_info; }
+
+  void parse_extra_trace_info(std::string filepath, bool is_extra_trace_enabled); // MOD. Improved tracer
+
+  Element_stats m_gpu_per_sm_stats;
+
+  coalescingStatsAcrossSms m_coalescing_stats_across_sms_l1d;
+  coalescingStatsAcrossSms m_coalescing_stats_across_sms_const;
+  coalescingStatsAcrossSms m_coalescing_stats_across_sms_sharedmem;
+
+  omp_sched_t m_current_omp_scheduler;
+  float m_active_sms_this_cycle;
+
+
+ private:
+  void create_gpu_per_sm_stats();
+  void gather_gpu_per_sm_stats();
+  void reset_cycless_access_history();
+  void gather_gpu_per_sm_single_stat(std::string stat_name);
+  void reset_gpu_per_sm_stats();
   // clocks
   void reinit_clock_domains(void);
   int next_clock_domain(void);
@@ -782,11 +874,13 @@ class gpgpu_sim : public gpgpu_t {
   void shader_print_runtime_stat(FILE *fout);
   void shader_print_l1_miss_stat(FILE *fout) const;
   void shader_print_cache_stats(FILE *fout) const;
-  void shader_print_scheduler_stat(FILE *fout, bool print_dynamic_info) const;
+  void shader_print_scheduler_stat(FILE *fout, bool print_dynamic_info);
   void visualizer_printstat();
   void print_shader_cycle_distro(FILE *fout) const;
 
   void gpgpu_debug();
+
+  unsigned int m_current_cycle_clock_mask;
 
  protected:
   ///// data /////
@@ -794,21 +888,22 @@ class gpgpu_sim : public gpgpu_t {
   class memory_partition_unit **m_memory_partition_unit;
   class memory_sub_partition **m_memory_sub_partition;
 
+  std::map<std::string, address_type> m_first_pc_of_each_defined_kernel; // MOD. Fix requesting same address for different kernels
+  traced_execution m_extra_trace_info;  // MOD. Improved tracer
+
   std::vector<kernel_info_t *> m_running_kernels;
   unsigned m_last_issued_kernel;
 
   std::list<unsigned> m_finished_kernel;
-  // Stage 1e-A3: per-kernel grid-barrier state + pending notifications.
-  // Matches MICRO 2025 gpu-sim.h:898-899.
   std::map<unsigned int, grid_barrier_status> m_grid_barrier_status;
   std::queue<std::unique_ptr<grid_barrier_notify_info>> m_grid_barrier_notify_queue;
   // m_total_cta_launched == per-kernel count. gpu_tot_issued_cta == global
   // count.
+  unsigned long long total_sms_accumulated_across_cycles;
   unsigned long long m_total_cta_launched;
   unsigned long long gpu_tot_issued_cta;
-  std::atomic<unsigned> gpu_completed_cta;
+  unsigned gpu_completed_cta;
 
-  float m_active_sms_this_cycle;
   unsigned m_last_cluster_issue;
   float *average_pipeline_duty_cycle;
   float *active_sms;
@@ -860,17 +955,6 @@ class gpgpu_sim : public gpgpu_t {
   occupancy_stats gpu_occupancy;
   occupancy_stats gpu_tot_occupancy;
 
-  typedef struct {
-    unsigned long long start_cycle;
-    unsigned long long end_cycle;
-  } kernel_time_t;
-  std::map<unsigned long long, std::map<unsigned, kernel_time_t>>
-      gpu_kernel_time;
-  unsigned long long last_streamID;
-  unsigned long long last_uid;
-  cache_stats aggregated_l1_stats;
-  cache_stats aggregated_l2_stats;
-
   // performance counter for stalls due to congestion.
   unsigned int gpu_stall_dramfull;
   unsigned int gpu_stall_icnt2sh;
@@ -890,7 +974,7 @@ class gpgpu_sim : public gpgpu_t {
   void set_cache_config(std::string kernel_name);
 
   // Jin: functional simulation for CDP
- protected:
+ private:
   // set by stream operation every time a functoinal simulation is done
   bool m_functional_sim;
   kernel_info_t *m_functional_sim_kernel;
@@ -898,9 +982,6 @@ class gpgpu_sim : public gpgpu_t {
  public:
   bool is_functional_sim() { return m_functional_sim; }
   kernel_info_t *get_functional_kernel() { return m_functional_sim_kernel; }
-  std::vector<kernel_info_t *> get_running_kernels() {
-    return m_running_kernels;
-  }
   void functional_launch(kernel_info_t *k) {
     m_functional_sim = true;
     m_functional_sim_kernel = k;
@@ -911,60 +992,6 @@ class gpgpu_sim : public gpgpu_t {
     m_functional_sim = false;
     m_functional_sim_kernel = NULL;
   }
-
-  // MICRO 2025 port: stubbed traced_execution holder used by remodeling/sm.cc
-  // (search_function_addr, get_unique_function_id, get_kernel_by_unique_function_id).
-  // Stage 1 leaves this as a zero-effect stub; Stage 1d will wire the
-  // NVBit-v1.8-text → traced_instruction adapter behind the same accessor.
-  ::traced_execution &get_extra_trace_info() { return m_extra_trace_info; }
-
-  // MICRO 2025 port: misc helpers exposed to remodeling/ code.
-  unsigned long long get_current_gpu_cycle() { return gpu_tot_sim_cycle + gpu_sim_cycle; }
-
-  // Stage 1e-A3 (Codex review follow-up): real grid-barrier plumbing.
-  // Matches MICRO 2025 gpu-sim.h:768-770 + gpu-sim.cc:2801-2829.  The prior
-  // no-op decrease stub would silently break grid-barrier semantics under
-  // SM remodeling; real impls assert the kernel_id is registered (launch()
-  // inserts the entry, set_kernel_done() erases it).
-  std::unique_ptr<grid_barrier_notify_info> register_grid_barrier_arrivement(mem_fetch *mf);
-  void increase_num_threads_kernel(unsigned kernel_id, unsigned num_threads);
-  void decrease_num_threads_kernel(unsigned kernel_id, unsigned num_threads);
-
-  // MICRO 2025 port (Stage 1d.8): load the static per-kernel JSON produced by
-  // the tracer-v2 into m_extra_trace_info so that
-  // traced_execution::get_kernel_by_unique_function_id and friends can
-  // resolve lookups.  Invoked from accel-sim.cc right after tracer
-  // construction (mirrors MICRO 2025 main.cc:99).
-  void parse_extra_trace_info(std::string filepath, bool is_extra_trace_enabled);
-
-  // MICRO 2025 port (Stage 1d.4+5): global per-SM stats bucket.  Populated
-  // by each shader_core_ctx via create_gpu_per_sm_stats()/gather_*; read in
-  // shader.cc total_l1d_instructions/total_accesses_coalesced/etc.  Under
-  // vanilla (is_SM_remodeling_enabled=0) the stats map stays empty.
-  // Name matches MICRO 2025 gpu-sim.cc:1667 initialization.
-  Element_stats m_gpu_per_sm_stats{"GPU_per_SM_stats"};
-
-  // Stage 1e-A2 (Codex review follow-up): per-coalescer stats buckets +
-  // stats-collection chain, matches MICRO 2025 gpu-sim.h:855-859 +
-  // gpu-sim.cc:1668-1670.
-  // Stage 1e-B1: switched from stubbed default-ctor to the real 2-arg
-  // ctor (name_space, space_type).  In-class init here keeps gpgpu_sim's
-  // ctor init list unchanged.
-  coalescingStatsAcrossSms m_coalescing_stats_across_sms_l1d{
-      "l1d", _memory_space_t::global_space};
-  coalescingStatsAcrossSms m_coalescing_stats_across_sms_const{
-      "const", _memory_space_t::const_space};
-  coalescingStatsAcrossSms m_coalescing_stats_across_sms_sharedmem{
-      "sharedMem", _memory_space_t::shared_space};
-
-  void create_gpu_per_sm_stats();
-  void gather_gpu_per_sm_stats();
-  void reset_cycless_access_history();
-  void gather_gpu_per_sm_single_stat(std::string stat_name);
-  void reset_gpu_per_sm_stats();
-
- private:
-  ::traced_execution m_extra_trace_info;
 };
 
 class exec_gpgpu_sim : public gpgpu_sim {
@@ -975,81 +1002,6 @@ class exec_gpgpu_sim : public gpgpu_sim {
   }
 
   virtual void createSIMTCluster();
-};
-
-/**
- * @brief A GPGPUSim class customized to SST Balar interfacing
- *
- */
-class sst_gpgpu_sim : public gpgpu_sim {
- public:
-  sst_gpgpu_sim(const gpgpu_sim_config &config, gpgpu_context *ctx)
-      : gpgpu_sim(config, ctx) {
-    createSIMTCluster();
-  }
-
-  // SST memory handling
-  std::vector<std::deque<mem_fetch *>>
-      SST_gpgpu_reply_buffer; /** SST mem response queue */
-
-  /**
-   * @brief Receive mem request's response from SST and put
-   *        it in a buffer (SST_gpgpu_reply_buffer)
-   *
-   * @param core_id
-   * @param mem_req
-   */
-  void SST_receive_mem_reply(unsigned core_id, void *mem_req);
-
-  /**
-   * @brief Pop the head of the buffer queue to get the
-   *        memory response
-   *
-   * @param core_id
-   * @return mem_fetch*
-   */
-  mem_fetch *SST_pop_mem_reply(unsigned core_id);
-
-  virtual void createSIMTCluster();
-
-  // SST Balar interfacing
-  /**
-   * @brief Advance core and collect stats
-   *
-   */
-  void SST_cycle();
-
-  /**
-   * @brief Wrapper of SST_cycle()
-   *
-   */
-  void cycle();
-
-  /**
-   * @brief Whether the GPU is active, removed test for
-   *        memory system since that is handled in SST
-   *
-   * @return true
-   * @return false
-   */
-  bool active();
-
-  /**
-   * @brief SST mode use SST memory system instead, so the memcpy
-   *        is empty here
-   *
-   * @param dst_start_addr
-   * @param count
-   */
-  void perf_memcpy_to_gpu(size_t dst_start_addr, size_t count){};
-
-  /**
-   * @brief Check if the SST config matches up with the
-   *        gpgpusim.config in core number
-   *
-   * @param sst_numcores SST core count
-   */
-  void SST_gpgpusim_numcores_equal_check(unsigned sst_numcores);
 };
 
 #endif

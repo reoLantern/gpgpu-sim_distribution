@@ -29,7 +29,6 @@
 #ifndef MEM_FETCH_H
 #define MEM_FETCH_H
 
-#include <atomic>
 #include <bitset>
 #include "../abstract_hardware_model.h"
 #include "addrdec.h"
@@ -55,10 +54,9 @@ class memory_config;
 class mem_fetch {
  public:
   mem_fetch(const mem_access_t &access, const warp_inst_t *inst,
-            unsigned long long streamID, unsigned ctrl_size, unsigned wid,
-            unsigned sid, unsigned tpc, const memory_config *config,
-            unsigned long long cycle, mem_fetch *original_mf = NULL,
-            mem_fetch *original_wr_mf = NULL);
+            unsigned ctrl_size, unsigned wid, unsigned sid, unsigned tpc,
+            const memory_config *config, unsigned long long cycle,
+            mem_fetch *original_mf = NULL, mem_fetch *original_wr_mf = NULL, unsigned int unique_function_id = 0);
   ~mem_fetch();
 
   void set_status(enum mem_fetch_status status, unsigned long long cycle);
@@ -79,9 +77,15 @@ class mem_fetch {
 
   const addrdec_t &get_tlx_addr() const { return m_raw_addr; }
   void set_chip(unsigned chip_id) { m_raw_addr.chip = chip_id; }
-  void set_partition(unsigned sub_partition_id) {
+  void set_parition(unsigned sub_partition_id) {
     m_raw_addr.sub_partition = sub_partition_id;
   }
+  void set_original_mf(mem_fetch * orig_mf) { original_mf = orig_mf; } // MOD. Added L0I
+  mem_access_t& get_access() { return m_access; } // MOD. Added L0I
+  bool get_is_filling_L0() { return m_is_filling_L0; } // MOD. Added L0I
+  void set_is_filling_L0(bool is_filling_L0) { m_is_filling_L0 = is_filling_L0; } // MOD. Added L0I
+  int get_subcore() { return m_subcore; } // MOD. Added L0I
+  void set_subcore(int subcore) { m_subcore = subcore; } // MOD. Added L0I
   unsigned get_data_size() const { return m_data_size; }
   void set_data_size(unsigned size) { m_data_size = size; }
   unsigned get_ctrl_size() const { return m_ctrl_size; }
@@ -100,6 +104,7 @@ class mem_fetch {
   bool istexture() const;
   bool isconst() const;
   enum mf_type get_type() const { return m_type; }
+  void set_type(enum mf_type type) { m_type = type; }
   bool isatomic() const;
 
   void set_return_timestamp(unsigned t) { m_timestamp2 = t; }
@@ -107,7 +112,6 @@ class mem_fetch {
   unsigned get_timestamp() const { return m_timestamp; }
   unsigned get_return_timestamp() const { return m_timestamp2; }
   unsigned get_icnt_receive_time() const { return m_icnt_receive_time; }
-  unsigned long long get_streamID() const { return m_streamID; }
 
   enum mem_access_type get_access_type() const { return m_access.get_type(); }
   const active_mask_t &get_access_warp_mask() const {
@@ -120,8 +124,10 @@ class mem_fetch {
     return m_access.get_sector_mask();
   }
 
+  addr_t get_access_address() const { return m_access.get_addr(); } // MOD. Added L0I
+
   address_type get_pc() const { return m_inst.empty() ? -1 : m_inst.pc; }
-  const warp_inst_t &get_inst() { return m_inst; }
+  warp_inst_t &get_inst() { return m_inst; } // MOD. VPREG. Removed const
   enum mem_fetch_status get_status() const { return m_status; }
 
   const memory_config *get_mem_config() { return m_mem_config; }
@@ -131,12 +137,45 @@ class mem_fetch {
   mem_fetch *get_original_mf() { return original_mf; }
   mem_fetch *get_original_wr_mf() { return original_wr_mf; }
 
+  void set_is_fixed_latency_constant_access(bool is_fixed_latency_constant_access) { m_is_fixed_latency_constant_access = is_fixed_latency_constant_access; }
+  bool get_is_fixed_latency_constant_access() { return m_is_fixed_latency_constant_access; }
+
+  unsigned int get_unique_function_id() { return m_unique_function_id; }
+
+  void set_unique_function_id(unsigned int unique_function_id) { m_unique_function_id = unique_function_id; }
+
+  bool get_is_prefetch() { return m_is_prefetch; }
+
+  void set_is_prefetch(bool is_prefetch) { m_is_prefetch = is_prefetch; }
+
+  unsigned int get_stream_buffer_id() { return m_stream_buffer_id; }
+
+  void set_stream_buffer_id(unsigned int stream_buffer_id) { m_stream_buffer_id = stream_buffer_id; }
+
+  void set_kernel_id(unsigned int kernel_id) { m_kernel_id = kernel_id; }
+  unsigned int get_kernel_id() { return m_kernel_id; }
+
+  void set_tlb_way_idx(unsigned int tlb_way_idx) { m_tlb_way_idx = tlb_way_idx; }
+  int get_tlb_way_idx() { return m_tlb_way_idx; }
+  void set_tlb_set_idx(unsigned int tlb_set_idx) { m_tlb_set_idx = tlb_set_idx; }
+  int get_tlb_set_idx() { return m_tlb_set_idx; }
+  void set_tlb_tag(new_addr_type tlb_tag) { m_tlb_tag = tlb_tag; }
+  new_addr_type get_tlb_tag() { return m_tlb_tag; }
+
  private:
   // request source information
   unsigned m_request_uid;
   unsigned m_sid;
   unsigned m_tpc;
   unsigned m_wid;
+  unsigned int m_kernel_id;
+
+  int m_subcore; // MOD. Added L0I
+  bool m_is_filling_L0; // MOD. Added L0I
+  bool m_is_prefetch;
+  unsigned int m_stream_buffer_id;
+  bool m_is_fixed_latency_constant_access;
+  unsigned int m_unique_function_id;
 
   // where is this request now?
   enum mem_fetch_status m_status;
@@ -166,12 +205,14 @@ class mem_fetch {
   // requesting instruction (put last so mem_fetch prints nicer in gdb)
   warp_inst_t m_inst;
 
-  unsigned long long m_streamID;
-
-  static std::atomic<unsigned> sm_next_mf_request_uid;
+  static unsigned sm_next_mf_request_uid;
 
   const memory_config *m_mem_config;
   unsigned icnt_flit_size;
+
+  int m_tlb_way_idx;
+  int m_tlb_set_idx;
+  new_addr_type m_tlb_tag;
 
   mem_fetch
       *original_mf;  // this pointer is set up when a request is divided into
@@ -179,44 +220,6 @@ class mem_fetch {
                      // size), so the pointer refers to the original request
   mem_fetch *original_wr_mf;  // this pointer refers to the original write req,
                               // when fetch-on-write policy is used
-
-  // ==========================================================================
-  // MICRO 2025 port additions (Stage 1c.4.3).  L0 I-cache + stream buffer
-  // prefetcher tagging.  Default false/0 — vanilla path never reads these.
-  // ==========================================================================
- public:
-  mem_access_t &get_access() { return m_access; }
-  const mem_access_t &get_access() const { return m_access; }
-  addr_t get_access_address() const { return m_access.get_addr(); }
-
-  int  get_subcore() const          { return m_subcore; }
-  void set_subcore(int subcore)     { m_subcore = subcore; }
-
-  bool get_is_filling_L0() const    { return m_is_filling_L0; }
-  void set_is_filling_L0(bool v)    { m_is_filling_L0 = v; }
-
-  bool get_is_prefetch() const      { return m_is_prefetch; }
-  void set_is_prefetch(bool v)      { m_is_prefetch = v; }
-
-  unsigned get_stream_buffer_id() const   { return m_stream_buffer_id; }
-  void set_stream_buffer_id(unsigned id)  { m_stream_buffer_id = id; }
-
-  unsigned int get_unique_function_id() const      { return m_unique_function_id; }
-  void set_unique_function_id(unsigned int id)     { m_unique_function_id = id; }
-
-  unsigned int get_kernel_id() const               { return m_kernel_id; }
-  void set_kernel_id(unsigned int id)              { m_kernel_id = id; }
-  bool get_is_fixed_latency_constant_access() const { return m_is_fixed_latency_constant_access; }
-  void set_is_fixed_latency_constant_access(bool v) { m_is_fixed_latency_constant_access = v; }
-
- private:
-  int      m_subcore            = -1;
-  bool     m_is_filling_L0      = false;
-  bool     m_is_prefetch        = false;
-  unsigned m_stream_buffer_id   = 0;
-  unsigned m_unique_function_id = 0;
-  unsigned m_kernel_id          = 0;
-  bool     m_is_fixed_latency_constant_access = false;
 };
 
 #endif

@@ -73,6 +73,7 @@ xbar_router::xbar_router(unsigned router_id, enum Interconnect_type m_type,
   conflicts_util = 0;
   cycles_util = 0;
   reqs_util = 0;
+  packets_num_per_device.resize(total_nodes, 0);
 }
 
 xbar_router::~xbar_router() {}
@@ -81,9 +82,7 @@ void xbar_router::Push(unsigned input_deviceID, unsigned output_deviceID,
                        void* data, unsigned int size) {
   assert(input_deviceID < total_nodes);
   in_buffers[input_deviceID].push(Packet(data, output_deviceID));
-  // May be called in parallel from different input_deviceIDs.
-#pragma omp atomic
-  packets_num++;
+  packets_num_per_device[input_deviceID]++;
 }
 
 void* xbar_router::Pop(unsigned ouput_deviceID) {
@@ -104,10 +103,7 @@ bool xbar_router::Has_Buffer_In(unsigned input_deviceID, unsigned size,
 
   bool has_buffer =
       (in_buffers[input_deviceID].size() + size <= in_buffer_limit);
-  if (update_counter && !has_buffer) {
-#pragma omp atomic
-    in_buffer_full++;
-  }
+  if (update_counter && !has_buffer) in_buffer_full++;
 
   return has_buffer;
 }
@@ -121,23 +117,9 @@ void xbar_router::Advance() {
     RR_Advance();
   else if (arbit_type == iSLIP)
     iSLIP_Advance();
-  else if (arbit_type == PERFECT)
-    Perfect_Advance();
   else
     assert(0);
 }
-
-void xbar_router::Perfect_Advance() {
-  for (unsigned node_id = 0; node_id < total_nodes; node_id++) {
-    if (!in_buffers[node_id].empty()) {
-      Packet _packet = in_buffers[node_id].front();
-      if (Has_Buffer_Out(_packet.output_deviceID, 1)) {
-        out_buffers[_packet.output_deviceID].push(_packet);
-        in_buffers[node_id].pop();
-      }
-    }
-  }
-};
 
 void xbar_router::RR_Advance() {
   bool active = false;
@@ -167,7 +149,7 @@ void xbar_router::RR_Advance() {
       }
     }
   }
-  next_node_id = next_node_id + 1;
+  next_node_id = next_node_id + 1 ;
   next_node_id = (next_node_id % total_nodes);
 
   conflicts += conflict_sub;
@@ -178,8 +160,8 @@ void xbar_router::RR_Advance() {
   }
 
   if (verbose) {
-    printf("%d : cycle %llu : conflicts = %d\n", m_id, cycles, conflict_sub);
-    printf("%d : cycle %llu : passing reqs = %d\n", m_id, cycles, reqs);
+    printf("%u : cycle %llu : conflicts = %d\n", m_id, cycles, conflict_sub);
+    printf("%u : cycle %llu : passing reqs = %d\n", m_id, cycles, reqs);
   }
 
   // collect some stats about buffer util
@@ -208,8 +190,10 @@ void xbar_router::iSLIP_Advance() {
     if (!in_buffers[i].empty()) {
       input_nodes.insert(i);
       unsigned out_node = in_buffers[i].front().output_deviceID;
-
-      if (destination_set.find(out_node) != destination_set.end()) {
+      if(out_node > 300) {
+        fflush(stdout);
+      }
+      if(destination_set.find(out_node) != destination_set.end()) {
         conflict_sub++;
       }
       destination_set.insert(out_node);
@@ -226,40 +210,40 @@ void xbar_router::iSLIP_Advance() {
   for (auto dest : destination_set) {
     if (Has_Buffer_Out(dest, 1)) {
       unsigned start_node = next_node[dest];
-      auto it =
-          std::upper_bound(input_nodes.begin(), input_nodes.end(), start_node);
+      auto it = std::upper_bound(input_nodes.begin(), input_nodes.end(),
+                                       start_node);
       for (unsigned j = 0; j < input_nodes.size(); j++, it++) {
         if (it == input_nodes.end()) {
           it = input_nodes.begin();
         }
         unsigned node_id = *it;
         assert(!in_buffers[node_id].empty());
-        Packet _packet = in_buffers[node_id].front();
-        if (_packet.output_deviceID == dest) {
-          out_buffers[_packet.output_deviceID].push(_packet);
-          in_buffers[node_id].pop();
-          input_nodes.erase(node_id);  // can only be used once
-          if (verbose)
-            printf("%d : cycle %llu : send req from %d to %d\n", m_id, cycles,
-                   node_id, dest - _n_shader);
-          if (grant_cycles_count == 1)
-            next_node[dest] = (++node_id % total_nodes);
-          if (verbose) {
-            for (unsigned k = j + 1; k < total_nodes; ++k) {
-              unsigned node_id2 = (k + next_node[dest]) % total_nodes;
-              if (!in_buffers[node_id2].empty()) {
-                Packet _packet2 = in_buffers[node_id2].front();
+          Packet _packet = in_buffers[node_id].front();
+          if (_packet.output_deviceID == dest) {
+            out_buffers[_packet.output_deviceID].push(_packet);
+            in_buffers[node_id].pop();
+            input_nodes.erase(node_id);  //can only be used once
+            if (verbose)
+              printf("%u : cycle %llu : send req from %u to %d\n", m_id, cycles,
+                     node_id, dest - _n_shader);
+            if (grant_cycles_count == 1)
+              next_node[dest] = (++node_id % total_nodes);
+            if (verbose) {
+              for (unsigned k = j + 1; k < total_nodes; ++k) {
+                unsigned node_id2 = (k + next_node[dest]) % total_nodes;
+                if (!in_buffers[node_id2].empty()) {
+                  Packet _packet2 = in_buffers[node_id2].front();
 
-                if (_packet2.output_deviceID == dest)
-                  printf("%d : cycle %llu : cannot send req from %d to %d\n",
-                         m_id, cycles, node_id2, dest - _n_shader);
+                  if (_packet2.output_deviceID == dest)
+                    printf("%u : cycle %llu : cannot send req from %u to %d\n",
+                           m_id, cycles, node_id2, dest - _n_shader);
+                }
               }
             }
-          }
 
-          reqs++;
-          break;
-        }
+            reqs++;
+            break;
+          }
       }
     } else {
       out_buffer_full++;
@@ -331,7 +315,8 @@ LocalInterconnect::~LocalInterconnect() {
 void LocalInterconnect::CreateInterconnect(unsigned m_n_shader,
                                            unsigned m_n_mem) {
   n_shader = m_n_shader;
-  n_mem = m_n_mem;
+  n_mem = m_n_mem + 1; // This extra node is for the LL-TLB and GMMU
+  m_n_mem = n_mem;
 
   net.resize(n_subnets);
   for (unsigned i = 0; i < n_subnets; ++i) {
@@ -375,11 +360,6 @@ void* LocalInterconnect::Pop(unsigned ouput_deviceID) {
 }
 
 void LocalInterconnect::Advance() {
-  // The 2 subnets (request and reply networks) share no state — their
-  // in_buffers, out_buffers, and arbiter state are fully independent.
-  // Parallelize to cut icnt_transfer wall time roughly in half on large
-  // GPUs where iSLIP's O(N^2) arbitration dominates.
-#pragma omp parallel for if (n_subnets > 1)
   for (unsigned i = 0; i < n_subnets; ++i) {
     net[i]->Advance();
   }
@@ -403,7 +383,14 @@ bool LocalInterconnect::HasBuffer(unsigned deviceID, unsigned int size) const {
   return has_buffer;
 }
 
-void LocalInterconnect::DisplayStats() const {
+void LocalInterconnect::DisplayStats() {
+  net[REQ_NET]->packets_num = 0;
+  for(unsigned int i = 0; i < n_subnets; i++) {
+    for (unsigned j = 0; j < net[i]->total_nodes; j++) {
+      net[i]->packets_num += net[i]->packets_num_per_device[j];
+    }
+  }
+  
   printf("Req_Network_injected_packets_num = %lld\n",
          net[REQ_NET]->packets_num);
   printf("Req_Network_cycles = %lld\n", net[REQ_NET]->cycles);

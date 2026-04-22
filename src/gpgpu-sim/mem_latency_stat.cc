@@ -185,6 +185,57 @@ memory_stats_t::memory_stats_t(unsigned n_shader,
       (unsigned int *)calloc(mem_config->m_n_mem, sizeof(unsigned int));
 }
 
+memory_stats_t::~memory_stats_t() {
+  unsigned i, j;
+  for (i = 0; i < m_memory_config->m_n_mem; i++) {
+    free(concurrent_row_access[i]);
+    free(row_access[i]);
+    free(num_activates[i]);
+    free(max_conc_access2samerow[i]);
+    free(max_servicetime2samerow[i]);
+    free(mf_max_lat_table[i]);
+    free(mf_total_lat_table[i]);
+    free(totalbankaccesses[i]);
+    free(totalbankwrites[i]);
+    free(totalbankreads[i]);
+  }
+  free(concurrent_row_access);
+  free(row_access);
+  free(num_activates);
+  free(max_conc_access2samerow);
+  free(max_servicetime2samerow);
+  free(totalbankreads);
+  free(totalbankwrites);
+  free(totalbankaccesses);
+  free(mf_total_lat_table);
+  free(mf_max_lat_table);
+  free(num_MCBs_accessed);
+  free(position_of_mrq_chosen);
+  for (i = 0; i < m_n_shader; i++) {
+    for (j = 0; j < m_memory_config->m_n_mem; j++) {
+      free(bankreads[i][j]);
+      free(bankwrites[i][j]);
+    }
+    free(bankreads[i]);
+    free(bankwrites[i]);
+  }
+  free(bankreads);
+  free(bankwrites);
+  for (i = 0; i < NUM_MEM_ACCESS_TYPE; i++) {
+    for (j = 0; (unsigned)j < m_memory_config->m_n_mem; j++) {
+      free(mem_access_type_stats[i][j]);
+    }
+    free(mem_access_type_stats[i]);
+  }
+  free(mem_access_type_stats);
+  free(L2_cbtoL2length);
+  free(L2_cbtoL2writelength);
+  free(L2_L2tocblength);
+  free(L2_dramtoL2length);
+  free(L2_dramtoL2writelength);
+  free(L2_L2todramlength);
+}
+
 // record the total latency
 unsigned memory_stats_t::memlatstat_done(mem_fetch *mf) {
   unsigned mf_latency;
@@ -203,15 +254,7 @@ unsigned memory_stats_t::memlatstat_done(mem_fetch *mf) {
 }
 
 void memory_stats_t::memlatstat_read_done(mem_fetch *mf) {
-  if (m_memory_config->SST_mode) {
-    // in SST mode, we just calculate mem latency
-    unsigned mf_latency;
-    mf_latency =
-        (m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle) - mf->get_timestamp();
-    num_mfs++;
-    mf_total_lat += mf_latency;
-    if (mf_latency > max_mf_latency) max_mf_latency = mf_latency;
-  } else if (m_memory_config->gpgpu_memlatency_stat) {
+  if (m_memory_config->gpgpu_memlatency_stat) {
     unsigned mf_latency = memlatstat_done(mf);
     if (mf_latency >
         mf_max_lat_table[mf->get_tlx_addr().chip][mf->get_tlx_addr().bk])
@@ -281,12 +324,7 @@ void memory_stats_t::memlatstat_print(unsigned n_mem, unsigned gpu_mem_n_bk) {
   unsigned max_bank_accesses, min_bank_accesses, max_chip_accesses,
       min_chip_accesses;
 
-  if (m_memory_config->SST_mode) {
-    // in SST mode, we just calculate mem latency
-    printf("max_mem_SST_latency = %d \n", max_mf_latency);
-    if (num_mfs)
-      printf("average_mf_SST_latency = %lld \n", mf_total_lat / num_mfs);
-  } else if (m_memory_config->gpgpu_memlatency_stat) {
+  if (m_memory_config->gpgpu_memlatency_stat) {
     printf("maxmflatency = %d \n", max_mf_latency);
     printf("max_icnt2mem_latency = %d \n", max_icnt2mem_latency);
     printf("maxmrqlatency = %d \n", max_mrq_latency);
@@ -439,6 +477,7 @@ void memory_stats_t::memlatstat_print(unsigned n_mem, unsigned gpu_mem_n_bk) {
     else
       printf("min_chip_accesses = 0!\n");
 
+    unsigned int total_reads = k;
     /*WRITE ACCESSES*/
     k = 0;
     l = 0;
@@ -475,6 +514,11 @@ void memory_stats_t::memlatstat_print(unsigned n_mem, unsigned gpu_mem_n_bk) {
     else
       printf("min_chip_accesses = 0!\n");
 
+    unsigned int total_writes = k;
+    
+    double total_accesses = total_reads + total_writes;
+    double dram_bw = ( (total_accesses * 32) / (m_gpu->dram_tot_sim_cycle * m_gpu->get_config().get_dram_period()) ) / 1000000000 ; 
+    printf("DRAM_BW_total = %12.4lf GB/Sec\n", dram_bw);
     /*AVERAGE MF LATENCY PER BANK*/
     printf("average mf latency per bank:\n");
     for (i = 0; i < n_mem; i++) {
@@ -536,4 +580,169 @@ void memory_stats_t::memlatstat_print(unsigned n_mem, unsigned gpu_mem_n_bk) {
     printf("\n");
     printf("\naverage position of mrq chosen = %f\n", (float)l / k);
   }
+}
+
+void memory_stats_t::add(const memory_stats_t *other) {
+  max_mrq_latency = std::max(max_mrq_latency, other->max_mrq_latency);
+  max_dq_latency = std::max(max_dq_latency, other->max_dq_latency);
+  max_mf_latency = std::max(max_mf_latency, other->max_mf_latency);
+  max_icnt2mem_latency =
+      std::max(max_icnt2mem_latency, other->max_icnt2mem_latency);
+  tot_icnt2mem_latency += other->tot_icnt2mem_latency;
+  tot_icnt2sh_latency += other->tot_icnt2sh_latency;
+  tot_mrq_latency += other->tot_mrq_latency;
+  tot_mrq_num += other->tot_mrq_num;
+  max_icnt2sh_latency =
+      std::max(max_icnt2sh_latency, other->max_icnt2sh_latency);
+
+  for (unsigned int i = 0; i < 32; ++i) {
+    mrq_lat_table[i] += other->mrq_lat_table[i];
+    dq_lat_table[i] += other->dq_lat_table[i];
+    mf_lat_table[i] += other->mf_lat_table[i];
+    mf_lat_pw_table[i] += other->mf_lat_pw_table[i];
+  }
+
+  for (unsigned int i = 0; i < 24; ++i) {
+    icnt2mem_lat_table[i] += other->icnt2mem_lat_table[i];
+    icnt2sh_lat_table[i] += other->icnt2sh_lat_table[i];
+  }
+
+  mf_num_lat_pw += other->mf_num_lat_pw;
+  max_warps = std::max(max_warps, other->max_warps);
+  mf_tot_lat_pw += other->mf_tot_lat_pw;
+  mf_total_lat += other->mf_total_lat;
+
+  // Assuming dimensions match, perform element-wise addition for 2D arrays
+  for (unsigned int i = 0; i < m_memory_config->m_n_mem; ++i) {
+    for (unsigned int j = 0; j < m_memory_config->nbk; ++j) {
+      mf_total_lat_table[i][j] += other->mf_total_lat_table[i][j];
+      mf_max_lat_table[i][j] =
+          std::max(mf_max_lat_table[i][j], other->mf_max_lat_table[i][j]);
+      totalbankwrites[i][j] += other->totalbankwrites[i][j];
+      totalbankreads[i][j] += other->totalbankreads[i][j];
+      totalbankaccesses[i][j] += other->totalbankaccesses[i][j];
+      concurrent_row_access[i][j] += other->concurrent_row_access[i][j];
+      num_activates[i][j] += other->num_activates[i][j];
+      row_access[i][j] += other->row_access[i][j];
+      max_conc_access2samerow[i][j] += other->max_conc_access2samerow[i][j];
+      max_servicetime2samerow[i][j] = std::max(
+          max_servicetime2samerow[i][j], other->max_servicetime2samerow[i][j]);
+    }
+    L2_cbtoL2length[i] += other->L2_cbtoL2length[i];
+    L2_cbtoL2writelength[i] += other->L2_cbtoL2writelength[i];
+    L2_L2tocblength[i] += other->L2_L2tocblength[i];
+    L2_dramtoL2length[i] += other->L2_dramtoL2length[i];
+    L2_dramtoL2writelength[i] += other->L2_dramtoL2writelength[i];
+    L2_L2todramlength[i] += other->L2_L2todramlength[i];
+  }
+
+  // Assuming dimensions match, perform element-wise addition for 3D arrays
+  for (unsigned int i = 0; i < m_n_shader; ++i) {
+    for (unsigned int j = 0; j < m_memory_config->m_n_mem; ++j) {
+      for (unsigned int k = 0; k < m_memory_config->nbk; ++k) {
+        bankwrites[i][j][k] += other->bankwrites[i][j][k];
+        bankreads[i][j][k] += other->bankreads[i][j][k];
+      }
+    }
+  }
+
+  for(unsigned int i = 0; i < NUM_MEM_ACCESS_TYPE; i++) {
+    for(unsigned int j = 0; j < m_memory_config->m_n_mem; j++) {
+      for(unsigned int k = 0; k < m_memory_config->nbk; k++) {
+        mem_access_type_stats[i][j][k] += other->mem_access_type_stats[i][j][k];
+      }
+    }
+  }
+
+  for (unsigned int i = 0; i < m_memory_config->m_n_mem * m_memory_config->nbk; ++i) {
+    num_MCBs_accessed[i] += other->num_MCBs_accessed[i];
+  }
+
+  for (unsigned int i = 0; i < m_memory_config->gpgpu_frfcfs_dram_sched_queue_size; ++i) {
+    position_of_mrq_chosen[i] += other->position_of_mrq_chosen[i];
+  }
+
+  L2_read_miss += other->L2_read_miss;
+  L2_write_miss += other->L2_write_miss;
+  L2_read_hit += other->L2_read_hit;
+  L2_write_hit += other->L2_write_hit;
+  total_n_access += other->total_n_access;
+  total_n_reads += other->total_n_reads;
+  total_n_writes += other->total_n_writes;
+}
+
+void memory_stats_t::reset() {
+  tot_icnt2mem_latency = 0;
+  tot_icnt2sh_latency = 0;
+  tot_mrq_latency = 0;
+  tot_mrq_num = 0;
+
+  for (unsigned int i = 0; i < 32; ++i) {
+    mrq_lat_table[i] = 0;
+    dq_lat_table[i] = 0;
+    mf_lat_table[i] = 0;
+    mf_lat_pw_table[i] = 0;
+  }
+
+  for (unsigned int i = 0; i < 24; ++i) {
+    icnt2mem_lat_table[i] = 0;
+    icnt2sh_lat_table[i] = 0;
+  }
+
+  mf_num_lat_pw = 0;
+  mf_tot_lat_pw = 0;
+  mf_total_lat  = 0;
+
+  // Assuming dimensions match, perform element-wise addition for 2D arrays
+  for (unsigned int i = 0; i < m_memory_config->m_n_mem; ++i) {
+    for (unsigned int j = 0; j < m_memory_config->nbk; ++j) {
+      mf_total_lat_table[i][j] = 0;
+      mf_max_lat_table[i][j] = 0;
+      totalbankwrites[i][j] = 0;
+      totalbankreads[i][j] = 0;
+      totalbankaccesses[i][j] = 0;
+      num_activates[i][j] = 0;
+      row_access[i][j] = 0;
+    }
+    L2_cbtoL2length[i] = 0;
+    L2_cbtoL2writelength[i] = 0;
+    L2_L2tocblength[i] = 0;
+    L2_dramtoL2length[i] = 0;
+    L2_dramtoL2writelength[i] = 0;
+    L2_L2todramlength[i] = 0;
+  }
+
+  // Assuming dimensions match, perform element-wise addition for 3D arrays
+  for (unsigned int i = 0; i < m_n_shader; ++i) {
+    for (unsigned int j = 0; j < m_memory_config->m_n_mem; ++j) {
+      for (unsigned int k = 0; k < m_memory_config->nbk; ++k) {
+        bankwrites[i][j][k] = 0;
+        bankreads[i][j][k] = 0;
+      }
+    }
+  }
+
+  for(unsigned int i = 0; i < NUM_MEM_ACCESS_TYPE; i++) {
+    for(unsigned int j = 0; j < m_memory_config->m_n_mem; j++) {
+      for(unsigned int k = 0; k < m_memory_config->nbk; k++) {
+        mem_access_type_stats[i][j][k] = 0;
+      }
+    }
+  }
+
+  for (unsigned int i = 0; i < m_memory_config->m_n_mem * m_memory_config->nbk; ++i) {
+    num_MCBs_accessed[i] = 0;
+  }
+
+  for (unsigned int i = 0; i < m_memory_config->gpgpu_frfcfs_dram_sched_queue_size; ++i) {
+    position_of_mrq_chosen[i] = 0;
+  }
+
+  L2_read_miss = 0;
+  L2_write_miss = 0;
+  L2_read_hit = 0;
+  L2_write_hit = 0;
+  total_n_access = 0;
+  total_n_reads = 0;
+  total_n_writes = 0;
 }

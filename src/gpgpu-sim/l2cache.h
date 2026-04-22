@@ -1,18 +1,17 @@
 // Copyright (c) 2009-2021, Tor M. Aamodt, Vijay Kandiah, Nikos Hardavellas,
 // Mahmoud Khairy, Junrui Pan, Timothy G. Rogers
-// The University of British Columbia, Northwestern University, Purdue
-// University All rights reserved.
+// The University of British Columbia, Northwestern University, Purdue University
+// All rights reserved.
 //
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are met:
 //
-// 1. Redistributions of source code must retain the above copyright notice,
-// this
+// 1. Redistributions of source code must retain the above copyright notice, this
 //    list of conditions and the following disclaimer;
 // 2. Redistributions in binary form must reproduce the above copyright notice,
 //    this list of conditions and the following disclaimer in the documentation
 //    and/or other materials provided with the distribution;
-// 3. Neither the names of The University of British Columbia, Northwestern
+// 3. Neither the names of The University of British Columbia, Northwestern 
 //    University nor the names of their contributors may be used to
 //    endorse or promote products derived from this software without specific
 //    prior written permission.
@@ -39,12 +38,14 @@
 #include <queue>
 
 class mem_fetch;
+class memory_stats_t;
 
 class partition_mf_allocator : public mem_fetch_allocator {
  public:
   partition_mf_allocator(const memory_config *config) {
     m_memory_config = config;
   }
+  ~partition_mf_allocator() {}
   virtual mem_fetch *alloc(const class warp_inst_t &inst,
                            const mem_access_t &access,
                            unsigned long long cycle) const {
@@ -52,16 +53,15 @@ class partition_mf_allocator : public mem_fetch_allocator {
     return NULL;
   }
   virtual mem_fetch *alloc(new_addr_type addr, mem_access_type type,
-                           unsigned size, bool wr, unsigned long long cycle,
-                           unsigned long long streamID) const;
+                           unsigned size, bool wr,
+                           unsigned long long cycle) const;
   virtual mem_fetch *alloc(new_addr_type addr, mem_access_type type,
                            const active_mask_t &active_mask,
                            const mem_access_byte_mask_t &byte_mask,
                            const mem_access_sector_mask_t &sector_mask,
                            unsigned size, bool wr, unsigned long long cycle,
                            unsigned wid, unsigned sid, unsigned tpc,
-                           mem_fetch *original_mf,
-                           unsigned long long streamID) const;
+                           mem_fetch *original_mf) const;
 
  private:
   const memory_config *m_memory_config;
@@ -110,10 +110,12 @@ class memory_partition_unit {
     return m_gpu;
   }
 
+  memory_stats_t* get_memory_partition_stats() { return m_stats; };
+
  private:
   unsigned m_id;
   const memory_config *m_config;
-  class memory_stats_t *m_stats;
+  memory_stats_t *m_stats;
   class memory_sub_partition **m_sub_partition;
   class dram_t *m_dram;
 
@@ -261,9 +263,8 @@ class L2interface : public mem_fetch_interface {
     mf->set_status(IN_PARTITION_L2_TO_DRAM_QUEUE, 0 /*FIXME*/);
     m_unit->m_L2_dram_queue->push(mf);
   }
-  // Stage 1e-B3 (W1): empty-body flush stub to satisfy the now-pure
-  // mem_fetch_interface::flush.  Matches MICRO 2025 l2cache.h:267.
-  virtual void flush() override {}
+
+  virtual void flush() {}
 
  private:
   memory_sub_partition *m_unit;

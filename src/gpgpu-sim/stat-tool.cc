@@ -328,7 +328,7 @@ void shader_mem_lat_log(int logger_id, int latency) {
 
   int bin;  // LOG_2(latency)
   int v = latency;
-  register unsigned int shift;
+  unsigned int shift;
 
   bin = (v > 0xFFFF) << 4;
   v >>= bin;
@@ -433,6 +433,15 @@ void shader_CTA_count_create(int n_shaders,
   if (logging_interval != 0) {
     add_snap_shot_trigger(s_CTA_count_logger);
     add_spill_log(s_CTA_count_logger);
+  }
+}
+
+void shader_CTA_count_destroy() {
+  if (s_CTA_count_logger != NULL) {
+    remove_snap_shot_trigger(s_CTA_count_logger);
+    remove_spill_log(s_CTA_count_logger);
+    delete s_CTA_count_logger;
+    s_CTA_count_logger = NULL;
   }
 }
 

@@ -318,6 +318,7 @@ void shader_cache_access_print(FILE *fout);
 
 void shader_CTA_count_create(int n_shaders,
                              unsigned long long logging_interval);
+void shader_CTA_count_destroy();
 void shader_CTA_count_log(int shader_id, int nCTAadded);
 void shader_CTA_count_unlog(int shader_id, int nCTAdone);
 void shader_CTA_count_resetnow();

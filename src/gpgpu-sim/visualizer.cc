@@ -34,7 +34,7 @@
 #include "mem_latency_stat.h"
 #include "power_stat.h"
 #include "shader.h"
-// #include "../../../mcpat/processor.h"
+//#include "../../../mcpat/processor.h"
 #include "gpu-cache.h"
 #include "stat-tool.h"
 
@@ -74,7 +74,7 @@ void gpgpu_sim::visualizer_printstat() {
   // proc->visualizer_print(visualizer_file);
   // other parameters for graphing
   gzprintf(visualizer_file, "globalcyclecount: %lld\n", gpu_sim_cycle);
-  gzprintf(visualizer_file, "globalinsncount: %lld\n", (long long)gpu_sim_insn);
+  gzprintf(visualizer_file, "globalinsncount: %lld\n", gpu_sim_insn);
   gzprintf(visualizer_file, "globaltotinsncount: %lld\n", gpu_tot_sim_insn);
 
   time_vector_print_interval2gzfile(visualizer_file);
@@ -358,6 +358,14 @@ my_time_vector* g_my_time_vector;
 
 void time_vector_create(int size) {
   g_my_time_vector = new my_time_vector(size, size);
+}
+
+void time_vector_destroy(void) { 
+  if(g_my_time_vector){
+    g_my_time_vector->clear_time_map_vectors();
+    delete g_my_time_vector; 
+    g_my_time_vector = nullptr;
+  }
 }
 
 void time_vector_print(void) { g_my_time_vector->print_dist(); }

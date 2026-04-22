@@ -39,7 +39,8 @@ class memory_stats_t {
   memory_stats_t(unsigned n_shader,
                  const class shader_core_config *shader_config,
                  const memory_config *mem_config, const class gpgpu_sim *gpu);
-
+  ~memory_stats_t();
+  
   unsigned memlatstat_done(class mem_fetch *mf);
   void memlatstat_read_done(class mem_fetch *mf);
   void memlatstat_dram_access(class mem_fetch *mf);
@@ -123,6 +124,9 @@ class memory_stats_t {
   unsigned total_n_access;
   unsigned total_n_reads;
   unsigned total_n_writes;
+
+  void add(const memory_stats_t *other);
+  void reset();
 };
 
 #endif /*MEM_LATENCY_STAT_H*/
