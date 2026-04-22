@@ -98,11 +98,11 @@
 
 #include "../constants.h" // MOD. Added to do not duplicate some constant declarations in many files
 
-// Stage 1h pivot: include unconditionally (accelwattch library always built,
-// headers always on include path).  init_mcpat/mcpat_cycle call sites remain
-// guarded by GPGPUSIM_POWER_MODEL so power_interface.cc body is only needed
-// when the macro is defined.
+#ifdef GPGPUSIM_POWER_MODEL
 #include "power_interface.h"
+#else
+class gpgpu_sim_wrapper {};
+#endif
 
 #include <stdio.h>
 #include <string.h>
