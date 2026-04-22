@@ -42,7 +42,6 @@
 #include "first_level_instruction_cache.h"
 #include "ldst_unit_sm.h"
 #include "register_file.h"
-#include "l0_icnt.h"            // v2: num_bytes_cache_req() declared here
 
 #include "../../../../../util/traces_enhanced/src/traced_instruction.h"
 
@@ -931,11 +930,10 @@ warp_inst_t *Subcore::get_next_inst(SM *shared_sm, unsigned int warp_id, address
   assert(warp_id < m_warps_of_subcore.size());
   if (m_config->is_trace_mode) {
     // read the inst from the traces
-    trace_shd_warp_t *m_trace_warp =
-        static_cast<trace_shd_warp_t *>(m_warps_of_subcore[warp_id]);
+    trace_shd_warp_t *m_trace_warp = static_cast<trace_shd_warp_t *>(
+        m_warps_of_subcore[warp_id]);
     return m_trace_warp->get_next_trace_inst(pc);
   } else {
-    // Stage 1c.7.4: ptx_fetch_inst now returns mutable warp_inst_t*.
     return shared_sm->get_gpu()->gpgpu_ctx->ptx_fetch_inst(pc);
   }
 }
@@ -990,16 +988,12 @@ void Subcore::fetch(SM *shared_sm) {
         // mem_fetch *mf = m_mem_fetch_allocator->alloc()
         mem_access_t acc(INST_ACC_R, global_pc_addr, nbytes, false,
                          shared_sm->get_gpu()->gpgpu_ctx);
-        // v2 mem_fetch ctor: streamID at pos 3, no trailing unique_function_id.
         mem_fetch *mf =
             new mem_fetch(acc, NULL /*we don't have an instruction yet*/,
-                          /*streamID=*/0, READ_PACKET_SIZE, sm_warp_id,
-                          shared_sm->get_sid(), shared_sm->get_tpc_id(),
-                          shared_sm->get_memory_config(),
+                          READ_PACKET_SIZE, sm_warp_id, shared_sm->get_sid(),
+                          shared_sm->get_tpc_id(), shared_sm->get_memory_config(),
                           shared_sm->get_gpu()->gpu_tot_sim_cycle +
-                              shared_sm->get_gpu()->gpu_sim_cycle,
-                          NULL, NULL);
-        mf->set_unique_function_id(unique_function_id);
+                              shared_sm->get_gpu()->gpu_sim_cycle, NULL, NULL, unique_function_id);
         mf->set_subcore(m_subcore_id);
         std::list<cache_event> events;
         enum cache_request_status status;

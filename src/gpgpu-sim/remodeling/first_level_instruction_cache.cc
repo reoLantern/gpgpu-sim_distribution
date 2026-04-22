@@ -194,7 +194,6 @@ bool first_level_instruction_cache::fill(mem_fetch *mf, unsigned time) {
     if(mf->get_is_prefetch()) {
         return m_stream_buffers->fill(mf, time);
     }else {
-        // Stage 1c.7.3: baseline_cache::fill now returns real res_deleted.
         return read_only_cache::fill(mf, time);
     }
 }
@@ -232,9 +231,7 @@ bool first_level_instruction_cache::fill_from_stream_buffer(new_addr_type prefet
             SM * sm = get_sm();
             mem_access_t acc(INST_ACC_R, top_addr, get_config().get_line_sz(), false,
                     sm->get_gpu()->gpgpu_ctx);
-            // v2 mem_fetch ctor signature (streamID at arg 3, no unique_function_id)
-            mem_fetch *mf_new = new mem_fetch(acc, NULL, /*streamID=*/0, READ_PACKET_SIZE, top_wid, m_sm_id, sm->get_tpc_id(), sm->get_memory_config(), time, nullptr, nullptr);
-            mf_new->set_unique_function_id(pending_information.unique_function_id);
+            mem_fetch *mf_new = new mem_fetch(acc, NULL, READ_PACKET_SIZE, top_wid, m_sm_id, sm->get_tpc_id(), sm->get_memory_config(), time, nullptr, nullptr, pending_information.unique_function_id);
             it_regular_access_addr->second.mf = mf_new;
         }else {
             it_regular_access_addr->second.mf->set_unique_function_id(pending_information.unique_function_id);

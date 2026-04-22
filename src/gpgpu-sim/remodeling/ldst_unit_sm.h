@@ -36,7 +36,6 @@
 
 #include "../stats.h"
 #include "../shader.h"
-#include "../scoreboard_reads.h"   // MICRO 2025: Scoreboard_reads type used in member ptrs
 #include "functional_unit.h"
 
 class SM;

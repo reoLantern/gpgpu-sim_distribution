@@ -164,14 +164,11 @@ void single_stream_buffer::do_prefetch() {
             unsigned int nbytes = m_line_size;
             mem_access_t acc(INST_ACC_R, m_next_addr_to_prefetch, nbytes, false,
                             sm->get_gpu()->gpgpu_ctx);
-            // v2 mem_fetch ctor inserts streamID at arg 3
             mem_fetch *mf =
             new mem_fetch(acc, NULL /*we don't have an instruction yet*/,
-                            /*streamID=*/0, READ_PACKET_SIZE,
-                            m_first_sm_warp_id_reserved, sm->get_sid(),
+                            READ_PACKET_SIZE, m_first_sm_warp_id_reserved, sm->get_sid(),
                             sm->get_tpc_id(), sm->get_memory_config(),
-                            gpu_cycle, NULL, NULL);
-            mf->set_unique_function_id(m_current_unique_function_id);
+                            gpu_cycle, NULL, NULL, m_current_unique_function_id);
             mf->set_subcore(m_subcore_id);
             mf->set_is_prefetch(true);
             mf->set_stream_buffer_id(m_stream_buffer_id);

@@ -31,7 +31,6 @@
 
 #include "../gpu-sim.h"
 #include "../shader.h"
-#include "../scoreboard_reads.h"        // v2: RELEASE_AT_OPC enum lives here
 #include "sm.h"
 #include "warp_dependency_state.h"
 #include "register_file.h"

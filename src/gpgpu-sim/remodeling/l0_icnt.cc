@@ -188,26 +188,10 @@ void L0_icnt::cycle() {
         address_type addr_req = mf->get_access_address();
         unsigned nbytes = num_bytes_cache_req(m_gpu->getShaderCoreConfig()->m_L1I_L1_half_C_cache_config.get_line_sz(), addr_req);
         mem_access_t acc(mf->get_access().get_type(), addr_req, nbytes, false, m_gpu->gpgpu_ctx);
-        // v2 mem_fetch ctor inserts streamID at position 3; MICRO 2025's has
-        // unique_function_id as trailing arg.  Reshape args accordingly and
-        // set unique_function_id after construction.
-        mem_fetch *mf_n = new mem_fetch(acc, NULL /*we don't have an instruction yet*/,
-                mf->get_streamID(), READ_PACKET_SIZE,
-                mf->get_wid(), mf->get_sid(), mf->get_tpc(), mf->get_mem_config(),
-                m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle, mf, NULL);
-        mf_n->set_unique_function_id(mf->get_unique_function_id());
-        // Stage 1e-B3 (W5): call the 5-arg read_only_cache::access overload
-        // (the extra `bool& erase_original_mf` out-param) to re-align with
-        // MICRO 2025 remodeling/l0_icnt.cc.  The bool isn't consumed here —
-        // upstream also declares it and ignores it — but routing through the
-        // matching signature makes the tree-wide diff vs MICRO 2025 smaller
-        // and keeps the ownership-protocol interface explicit.
-        bool erase_original_mf = false;
-        status = m_L1->access((new_addr_type) mf_n->get_access_address(),
-                              mf_n,
-                              m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle,
-                              events, erase_original_mf);
-        (void)erase_original_mf;  // deliberately unused (see note above)
+        mem_fetch *mf_n = new mem_fetch(acc, NULL /*we don't have an instruction yet*/, READ_PACKET_SIZE,
+                mf->get_wid(), mf->get_sid(), mf->get_tpc(), mf->get_mem_config(), m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle, mf, NULL, mf->get_unique_function_id());
+        bool erase_orifinal_mf = false;
+        status = m_L1->access((new_addr_type) mf_n->get_access_address(), mf_n, m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle, events, erase_orifinal_mf);
 
         if(status == RESERVATION_FAIL) {
             inserted = false;
@@ -224,6 +208,9 @@ void L0_icnt::cycle() {
             assert(0);
         }
 
+        if(erase_orifinal_mf) {
+            delete mf;
+        }
         if(inserted) {
            m_icnt_L1_TLB_to_cache.pop();
         }

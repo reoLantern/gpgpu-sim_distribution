@@ -44,7 +44,6 @@
 
 #include "subcore.h"
 #include "new_stats.h"
-#include "warp_dependency_state.h"  // v2: Wait_Barrier_Type used in method signatures
 
 #define NO_TENSOR_OP_4REG_PER_OP_LATENCY_READ_FIXED_LATENCY_INST 3
 #define MULTIPLIER_LATENCY_READ_FIXED_LATENCY_INST_TENSOR_CORE_INSTS_WITH_4_REGS_PER_OP 2
