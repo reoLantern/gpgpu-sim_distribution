@@ -36,7 +36,7 @@ void cuda_device_runtime::gpgpusim_cuda_getParameterBufferV2(
   unsigned n_args = target_func->num_args();
   assert(n_args == 4);
 
-  function_info *child_kernel_entry = NULL;
+  function_info *child_kernel_entry = nullptr;
   struct dim3 grid_dim, block_dim;
   unsigned int shared_mem;
 
@@ -123,7 +123,7 @@ void cuda_device_runtime::gpgpusim_cuda_launchDeviceV2(
   void *parameter_buffer;
   struct CUstream_st *child_stream;
   device_launch_config_t config;
-  device_launch_operation_t device_launch_op;
+  device_launch_operation_t device_launch_op = device_launch_operation_t();
 
   for (unsigned arg = 0; arg < n_args; arg++) {
     const operand_info &actual_param_op =

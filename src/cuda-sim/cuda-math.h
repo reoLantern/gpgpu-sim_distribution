@@ -73,8 +73,8 @@
 #undef max
 #undef min
 namespace cuda_math {
-#define __attribute__(a)  // to remove warnings inside math_functions.h
-#undef INT_MAX
+#define __attribute__(a)  // to remove warnings inside cuda_runtime_api.h
+// #undef INT_MAX
 
 #if CUDART_VERSION < 3000
 // DEVICE_BUILTIN
@@ -102,7 +102,7 @@ extern float rsqrtf(float);  // CUDA 2.3 beta
 #define CUDA_FLOAT_MATH_FUNCTIONS
 #include <device_types.h>
 #define __CUDA_INTERNAL_COMPILATION__
-#include <math_functions.h>
+#include <cuda_runtime_api.h>
 #undef __CUDA_INTERNAL_COMPILATION__
 #undef __attribute__
 
@@ -351,7 +351,7 @@ int __signbitd(double d) {
 
 #undef __CUDACC__
 #define __CUDA_INTERNAL_COMPILATION__
-#include <math_functions.h>
+#include <cuda_runtime_api.h>
 #undef __CUDA_INTERNAL_COMPILATION__
 #undef __attribute__
 

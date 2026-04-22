@@ -1,18 +1,45 @@
-// Copyright (c) 2009-2021, Tor M. Aamodt, Inderpreet Singh, Timothy Rogers,
-// Vijay Kandiah, Nikos Hardavellas, Mahmoud Khairy, Junrui Pan, Timothy G.
-// Rogers The University of British Columbia, Northwestern University, Purdue
-// University All rights reserved.
+// Copyright (c) 2023-2025, Rodrigo Huerta, Mojtaba Abaie Shoushtary, Josep-Llorenç Cruz, Antonio González
+// Universitat Politecnica de Catalunya
+// All rights reserved.
 //
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are met:
 //
-// 1. Redistributions of source code must retain the above copyright notice,
-// this
+// Redistributions of source code must retain the above copyright notice, this
+// list of conditions and the following disclaimer.
+// Redistributions in binary form must reproduce the above copyright notice,
+// this list of conditions and the following disclaimer in the documentation
+// and/or other materials provided with the distribution. Neither the name of
+// The Universitat Politecnica de Catalunya nor the names of its contributors may be
+// used to endorse or promote products derived from this software without
+// specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+// ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+// CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+// SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+// INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+// CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+// ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+// POSSIBILITY OF SUCH DAMAGE.
+
+// Copyright (c) 2009-2021, Tor M. Aamodt, Inderpreet Singh, Timothy Rogers, Vijay Kandiah, Nikos Hardavellas, 
+// Mahmoud Khairy, Junrui Pan, Timothy G. Rogers
+// The University of British Columbia, Northwestern University, Purdue University
+// All rights reserved.
+//
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met:
+//
+// 1. Redistributions of source code must retain the above copyright notice, this
 //    list of conditions and the following disclaimer;
 // 2. Redistributions in binary form must reproduce the above copyright notice,
 //    this list of conditions and the following disclaimer in the documentation
 //    and/or other materials provided with the distribution;
-// 3. Neither the names of The University of British Columbia, Northwestern
+// 3. Neither the names of The University of British Columbia, Northwestern 
 //    University nor the names of their contributors may be used to
 //    endorse or promote products derived from this software without specific
 //    prior written permission.
@@ -29,11 +56,14 @@
 // ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 // POSSIBILITY OF SUCH DAMAGE.
 
+
 #include "abstract_hardware_model.h"
 #include <sys/stat.h>
 #include <algorithm>
 #include <iostream>
 #include <sstream>
+#include <regex>
+
 #include "../libcuda/gpgpu_context.h"
 #include "cuda-sim/cuda-sim.h"
 #include "cuda-sim/memory.h"
@@ -42,6 +72,10 @@
 #include "gpgpu-sim/gpu-sim.h"
 #include "gpgpusim_entrypoint.h"
 #include "option_parser.h"
+#include "gpgpu-sim/gpu-cache.h" // MOD. Fixed LDST_Unit model
+#include "../../trace-driven/trace_driven.h"
+#include "../../../util/traces_enhanced/src/string_utilities.h"
+#include "gpgpu-sim/remodeling/register_file.h"
 
 void mem_access_t::init(gpgpu_context *ctx) {
   gpgpu_ctx = ctx;
@@ -49,14 +83,12 @@ void mem_access_t::init(gpgpu_context *ctx) {
   m_addr = 0;
   m_req_size = 0;
 }
-
 void warp_inst_t::issue(const active_mask_t &mask, unsigned warp_id,
                         unsigned long long cycle, int dynamic_warp_id,
-                        int sch_id, unsigned long long streamID) {
+                        int sch_id) {
   m_warp_active_mask = mask;
   m_warp_issued_mask = mask;
   m_uid = ++(m_config->gpgpu_ctx->warp_inst_sm_next_uid);
-  m_streamID = streamID;
   m_warp_id = warp_id;
   m_dynamic_warp_id = dynamic_warp_id;
   issue_cycle = cycle;
@@ -64,6 +96,12 @@ void warp_inst_t::issue(const active_mask_t &mask, unsigned warp_id,
   m_cache_hit = false;
   m_empty = false;
   m_scheduler_id = sch_id;
+}
+
+void warp_inst_t::set_some_warp_attributes(unsigned int warp_id, unsigned int dynamic_warp_id) {
+  m_warp_id = warp_id;
+  m_dynamic_warp_id = dynamic_warp_id;
+  m_empty = false;
 }
 
 checkpoint::checkpoint() {
@@ -182,7 +220,6 @@ gpgpu_t::gpgpu_t(const gpgpu_functional_sim_config &config, gpgpu_context *ctx)
     : m_function_model_config(config) {
   gpgpu_ctx = ctx;
   m_global_mem = new memory_space_impl<8192>("global", 64 * 1024);
-
   m_tex_mem = new memory_space_impl<8192>("tex", 64 * 1024);
   m_surf_mem = new memory_space_impl<8192>("surf", 64 * 1024);
 
@@ -208,6 +245,15 @@ gpgpu_t::gpgpu_t(const gpgpu_functional_sim_config &config, gpgpu_context *ctx)
 
   gpu_sim_cycle = 0;
   gpu_tot_sim_cycle = 0;
+
+  dram_sim_cycle = 0;
+  dram_tot_sim_cycle = 0;
+}
+
+gpgpu_t::~gpgpu_t() {
+  delete m_global_mem;
+  delete m_tex_mem;
+  delete m_surf_mem;
 }
 
 new_addr_type line_size_based_tag_func(new_addr_type address,
@@ -243,25 +289,7 @@ void warp_inst_t::set_not_active(unsigned lane_id) {
   m_warp_active_mask.reset(lane_id);
 }
 
-void warp_inst_t::set_active(const active_mask_t &active) {
-  m_warp_active_mask = active;
-  if (m_isatomic) {
-    for (unsigned i = 0; i < m_config->warp_size; i++) {
-      if (!m_warp_active_mask.test(i)) {
-        m_per_scalar_thread[i].callback.function = NULL;
-        m_per_scalar_thread[i].callback.instruction = NULL;
-        m_per_scalar_thread[i].callback.thread = NULL;
-      }
-    }
-  }
-}
-
-// MICRO 2025 port (Stage 1d.4+5): overload that takes an explicit warp_size.
-// Used by trace_warp_inst_t::parse_from_trace_struct, where m_config may be
-// null because the instruction is constructed from trace before being issued
-// to a core.
-void warp_inst_t::set_active(const active_mask_t &active,
-                             unsigned int warp_size) {
+void warp_inst_t::set_active(const active_mask_t &active, unsigned int warp_size) {
   m_warp_active_mask = active;
   if (m_isatomic) {
     for (unsigned i = 0; i < warp_size; i++) {
@@ -301,10 +329,299 @@ void warp_inst_t::broadcast_barrier_reduction(
   }
 }
 
+// MOD. Begin. Fixed LDST_Unit model
+std::vector<mem_access_t> warp_inst_t::granted_accesses(std::vector<bool> &used_banks, std::vector<std::deque<mem_fetch *>> &l1_latency_queue, unsigned int inst_latency, l1d_cache_config &L1D_config, unsigned int max_allowed_searches, bool &is_a_bank_conflict) {
+  std::vector<mem_access_t> res;
+  auto it = m_accessq.begin();
+  unsigned int n_searches = 0;
+  
+  while((it != m_accessq.end()) && (n_searches <= max_allowed_searches)) {
+    unsigned int acc_bank = L1D_config.set_bank(it->get_addr());
+    if(!used_banks[acc_bank] && (l1_latency_queue[acc_bank][inst_latency - 1] == NULL)) { // && == NULL. PASAR L!D
+      used_banks[acc_bank] = true;
+      res.push_back(*it);
+      it = m_accessq.erase(it);
+    } else {
+      is_a_bank_conflict = true;
+      it++;
+    }
+    n_searches++;
+  }
+  return res;
+}
+
+void warp_inst_t::generate_fixed_latency_constant_accesses(new_addr_type c_addr) {
+  mem_access_type access_type = CONST_ACC_R;
+  bool is_write = is_store();
+  new_addr_type cache_block_size = m_config->gpgpu_cache_constl1_linesize;
+  if (cache_block_size) {
+    mem_access_byte_mask_t byte_mask;
+    std::map<new_addr_type, active_mask_t>
+        accesses;  // block address -> set of thread offsets in warp
+    std::map<new_addr_type, active_mask_t>::iterator a;
+    for (unsigned thread = 0; thread < m_config->warp_size; thread++) {
+      if (!active(thread)) continue;
+      new_addr_type block_address =
+          line_size_based_tag_func(c_addr, cache_block_size);
+      accesses[block_address].set(thread);
+      unsigned idx = c_addr - block_address;
+      for (unsigned i = 0; i < data_size; i++) byte_mask.set(idx + i);
+    }
+    for (a = accesses.begin(); a != accesses.end(); ++a)
+      m_accessq.push_back(mem_access_t(
+          access_type, a->first, cache_block_size, is_write, a->second,
+          byte_mask, mem_access_sector_mask_t(), m_config->gpgpu_ctx));
+  }
+}
+// MOD. End. Fixed LDST_Unit model
+
+void warp_inst_t::ldgsts_change_to_sts_mode(gpgpu_sim *gpu) {
+    assert(m_is_ldgsts);
+    assert(m_ldgsts_state == Ldgsts_State::LOAD_STAGE);
+    space.set_type(shared_space);
+    memory_op = memory_store;
+    op = STORE_OP;
+    assert(data_size> 0);
+    m_per_scalar_thread_valid = m_per_scalar_thread_valid_memref2;
+    assert(m_per_scalar_thread_memref2.size() == m_per_scalar_thread.size());
+    for(unsigned int i = 0; i< m_per_scalar_thread_memref2.size(); i++) {
+      m_per_scalar_thread[i] = m_per_scalar_thread_memref2[i];
+    }
+    m_mem_accesses_created = false;
+    generate_mem_accesses();
+    generate_mem_latencies(gpu);
+  }
+
+bool warp_inst_t::has_sm_shared_wb_finished() {
+  assert(is_load() || is_dp_op());
+  bool res = m_num_pending_cycles_to_finish_wb_from_sm_struct_to_subcore == 0;
+  return res;
+}
+
+bool warp_inst_t::sm_shared_wb_consumed(bool can_do_wb_this_cycle, unsigned int num_cycles_to_transfer_reg, bool &conflict_detected) {
+  bool wb_performed_this_cycle = false;
+  assert(is_load() || is_dp_op());
+  if(m_num_pending_cycles_to_finish_wb_from_sm_struct_to_subcore > 0) {
+    bool decremented = false;
+    if(can_do_wb_this_cycle) {
+      m_num_pending_cycles_to_finish_wb_from_sm_struct_to_subcore--;
+      decremented = true;
+    }else if( (m_num_pending_cycles_to_finish_wb_from_sm_struct_to_subcore%num_cycles_to_transfer_reg) != 1) {
+      m_num_pending_cycles_to_finish_wb_from_sm_struct_to_subcore--;
+      decremented = true;
+    }else {
+      conflict_detected = true;
+    }
+    if(decremented && ( (m_num_pending_cycles_to_finish_wb_from_sm_struct_to_subcore % num_cycles_to_transfer_reg) == 0) ) {
+      wb_performed_this_cycle = true;
+      m_reg_offset = (m_num_pending_cycles_to_finish_wb_from_sm_struct_to_subcore == 0)  ? m_reg_offset : (m_reg_offset + 1);
+    }
+  }
+  return wb_performed_this_cycle;
+}
+
+void warp_inst_t::get_tensor_core_instruction_info() {
+  this->get_extra_trace_instruction_info().set_tensor_core_instruction_info();
+}
+
+void warp_inst_t::generate_tensor_core_latencies(gpgpu_sim *gpu) {
+  assert(get_extra_trace_instruction_info().get_tensor_core_instruction_info().is_set);
+  unsigned int number_of_elements = get_extra_trace_instruction_info().get_tensor_core_instruction_info().size_m * get_extra_trace_instruction_info().get_tensor_core_instruction_info().size_n * get_extra_trace_instruction_info().get_tensor_core_instruction_info().size_k;
+  assert(number_of_elements > 0);
+  assert(get_extra_trace_instruction_info().get_tensor_core_instruction_info().operand_bit_size > 0);
+  const shader_core_config &shader_config = gpu->get_config().get_gpgpu_sim_config();
+  unsigned int number_of_cycles = number_of_elements * get_extra_trace_instruction_info().get_tensor_core_instruction_info().operand_bit_size / shader_config.tensor_rate_per_cycle;
+  if(get_extra_trace_instruction_info().get_tensor_core_instruction_info().is_sparse) {
+    number_of_cycles = number_of_cycles / 2;
+  } 
+  initiation_interval = number_of_cycles / 2;
+  latency = number_of_cycles - initiation_interval;
+  if(get_extra_trace_instruction_info().get_tensor_core_instruction_info().is_16816_fp32_1688_fp32) {
+    initiation_interval += gpu->get_config().get_gpgpu_sim_config().tensor_extra_latency_16816_fp32_1688_fp32;
+    latency += gpu->get_config().get_gpgpu_sim_config().tensor_extra_latency_16816_fp32_1688_fp32;
+  }
+}
+
+void warp_inst_t::assign_predicate_latencies_if_needed(gpgpu_sim *gpu) {
+  const shader_core_config &shader_config = gpu->get_config().get_gpgpu_sim_config();
+  // const trace_config &trace_config = gpu->ker
+  const trace_config *trace_conf = gpu->gpgpu_ctx->the_gpgpusim->g_trace_config;
+  if(op == op_type::PREDICATE_OP) {
+    latency = trace_conf->get_int_latency();
+    initiation_interval = trace_conf->get_int_init();
+    latency_extra_predicate_op = shader_config.predicate_latency - latency - initiation_interval;
+  }else if(m_extra_trace_instruction_info->get_contains_setp()) {
+    latency_extra_predicate_op = shader_config.predicate_latency - latency - initiation_interval;
+  }
+}
+
+void warp_inst_t::generate_miscellaneous_queue_latencies(gpgpu_sim *gpu) {
+  m_num_cycles_per_intermediate_stage.resize(1);
+  m_num_cycles_to_wait_to_free_WAR = 1;
+}
+
+void warp_inst_t::generate_texture_latencies(gpgpu_sim *gpu) {
+  const shader_core_config &shader_config = gpu->get_config().get_gpgpu_sim_config();
+  m_num_cycles_per_intermediate_stage.resize(shader_config.dp_shared_intermidiate_stages, 1);
+  m_num_cycles_to_wait_to_free_WAR = shader_config.memory_intermidiate_stages_subcore_unit;
+}
+
+void warp_inst_t::generate_other_mem_ops_latencies(gpgpu_sim *gpu) {
+  const shader_core_config &shader_config = gpu->get_config().get_gpgpu_sim_config();
+  m_num_cycles_per_intermediate_stage.resize(shader_config.memory_intermidiate_stages_subcore_unit, 1);
+  m_num_cycles_to_wait_to_free_WAR = shader_config.memory_intermidiate_stages_subcore_unit;
+}
+
+void warp_inst_t::generate_dp_latencies(gpgpu_sim *gpu) {
+  const shader_core_config &shader_config = gpu->get_config().get_gpgpu_sim_config();
+  m_num_cycles_per_intermediate_stage.resize(shader_config.dp_shared_intermidiate_stages, 1);
+  unsigned int num_cycles_transfer_operands = 0;
+  unsigned int first_read_operand = get_extra_trace_instruction_info().get_num_destination_registers();
+  for(unsigned int i = first_read_operand; i < get_extra_trace_instruction_info().get_num_operands(); i++){
+    if(get_extra_trace_instruction_info().get_operand(i).get_operand_type() == TraceEnhancedOperandType::REG) {
+      num_cycles_transfer_operands += (warp_size()* 8) / (shader_config.memory_subcore_link_to_sm_byte_size / 2);
+    }else {
+      num_cycles_transfer_operands += 1;
+    }
+  }
+  m_num_cycles_per_intermediate_stage[m_num_cycles_per_intermediate_stage.size() - 1] = 1 + num_cycles_transfer_operands;
+  m_num_cycles_to_wait_to_free_WAR = shader_config.dp_shared_intermidiate_stages + num_cycles_transfer_operands - 2;
+  if (shader_config.is_dp_pipeline_shared_for_subcores) {
+    m_has_wb_from_sm_struct_to_subcore = true;
+    unsigned int num_dsts = get_number_of_uses_per_operand(get_extra_trace_instruction_info(), get_extra_trace_instruction_info().get_operand(0).get_operand_reg_number(), 0, get_extra_trace_instruction_info().get_operand(0).get_operand_type());
+    m_num_pending_cycles_to_finish_wb_from_sm_struct_to_subcore = shader_config.num_cycles_needed_to_write_a_reg_from_sm_struct_to_subcore * num_dsts;
+  }
+}
+
+void warp_inst_t::generate_mem_latencies(gpgpu_sim *gpu) {
+  assert(is_load() || is_store());
+  const shader_core_config &shader_config = gpu->get_config().get_gpgpu_sim_config();
+  assert(shader_config.is_trace_mode);
+  m_num_cycles_per_intermediate_stage.resize(shader_config.memory_intermidiate_stages_subcore_unit, 0);
+  bool is_shared = space.is_shared();
+  bool is_consider_global = space.is_global() || space.is_local();
+  unsigned int total_byte_size_for_warp = data_size * warp_size();
+  unsigned int idx_of_memref = is_load() ? 1 : 0;
+  bool is_regular_reg_in_mref =
+        m_extra_trace_instruction_info
+            ->is_first_operand_of_mref_cbank_desc_using_regular_reg(idx_of_memref);
+  unsigned int standard_num_cycles_per_stage_in_subcore = shader_config.cycles_needed_for_address_calculation;
+  unsigned int cycles_at_last_stage_in_subcore = 1;
+  if(is_shared || !is_regular_reg_in_mref) {
+    standard_num_cycles_per_stage_in_subcore = standard_num_cycles_per_stage_in_subcore / 2;
+  }
+  unsigned int cycles_at_first_stage = standard_num_cycles_per_stage_in_subcore;
+  m_num_cycles_to_wait_to_free_WAR = 1;
+  int extra_offset_store = 0;
+  if(is_store()) {
+    if(is_shared) {
+      m_num_cycles_per_intermediate_stage[1] = 1;
+    }else {
+      
+      if (!is_regular_reg_in_mref) {
+        m_num_cycles_per_intermediate_stage[1] = 2;
+      }else {
+        cycles_at_first_stage = cycles_at_first_stage / 2;
+      }
+    }
+    unsigned int link_transfer_size =
+        shader_config
+                .is_store_half_bandwidth_in_the_subcore_link_to_sm_enabled
+            ? (shader_config.memory_subcore_link_to_sm_byte_size / 2)
+            : shader_config.memory_subcore_link_to_sm_byte_size;
+    cycles_at_last_stage_in_subcore = total_byte_size_for_warp / link_transfer_size;
+
+    if(is_regular_reg_in_mref) {
+      if(is_consider_global) {
+        cycles_at_last_stage_in_subcore += 4;
+      }else if(is_shared) {
+        cycles_at_last_stage_in_subcore += 2;
+      }
+    }
+
+    unsigned int num_to_substract_WAR = 0;
+    unsigned int num_to_add_WAR = 0;
+    if(is_shared) {
+      num_to_substract_WAR = 2;
+    }else if(is_consider_global) {
+      num_to_substract_WAR = 3;
+      num_to_add_WAR = standard_num_cycles_per_stage_in_subcore - 2;
+    }
+    m_num_cycles_to_wait_to_free_WAR += 1 + cycles_at_last_stage_in_subcore + num_to_add_WAR - num_to_substract_WAR;
+
+  }else { // is_load
+    if(!space.is_const() || (space.is_const() && is_regular_reg_in_mref)) {
+      m_num_cycles_to_wait_to_free_WAR++;
+    }
+    if(is_consider_global) {
+      cycles_at_last_stage_in_subcore += !is_regular_reg_in_mref;
+    }
+    bool is_half_bandwidth =
+        shader_config
+            .is_load_half_bandwidth_in_the_subcore_link_to_sm_enabled &&
+        !space.is_shared();
+    unsigned int link_transfer_size =
+        is_half_bandwidth
+            ? (shader_config.memory_subcore_link_to_sm_byte_size / 2)
+            : shader_config.memory_subcore_link_to_sm_byte_size;
+    m_num_pending_cycles_to_finish_wb_from_sm_struct_to_subcore =
+        total_byte_size_for_warp / link_transfer_size;
+
+    if (space.is_shared()) {
+      if (data_size == 4) {
+        m_num_pending_cycles_to_finish_wb_from_sm_struct_to_subcore += m_num_pending_cycles_to_finish_wb_from_sm_struct_to_subcore;
+      }
+    }else if(space.is_const()) {
+      m_num_pending_cycles_to_finish_wb_from_sm_struct_to_subcore = 1;
+      if(!is_regular_reg_in_mref) { 
+        cycles_at_first_stage = 1;
+        standard_num_cycles_per_stage_in_subcore = 1;
+        cycles_at_last_stage_in_subcore = 1;
+        for (unsigned int i = 1; i < (shader_config.memory_intermidiate_stages_subcore_unit - 1); i++) {
+          m_num_cycles_per_intermediate_stage[i] = 1;
+        }
+      }
+    }
+
+    if(m_is_ldgsts) {
+      m_num_pending_cycles_to_finish_wb_from_sm_struct_to_subcore = 1;
+      extra_offset_store = shader_config.memory_subcore_extra_latency_load_shared_mem;
+      m_num_cycles_to_wait_to_free_WAR += shader_config.memory_subcore_extra_latency_load_shared_mem;
+    }
+  }
+
+  assert(static_cast<int>(standard_num_cycles_per_stage_in_subcore) >= shader_config.offset_latency_firts_stage_memory_subcore);
+  m_num_cycles_per_intermediate_stage[0] = cycles_at_first_stage + shader_config.offset_latency_firts_stage_memory_subcore;
+  m_num_cycles_per_intermediate_stage[shader_config.memory_intermidiate_stages_subcore_unit - 2] = standard_num_cycles_per_stage_in_subcore + extra_offset_store;
+  m_num_cycles_per_intermediate_stage[shader_config.memory_intermidiate_stages_subcore_unit - 1] = cycles_at_last_stage_in_subcore;  
+  
+  // When the instruction Frees WAR dependence Counters
+  for(unsigned int i = 0; i < (m_num_cycles_per_intermediate_stage.size() - 2); i++) {
+    m_num_cycles_to_wait_to_free_WAR += m_num_cycles_per_intermediate_stage[i];
+  }
+
+  // GENERAL latencies of instructions at the SM shared unit
+  if(is_shared) {
+    m_latency_of_mem_operation_at_sm_structure = shader_config.memory_shared_memory_minimum_latency + is_regular_reg_in_mref;
+    std::string opcode = m_extra_trace_instruction_info->get_op_code();
+    if(opcode.find("LDSM") != std::string::npos) {
+      if(endsWith(opcode, ".4") || endsWith(opcode, ".2")) {
+        m_latency_of_mem_operation_at_sm_structure += shader_config.memory_shared_memory_extra_latency_ldsm_multiple_matrix;
+      }
+    }
+  }else if(is_consider_global) {
+    m_latency_of_mem_operation_at_sm_structure = shader_config.memory_l1d_minimum_latency;
+  }else if(space.is_const()) {
+    m_latency_of_mem_operation_at_sm_structure = shader_config.constant_cache_latency_at_sm_structure;
+  }
+
+  m_has_wb_from_sm_struct_to_subcore = true;
+}
+
 void warp_inst_t::generate_mem_accesses() {
-  if (empty() || op == MEMORY_BARRIER_OP || m_mem_accesses_created) return;
+  if (empty() || (op == MEMORY_BARRIER_OP) || (op == GRID_BARRIER_OP) || m_mem_accesses_created) return;
   if (!((op == LOAD_OP) || (op == TENSOR_CORE_LOAD_OP) || (op == STORE_OP) ||
-        (op == TENSOR_CORE_STORE_OP)))
+        (op == TENSOR_CORE_STORE_OP) ))
     return;
   if (m_warp_active_mask.count() == 0) return;  // predicated off
 
@@ -312,8 +629,8 @@ void warp_inst_t::generate_mem_accesses() {
 
   assert(is_load() || is_store());
 
-  // if((space.get_type() != tex_space) && (space.get_type() != const_space))
-  assert(m_per_scalar_thread_valid);  // need address information per thread
+  //if((space.get_type() != tex_space) && (space.get_type() != const_space))
+    assert(m_per_scalar_thread_valid);  // need address information per thread
 
   bool is_write = is_store();
 
@@ -334,11 +651,14 @@ void warp_inst_t::generate_mem_accesses() {
       access_type = is_write ? LOCAL_ACC_W : LOCAL_ACC_R;
       break;
     case shared_space:
+      access_type = is_write ? LOCAL_ACC_W : LOCAL_ACC_R;
       break;
     case sstarr_space:
+      access_type = is_write ? LOCAL_ACC_W : LOCAL_ACC_R;
       break;
     default:
-      assert(0);
+      access_type = GLOBAL_ACC_R;
+      assert(0); // CREATE CRASH
       break;
   }
 
@@ -357,6 +677,7 @@ void warp_inst_t::generate_mem_accesses() {
             bank_accs;  // bank -> word address -> access count
 
         // step 1: compute accesses to words in banks
+        std::set<new_addr_type> addr_set_to_track_coalescing;
         for (unsigned thread = subwarp * subwarp_size;
              thread < (subwarp + 1) * subwarp_size; thread++) {
           if (!active(thread)) continue;
@@ -367,6 +688,12 @@ void warp_inst_t::generate_mem_accesses() {
           new_addr_type word =
               line_size_based_tag_func(addr, m_config->WORD_SIZE);
           bank_accs[bank][word]++;
+          addr_set_to_track_coalescing.insert(word);
+        }
+        for(auto it_s = addr_set_to_track_coalescing.begin(); it_s != addr_set_to_track_coalescing.end(); it_s++) {
+          m_accessq.push_back(mem_access_t(
+              access_type, *it_s, m_config->WORD_SIZE, is_write, active_mask_t(),
+              mem_access_byte_mask_t(), mem_access_sector_mask_t(), m_config->gpgpu_ctx));
         }
 
         if (m_config->shmem_limited_broadcast) {
@@ -477,7 +804,9 @@ void warp_inst_t::generate_mem_accesses() {
           line_size_based_tag_func(addr, cache_block_size);
       accesses[block_address].set(thread);
       unsigned idx = addr - block_address;
-      for (unsigned i = 0; i < data_size; i++) byte_mask.set(idx + i);
+      for (unsigned i = 0; i < data_size; i++) {
+        byte_mask.set(idx + i);
+      }
     }
     for (a = accesses.begin(); a != accesses.end(); ++a)
       m_accessq.push_back(mem_access_t(
@@ -716,7 +1045,7 @@ void warp_inst_t::memory_coalescing_arch_reduce_and_send(
     new_addr_type addr, unsigned segment_size) {
   assert((addr & (segment_size - 1)) == 0);
 
-  const std::bitset<4> &q = info.chunks;
+  const std::bitset<SECTOR_CHUNCK_SIZE> &q = info.chunks;
   assert(q.count() >= 1);
   std::bitset<2> h;  // halves (used to check if 64 byte segment can be
                      // compressed into a single 32 byte segment)
@@ -775,40 +1104,6 @@ void warp_inst_t::completed(unsigned long long cycle) const {
 }
 
 kernel_info_t::kernel_info_t(dim3 gridDim, dim3 blockDim,
-                             class function_info *entry,
-                             unsigned long long streamID) {
-  m_kernel_entry = entry;
-  m_grid_dim = gridDim;
-  m_block_dim = blockDim;
-  m_next_cta.x = 0;
-  m_next_cta.y = 0;
-  m_next_cta.z = 0;
-  m_next_tid = m_next_cta;
-  m_num_cores_running = 0;
-  m_uid = (entry->gpgpu_ctx->kernel_info_m_next_uid)++;
-  m_streamID = streamID;
-  m_param_mem = new memory_space_impl<8192>("param", 64 * 1024);
-
-  // Jin: parent and child kernel management for CDP
-  m_parent_kernel = NULL;
-
-  // Jin: launch latency management
-  m_launch_latency = entry->gpgpu_ctx->device_runtime->g_kernel_launch_latency;
-
-  m_kernel_TB_latency =
-      entry->gpgpu_ctx->device_runtime->g_kernel_launch_latency +
-      num_blocks() * entry->gpgpu_ctx->device_runtime->g_TB_launch_latency;
-
-  cache_config_set = false;
-}
-
-// MICRO 2025 port (Stage 1d.4+5): 3-arg ctor used by trace_kernel_info_t.
-// Mirrors MICRO 2025 abstract_hardware_model.cc:1106-1137 including the
-// entry->gpgpu_ctx==nullptr guard.  streamID defaults to 0.
-// function_unique_id / is_captured_from_binary are initialised in-class
-// (see abstract_hardware_model.h :: kernel_info_t) so they are not explicitly
-// re-initialised here.
-kernel_info_t::kernel_info_t(dim3 gridDim, dim3 blockDim,
                              class function_info *entry) {
   m_kernel_entry = entry;
   m_grid_dim = gridDim;
@@ -818,21 +1113,27 @@ kernel_info_t::kernel_info_t(dim3 gridDim, dim3 blockDim,
   m_next_cta.z = 0;
   m_next_tid = m_next_cta;
   m_num_cores_running = 0;
-  m_streamID = 0;
   m_parent_kernel = NULL;
   m_param_mem = new memory_space_impl<8192>("param", 64 * 1024);
-  if (entry->gpgpu_ctx == nullptr) {
+  if(entry->gpgpu_ctx == nullptr){
     m_kernel_TB_latency = 0;
     m_launch_latency = 0;
     m_uid = entry->get_uid();
-  } else {
+  }else {
+    // Jin: parent and child kernel management for CDP
     m_uid = (entry->gpgpu_ctx->kernel_info_m_next_uid)++;
+    // Jin: launch latency management
     m_launch_latency = entry->gpgpu_ctx->device_runtime->g_kernel_launch_latency;
+
     m_kernel_TB_latency =
         entry->gpgpu_ctx->device_runtime->g_kernel_launch_latency +
         num_blocks() * entry->gpgpu_ctx->device_runtime->g_TB_launch_latency;
   }
+
   cache_config_set = false;
+
+  function_unique_id = 0;
+  is_captured_from_binary = false;
 }
 
 /*A snapshot of the texture mappings needs to be stored in the kernel's info as
@@ -866,6 +1167,9 @@ kernel_info_t::kernel_info_t(
   cache_config_set = false;
   m_NameToCudaArray = nameToCudaArray;
   m_NameToTextureInfo = nameToTextureInfo;
+
+  function_unique_id = 0;
+  is_captured_from_binary = false;
 }
 
 kernel_info_t::~kernel_info_t() {
@@ -982,6 +1286,7 @@ simt_stack::simt_stack(unsigned wid, unsigned warpSize, class gpgpu_sim *gpu) {
   m_warp_id = wid;
   m_warp_size = warpSize;
   m_gpu = gpu;
+  m_last_num_entries = 0;
   reset();
 }
 
@@ -1087,166 +1392,16 @@ void simt_stack::print_checkpoint(FILE *fout) const {
 
     for (unsigned j = 0; j < m_warp_size; j++)
       fprintf(fout, "%c ", (stack_entry.m_active_mask.test(j) ? '1' : '0'));
-    fprintf(fout, "%llu %d %llu %lld %d ", stack_entry.m_pc,
+    fprintf(fout, "%llu %d %llu %llu %d ", stack_entry.m_pc,
             stack_entry.m_calldepth, stack_entry.m_recvg_pc,
             stack_entry.m_branch_div_cycle, stack_entry.m_type);
     fprintf(fout, "%d %d\n", m_warp_id, m_warp_size);
   }
 }
 
-void simt_stack::update(simt_mask_t &thread_done, addr_vector_t &next_pc,
+void simt_stack::update(simt_mask_t &thread_done, addr_vector_t &next_pc, 
                         address_type recvg_pc, op_type next_inst_op,
                         unsigned next_inst_size, address_type next_inst_pc) {
-  // MICRO 2025 port (Stage 1d.8): in trace-driven mode the simt_stack is
-  // not used — divergence is encoded in each inst's active_mask, and the
-  // reconvergence happens at trace-provided PCs.  MICRO 2025 gutted this
-  // whole function (their simulator is trace-only); we retain the vanilla
-  // PTX-functional body behind a trace-mode guard so pure-PTX mode (if
-  // ever re-enabled) keeps working.
-  if (m_gpu && m_gpu->getShaderCoreConfig() &&
-      m_gpu->getShaderCoreConfig()->is_trace_mode) {
-    return;
-  }
-  assert(m_stack.size() > 0);
-
-  assert(next_pc.size() == m_warp_size);
-
-  simt_mask_t top_active_mask = m_stack.back().m_active_mask;
-  address_type top_recvg_pc = m_stack.back().m_recvg_pc;
-  address_type top_pc =
-      m_stack.back().m_pc;  // the pc of the instruction just executed
-  stack_entry_type top_type = m_stack.back().m_type;
-  assert(top_pc == next_inst_pc);
-  assert(top_active_mask.any());
-
-  const address_type null_pc = -1;
-  bool warp_diverged = false;
-  address_type new_recvg_pc = null_pc;
-  unsigned num_divergent_paths = 0;
-
-  std::map<address_type, simt_mask_t> divergent_paths;
-  while (top_active_mask.any()) {
-    // extract a group of threads with the same next PC among the active threads
-    // in the warp
-    address_type tmp_next_pc = null_pc;
-    simt_mask_t tmp_active_mask;
-    for (int i = m_warp_size - 1; i >= 0; i--) {
-      if (top_active_mask.test(i)) {  // is this thread active?
-        if (thread_done.test(i)) {
-          top_active_mask.reset(i);  // remove completed thread from active mask
-        } else if (tmp_next_pc == null_pc) {
-          tmp_next_pc = next_pc[i];
-          tmp_active_mask.set(i);
-          top_active_mask.reset(i);
-        } else if (tmp_next_pc == next_pc[i]) {
-          tmp_active_mask.set(i);
-          top_active_mask.reset(i);
-        }
-      }
-    }
-
-    if (tmp_next_pc == null_pc) {
-      assert(!top_active_mask.any());  // all threads done
-      continue;
-    }
-
-    divergent_paths[tmp_next_pc] = tmp_active_mask;
-    num_divergent_paths++;
-  }
-
-  address_type not_taken_pc = next_inst_pc + next_inst_size;
-  assert(num_divergent_paths <= 2);
-  for (unsigned i = 0; i < num_divergent_paths; i++) {
-    address_type tmp_next_pc = null_pc;
-    simt_mask_t tmp_active_mask;
-    tmp_active_mask.reset();
-    if (divergent_paths.find(not_taken_pc) != divergent_paths.end()) {
-      assert(i == 0);
-      tmp_next_pc = not_taken_pc;
-      tmp_active_mask = divergent_paths[tmp_next_pc];
-      divergent_paths.erase(tmp_next_pc);
-    } else {
-      std::map<address_type, simt_mask_t>::iterator it =
-          divergent_paths.begin();
-      tmp_next_pc = it->first;
-      tmp_active_mask = divergent_paths[tmp_next_pc];
-      divergent_paths.erase(tmp_next_pc);
-    }
-
-    // HANDLE THE SPECIAL CASES FIRST
-    if (next_inst_op == CALL_OPS) {
-      // Since call is not a divergent instruction, all threads should have
-      // executed a call instruction
-      assert(num_divergent_paths == 1);
-
-      simt_stack_entry new_stack_entry;
-      new_stack_entry.m_pc = tmp_next_pc;
-      new_stack_entry.m_active_mask = tmp_active_mask;
-      new_stack_entry.m_branch_div_cycle =
-          m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle;
-      new_stack_entry.m_type = STACK_ENTRY_TYPE_CALL;
-      m_stack.push_back(new_stack_entry);
-      return;
-    } else if (next_inst_op == RET_OPS && top_type == STACK_ENTRY_TYPE_CALL) {
-      // pop the CALL Entry
-      assert(num_divergent_paths == 1);
-      m_stack.pop_back();
-
-      assert(m_stack.size() > 0);
-      m_stack.back().m_pc = tmp_next_pc;  // set the PC of the stack top entry
-                                          // to return PC from  the call stack;
-      // Check if the New top of the stack is reconverging
-      if (tmp_next_pc == m_stack.back().m_recvg_pc &&
-          m_stack.back().m_type != STACK_ENTRY_TYPE_CALL) {
-        assert(m_stack.back().m_type == STACK_ENTRY_TYPE_NORMAL);
-        m_stack.pop_back();
-      }
-      return;
-    }
-
-    // discard the new entry if its PC matches with reconvergence PC
-    // that automatically reconverges the entry
-    // If the top stack entry is CALL, dont reconverge.
-    if (tmp_next_pc == top_recvg_pc && (top_type != STACK_ENTRY_TYPE_CALL))
-      continue;
-
-    // this new entry is not converging
-    // if this entry does not include thread from the warp, divergence occurs
-    if ((num_divergent_paths > 1) && !warp_diverged) {
-      warp_diverged = true;
-      // modify the existing top entry into a reconvergence entry in the pdom
-      // stack
-      new_recvg_pc = recvg_pc;
-      if (new_recvg_pc != top_recvg_pc) {
-        m_stack.back().m_pc = new_recvg_pc;
-        m_stack.back().m_branch_div_cycle =
-            m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle;
-
-        m_stack.push_back(simt_stack_entry());
-      }
-    }
-
-    // discard the new entry if its PC matches with reconvergence PC
-    if (warp_diverged && tmp_next_pc == new_recvg_pc) continue;
-
-    // update the current top of pdom stack
-    m_stack.back().m_pc = tmp_next_pc;
-    m_stack.back().m_active_mask = tmp_active_mask;
-    if (warp_diverged) {
-      m_stack.back().m_calldepth = 0;
-      m_stack.back().m_recvg_pc = new_recvg_pc;
-    } else {
-      m_stack.back().m_recvg_pc = top_recvg_pc;
-    }
-
-    m_stack.push_back(simt_stack_entry());
-  }
-  assert(m_stack.size() > 0);
-  m_stack.pop_back();
-
-  if (warp_diverged) {
-    m_gpu->gpgpu_ctx->stats->ptx_file_line_stats_add_warp_divergence(top_pc, 1);
-  }
 }
 
 void core_t::execute_warp_inst_t(warp_inst_t &inst, unsigned warpId) {
@@ -1282,7 +1437,7 @@ void core_t::updateSIMTStack(unsigned warpId, warp_inst_t *inst) {
     }
   }
   m_simt_stack[warpId]->update(thread_done, next_pc, inst->reconvergence_pc,
-                               inst->op, inst->isize, inst->pc);
+                               inst->op, inst->isize, inst->pc); // MOD. IBuffer_ooo
 }
 
 //! Get the warp to be executed using the data taken form the SIMT stack
@@ -1290,7 +1445,7 @@ warp_inst_t core_t::getExecuteWarp(unsigned warpId) {
   unsigned pc, rpc;
   m_simt_stack[warpId]->get_pdom_stack_top_info(&pc, &rpc);
   warp_inst_t wi = *(m_gpu->gpgpu_ctx->ptx_fetch_inst(pc));
-  wi.set_active(m_simt_stack[warpId]->get_active_mask());
+  wi.set_active(m_simt_stack[warpId]->get_active_mask(), m_gpu->getShaderCoreConfig()->warp_size);
   return wi;
 }
 
@@ -1313,333 +1468,4 @@ void core_t::initilizeSIMTStack(unsigned warp_count, unsigned warp_size) {
 void core_t::get_pdom_stack_top_info(unsigned warpId, unsigned *pc,
                                      unsigned *rpc) const {
   m_simt_stack[warpId]->get_pdom_stack_top_info(pc, rpc);
-}
-
-
-// ============================================================================
-// MICRO 2025 port (Stage 1c.7.2).
-//
-// Port of MICRO 2025 abstract_hardware_model.cc:332-620 — the warp_inst_t
-// methods that Subcore::single_decode() and ldst_unit_sm call on live
-// instructions.  Stage 1c.4 stubbed these as no-ops in the header; Codex
-// review flagged that as silent modeling loss.  Here we port the real
-// behavior verbatim.
-//
-// When is_SM_remodeling_enabled=0 (default), these methods are never
-// reached, so vanilla path remains unchanged.
-// ============================================================================
-
-#include "gpgpu-sim/gpu-cache.h"                     // l1d_cache_config
-#include "../../../util/traces_enhanced/src/traced_instruction.h" // traced_instruction (Stage 1d.4+5: moved to canonical util/ path)
-#include "../../../util/traces_enhanced/src/string_utilities.h"   // endsWith
-#include "../../trace-driven/trace_driven.h"         // trace_config class (for assign_predicate_latencies)
-
-// MOD. Begin. Fixed LDST_Unit model
-std::vector<mem_access_t> warp_inst_t::granted_accesses(
-    std::vector<bool> &used_banks,
-    std::vector<std::deque<mem_fetch *>> &l1_latency_queue,
-    unsigned int inst_latency, l1d_cache_config &L1D_config,
-    unsigned int max_allowed_searches, bool &is_a_bank_conflict) {
-  std::vector<mem_access_t> res;
-  auto it = m_accessq.begin();
-  unsigned int n_searches = 0;
-
-  while ((it != m_accessq.end()) && (n_searches <= max_allowed_searches)) {
-    unsigned int acc_bank = L1D_config.set_bank(it->get_addr());
-    if (!used_banks[acc_bank] &&
-        (l1_latency_queue[acc_bank][inst_latency - 1] == NULL)) {
-      used_banks[acc_bank] = true;
-      res.push_back(*it);
-      it = m_accessq.erase(it);
-    } else {
-      is_a_bank_conflict = true;
-      it++;
-    }
-    n_searches++;
-  }
-  return res;
-}
-// MOD. End. Fixed LDST_Unit model
-
-void warp_inst_t::generate_fixed_latency_constant_accesses(new_addr_type c_addr) {
-  mem_access_type access_type = CONST_ACC_R;
-  bool is_write = is_store();
-  new_addr_type cache_block_size = m_config->gpgpu_cache_constl1_linesize;
-  if (cache_block_size) {
-    mem_access_byte_mask_t byte_mask;
-    std::map<new_addr_type, active_mask_t> accesses;
-    std::map<new_addr_type, active_mask_t>::iterator a;
-    for (unsigned thread = 0; thread < m_config->warp_size; thread++) {
-      if (!active(thread)) continue;
-      new_addr_type block_address =
-          line_size_based_tag_func(c_addr, cache_block_size);
-      accesses[block_address].set(thread);
-      unsigned idx = c_addr - block_address;
-      for (unsigned i = 0; i < data_size; i++) byte_mask.set(idx + i);
-    }
-    for (a = accesses.begin(); a != accesses.end(); ++a)
-      m_accessq.push_back(mem_access_t(
-          access_type, a->first, cache_block_size, is_write, a->second,
-          byte_mask, mem_access_sector_mask_t(), m_config->gpgpu_ctx));
-  }
-}
-
-void warp_inst_t::ldgsts_change_to_sts_mode(gpgpu_sim *gpu) {
-  assert(m_is_ldgsts);
-  assert(m_ldgsts_state == Ldgsts_State::LOAD_STAGE);
-  space.set_type(shared_space);
-  memory_op = memory_store;
-  op = STORE_OP;
-  assert(data_size > 0);
-  m_per_scalar_thread_valid = m_per_scalar_thread_valid_memref2;
-  assert(m_per_scalar_thread_memref2.size() == m_per_scalar_thread.size());
-  for (unsigned int i = 0; i < m_per_scalar_thread_memref2.size(); i++) {
-    m_per_scalar_thread[i] = m_per_scalar_thread_memref2[i];
-  }
-  m_mem_accesses_created = false;
-  generate_mem_accesses();
-  generate_mem_latencies(gpu);
-}
-
-bool warp_inst_t::has_sm_shared_wb_finished() {
-  assert(is_load() || is_dp_op());
-  return m_num_pending_cycles_to_finish_wb_from_sm_struct_to_subcore == 0;
-}
-
-bool warp_inst_t::sm_shared_wb_consumed(bool can_do_wb_this_cycle,
-                                         unsigned int num_cycles_to_transfer_reg,
-                                         bool &conflict_detected) {
-  bool wb_performed_this_cycle = false;
-  assert(is_load() || is_dp_op());
-  if (m_num_pending_cycles_to_finish_wb_from_sm_struct_to_subcore > 0) {
-    bool decremented = false;
-    if (can_do_wb_this_cycle) {
-      m_num_pending_cycles_to_finish_wb_from_sm_struct_to_subcore--;
-      decremented = true;
-    } else if ((m_num_pending_cycles_to_finish_wb_from_sm_struct_to_subcore %
-                num_cycles_to_transfer_reg) != 1) {
-      m_num_pending_cycles_to_finish_wb_from_sm_struct_to_subcore--;
-      decremented = true;
-    } else {
-      conflict_detected = true;
-    }
-    if (decremented &&
-        ((m_num_pending_cycles_to_finish_wb_from_sm_struct_to_subcore %
-          num_cycles_to_transfer_reg) == 0)) {
-      wb_performed_this_cycle = true;
-      m_reg_offset =
-          (m_num_pending_cycles_to_finish_wb_from_sm_struct_to_subcore == 0)
-              ? m_reg_offset
-              : (m_reg_offset + 1);
-    }
-  }
-  return wb_performed_this_cycle;
-}
-
-void warp_inst_t::get_tensor_core_instruction_info() {
-  this->get_extra_trace_instruction_info().set_tensor_core_instruction_info();
-}
-
-void warp_inst_t::generate_tensor_core_latencies(gpgpu_sim *gpu) {
-  assert(get_extra_trace_instruction_info().get_tensor_core_instruction_info().is_set);
-  auto &info = get_extra_trace_instruction_info().get_tensor_core_instruction_info();
-  unsigned int number_of_elements = info.size_m * info.size_n * info.size_k;
-  assert(number_of_elements > 0);
-  assert(info.operand_bit_size > 0);
-  const shader_core_config &shader_config = gpu->get_config().get_gpgpu_sim_config();
-  unsigned int number_of_cycles =
-      number_of_elements * info.operand_bit_size / shader_config.tensor_rate_per_cycle;
-  if (info.is_sparse) {
-    number_of_cycles = number_of_cycles / 2;
-  }
-  initiation_interval = number_of_cycles / 2;
-  latency = number_of_cycles - initiation_interval;
-  if (info.is_16816_fp32_1688_fp32) {
-    initiation_interval += shader_config.tensor_extra_latency_16816_fp32_1688_fp32;
-    latency += shader_config.tensor_extra_latency_16816_fp32_1688_fp32;
-  }
-}
-
-void warp_inst_t::assign_predicate_latencies_if_needed(gpgpu_sim *gpu) {
-  const shader_core_config &shader_config = gpu->get_config().get_gpgpu_sim_config();
-  const trace_config *trace_conf = gpu->gpgpu_ctx->the_gpgpusim->g_trace_config;
-  if (op == op_type::PREDICATE_OP) {
-    // v2 guard: g_trace_config is wired by main.cc only when trace-driven
-    // mode starts (Stage 1e wiring).  Scope the guard to this branch so
-    // the contains_setp branch below still runs.
-    if (!trace_conf) return;
-    latency = trace_conf->get_int_latency();
-    initiation_interval = trace_conf->get_int_init();
-    latency_extra_predicate_op =
-        shader_config.predicate_latency - latency - initiation_interval;
-  } else if (m_extra_trace_instruction_info &&
-             m_extra_trace_instruction_info->get_contains_setp()) {
-    latency_extra_predicate_op =
-        shader_config.predicate_latency - latency - initiation_interval;
-  }
-}
-
-void warp_inst_t::generate_miscellaneous_queue_latencies(gpgpu_sim * /*gpu*/) {
-  m_num_cycles_per_intermediate_stage.resize(1);
-  m_num_cycles_to_wait_to_free_WAR = 1;
-}
-
-void warp_inst_t::generate_texture_latencies(gpgpu_sim *gpu) {
-  const shader_core_config &shader_config = gpu->get_config().get_gpgpu_sim_config();
-  m_num_cycles_per_intermediate_stage.resize(shader_config.dp_shared_intermidiate_stages, 1);
-  m_num_cycles_to_wait_to_free_WAR = shader_config.memory_intermidiate_stages_subcore_unit;
-}
-
-void warp_inst_t::generate_other_mem_ops_latencies(gpgpu_sim *gpu) {
-  const shader_core_config &shader_config = gpu->get_config().get_gpgpu_sim_config();
-  m_num_cycles_per_intermediate_stage.resize(shader_config.memory_intermidiate_stages_subcore_unit, 1);
-  m_num_cycles_to_wait_to_free_WAR = shader_config.memory_intermidiate_stages_subcore_unit;
-}
-
-void warp_inst_t::generate_dp_latencies(gpgpu_sim *gpu) {
-  const shader_core_config &shader_config = gpu->get_config().get_gpgpu_sim_config();
-  m_num_cycles_per_intermediate_stage.resize(shader_config.dp_shared_intermidiate_stages, 1);
-  unsigned int num_cycles_transfer_operands = 0;
-  auto &info = get_extra_trace_instruction_info();
-  unsigned int first_read_operand = info.get_num_destination_registers();
-  for (unsigned int i = first_read_operand; i < info.get_num_operands(); i++) {
-    if (info.get_operand(i).get_operand_type() == TraceEnhancedOperandType::REG) {
-      num_cycles_transfer_operands +=
-          (warp_size() * 8) / (shader_config.memory_subcore_link_to_sm_byte_size / 2);
-    } else {
-      num_cycles_transfer_operands += 1;
-    }
-  }
-  m_num_cycles_per_intermediate_stage[m_num_cycles_per_intermediate_stage.size() - 1] =
-      1 + num_cycles_transfer_operands;
-  m_num_cycles_to_wait_to_free_WAR =
-      shader_config.dp_shared_intermidiate_stages + num_cycles_transfer_operands - 2;
-  if (shader_config.is_dp_pipeline_shared_for_subcores) {
-    m_has_wb_from_sm_struct_to_subcore = true;
-    unsigned int num_dsts = get_number_of_uses_per_operand(
-        info, info.get_operand(0).get_operand_reg_number(), 0,
-        info.get_operand(0).get_operand_type());
-    m_num_pending_cycles_to_finish_wb_from_sm_struct_to_subcore =
-        shader_config.num_cycles_needed_to_write_a_reg_from_sm_struct_to_subcore * num_dsts;
-  }
-}
-
-void warp_inst_t::generate_mem_latencies(gpgpu_sim *gpu) {
-  assert(is_load() || is_store());
-  const shader_core_config &shader_config = gpu->get_config().get_gpgpu_sim_config();
-  assert(shader_config.is_trace_mode);
-  m_num_cycles_per_intermediate_stage.resize(shader_config.memory_intermidiate_stages_subcore_unit, 0);
-  bool is_shared = space.is_shared();
-  bool is_consider_global = space.is_global() || space.is_local();
-  unsigned int total_byte_size_for_warp = data_size * warp_size();
-  unsigned int idx_of_memref = is_load() ? 1 : 0;
-  bool is_regular_reg_in_mref =
-      m_extra_trace_instruction_info
-          ->is_first_operand_of_mref_cbank_desc_using_regular_reg(idx_of_memref);
-  unsigned int standard_num_cycles_per_stage_in_subcore =
-      shader_config.cycles_needed_for_address_calculation;
-  unsigned int cycles_at_last_stage_in_subcore = 1;
-  if (is_shared || !is_regular_reg_in_mref) {
-    standard_num_cycles_per_stage_in_subcore = standard_num_cycles_per_stage_in_subcore / 2;
-  }
-  unsigned int cycles_at_first_stage = standard_num_cycles_per_stage_in_subcore;
-  m_num_cycles_to_wait_to_free_WAR = 1;
-  int extra_offset_store = 0;
-  if (is_store()) {
-    if (is_shared) {
-      m_num_cycles_per_intermediate_stage[1] = 1;
-    } else {
-      if (!is_regular_reg_in_mref) {
-        m_num_cycles_per_intermediate_stage[1] = 2;
-      } else {
-        cycles_at_first_stage = cycles_at_first_stage / 2;
-      }
-    }
-    unsigned int link_transfer_size =
-        shader_config.is_store_half_bandwidth_in_the_subcore_link_to_sm_enabled
-            ? (shader_config.memory_subcore_link_to_sm_byte_size / 2)
-            : shader_config.memory_subcore_link_to_sm_byte_size;
-    cycles_at_last_stage_in_subcore = total_byte_size_for_warp / link_transfer_size;
-    if (is_regular_reg_in_mref) {
-      if (is_consider_global) {
-        cycles_at_last_stage_in_subcore += 4;
-      } else if (is_shared) {
-        cycles_at_last_stage_in_subcore += 2;
-      }
-    }
-    unsigned int num_to_substract_WAR = 0;
-    unsigned int num_to_add_WAR = 0;
-    if (is_shared) {
-      num_to_substract_WAR = 2;
-    } else if (is_consider_global) {
-      num_to_substract_WAR = 3;
-      num_to_add_WAR = standard_num_cycles_per_stage_in_subcore - 2;
-    }
-    m_num_cycles_to_wait_to_free_WAR +=
-        1 + cycles_at_last_stage_in_subcore + num_to_add_WAR - num_to_substract_WAR;
-  } else {  // is_load
-    if (!space.is_const() || (space.is_const() && is_regular_reg_in_mref)) {
-      m_num_cycles_to_wait_to_free_WAR++;
-    }
-    if (is_consider_global) {
-      cycles_at_last_stage_in_subcore += !is_regular_reg_in_mref;
-    }
-    bool is_half_bandwidth =
-        shader_config.is_load_half_bandwidth_in_the_subcore_link_to_sm_enabled &&
-        !space.is_shared();
-    unsigned int link_transfer_size =
-        is_half_bandwidth ? (shader_config.memory_subcore_link_to_sm_byte_size / 2)
-                          : shader_config.memory_subcore_link_to_sm_byte_size;
-    m_num_pending_cycles_to_finish_wb_from_sm_struct_to_subcore =
-        total_byte_size_for_warp / link_transfer_size;
-    if (space.is_shared()) {
-      if (data_size == 4) {
-        m_num_pending_cycles_to_finish_wb_from_sm_struct_to_subcore +=
-            m_num_pending_cycles_to_finish_wb_from_sm_struct_to_subcore;
-      }
-    } else if (space.is_const()) {
-      m_num_pending_cycles_to_finish_wb_from_sm_struct_to_subcore = 1;
-      if (!is_regular_reg_in_mref) {
-        cycles_at_first_stage = 1;
-        standard_num_cycles_per_stage_in_subcore = 1;
-        cycles_at_last_stage_in_subcore = 1;
-        for (unsigned int i = 1;
-             i < (shader_config.memory_intermidiate_stages_subcore_unit - 1); i++) {
-          m_num_cycles_per_intermediate_stage[i] = 1;
-        }
-      }
-    }
-    if (m_is_ldgsts) {
-      m_num_pending_cycles_to_finish_wb_from_sm_struct_to_subcore = 1;
-      extra_offset_store = shader_config.memory_subcore_extra_latency_load_shared_mem;
-      m_num_cycles_to_wait_to_free_WAR += shader_config.memory_subcore_extra_latency_load_shared_mem;
-    }
-  }
-  assert(static_cast<int>(standard_num_cycles_per_stage_in_subcore) >=
-         static_cast<int>(shader_config.offset_latency_firts_stage_memory_subcore));
-  m_num_cycles_per_intermediate_stage[0] =
-      cycles_at_first_stage + shader_config.offset_latency_firts_stage_memory_subcore;
-  m_num_cycles_per_intermediate_stage[shader_config.memory_intermidiate_stages_subcore_unit - 2] =
-      standard_num_cycles_per_stage_in_subcore + extra_offset_store;
-  m_num_cycles_per_intermediate_stage[shader_config.memory_intermidiate_stages_subcore_unit - 1] =
-      cycles_at_last_stage_in_subcore;
-  for (unsigned int i = 0; i < (m_num_cycles_per_intermediate_stage.size() - 2); i++) {
-    m_num_cycles_to_wait_to_free_WAR += m_num_cycles_per_intermediate_stage[i];
-  }
-  if (is_shared) {
-    m_latency_of_mem_operation_at_sm_structure =
-        shader_config.memory_shared_memory_minimum_latency + is_regular_reg_in_mref;
-    std::string opcode = m_extra_trace_instruction_info->get_op_code();
-    if (opcode.find("LDSM") != std::string::npos) {
-      if (endsWith(opcode, ".4") || endsWith(opcode, ".2")) {
-        m_latency_of_mem_operation_at_sm_structure +=
-            shader_config.memory_shared_memory_extra_latency_ldsm_multiple_matrix;
-      }
-    }
-  } else if (is_consider_global) {
-    m_latency_of_mem_operation_at_sm_structure = shader_config.memory_l1d_minimum_latency;
-  } else if (space.is_const()) {
-    m_latency_of_mem_operation_at_sm_structure = shader_config.constant_cache_latency_at_sm_structure;
-  }
-  m_has_wb_from_sm_struct_to_subcore = true;
 }

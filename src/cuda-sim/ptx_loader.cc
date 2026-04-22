@@ -95,7 +95,7 @@ void gpgpu_context::print_ptx_file(const char *p, unsigned source_num,
     const ptx_instruction *pI = ptx_parser->ptx_instruction_lookup(filename, n);
     char pc[64];
     if (pI && pI->get_PC())
-      snprintf(pc, 64, "%4llu", pI->get_PC());
+      snprintf(pc, 64, "%4llx", pI->get_PC());
     else
       snprintf(pc, 64, "    ");
     printf("    _%u.ptx  %4u (pc=%s):  %s\n", source_num, n, pc, t);
@@ -112,9 +112,9 @@ char *ptxinfo_data::gpgpu_ptx_sim_convert_ptx_and_sass_to_ptxplus(
     const std::string sassfilename) {
   printf("GPGPU-Sim PTX: converting EMBEDDED .ptx file to ptxplus \n");
 
-  char fname_ptxplus[1024];
-  snprintf(fname_ptxplus, 1024, "_ptxplus_XXXXXX");
-  int fd4 = mkstemp(fname_ptxplus);
+  std::ostringstream fname_ptxplus_stream;
+  fname_ptxplus_stream << "_ptxplus_XXXXXX";
+  int fd4 = mkstemp((char *)fname_ptxplus_stream.str().c_str());
   close(fd4);
 
   // Run cuobjdump_to_ptxplus
@@ -124,7 +124,7 @@ char *ptxinfo_data::gpgpu_ptx_sim_convert_ptx_and_sass_to_ptxplus(
            "$GPGPUSIM_ROOT/build/$GPGPUSIM_CONFIG/cuobjdump_to_ptxplus/"
            "cuobjdump_to_ptxplus %s %s %s %s",
            ptxfilename.c_str(), sassfilename.c_str(), elffilename.c_str(),
-           fname_ptxplus);
+           fname_ptxplus_stream.str().c_str());
   fflush(stdout);
   printf("GPGPU-Sim PTX: calling cuobjdump_to_ptxplus\ncommandline: %s\n",
          commandline);
@@ -136,7 +136,7 @@ char *ptxinfo_data::gpgpu_ptx_sim_convert_ptx_and_sass_to_ptxplus(
   }
 
   // Get ptxplus from file
-  std::ifstream fileStream(fname_ptxplus, std::ios::in);
+  std::ifstream fileStream(fname_ptxplus_stream.str().c_str(), std::ios::in);
   std::string text, line;
   while (getline(fileStream, line)) {
     text += (line + "\n");
@@ -149,7 +149,7 @@ char *ptxinfo_data::gpgpu_ptx_sim_convert_ptx_and_sass_to_ptxplus(
   if (!m_ptx_save_converted_ptxplus) {
     char rm_commandline[1024];
 
-    snprintf(rm_commandline, 1024, "rm -f %s", fname_ptxplus);
+    snprintf(rm_commandline, 1024, "rm -f %s", fname_ptxplus_stream.str().c_str());
 
     printf("GPGPU-Sim PTX: removing temporary files using \"%s\"\n",
            rm_commandline);
@@ -210,22 +210,22 @@ symbol_table *gpgpu_context::gpgpu_ptx_sim_load_ptx_from_filename(
 }
 
 void fix_duplicate_errors(char fname2[1024]) {
-  char tempfile[1024] = "_temp_ptx";
+  std::string tempfile = "_temp_ptx";
   char commandline[1024];
 
   // change the name of the ptx file to _temp_ptx
-  snprintf(commandline, 1024, "mv %s %s", fname2, tempfile);
+  snprintf(commandline, 1024, "mv %s %s", fname2, tempfile.c_str());
   printf("Running: %s\n", commandline);
   int result = system(commandline);
   if (result != 0) {
     fprintf(stderr,
             "GPGPU-Sim PTX: ERROR ** while changing filename from %s to %s",
-            fname2, tempfile);
+            fname2, tempfile.c_str());
     exit(1);
   }
 
   // store all of the ptx into a char array
-  FILE *ptxsource = fopen(tempfile, "r");
+  FILE *ptxsource = fopen(tempfile.c_str(), "r");
   fseek(ptxsource, 0, SEEK_END);
   long filesize = ftell(ptxsource);
   rewind(ptxsource);
@@ -236,11 +236,11 @@ void fix_duplicate_errors(char fname2[1024]) {
 
   FILE *ptxdest = fopen(fname2, "w");
   std::map<unsigned, const char *> duplicate = get_duplicate();
-  unsigned offset;
+  unsigned int offset = 0;
   unsigned oldlinenum = 1;
   unsigned linenum;
   char *startptr = ptxdata;
-  char *funcptr = NULL;
+  char *funcptr = nullptr;
   char *tempptr = ptxdata - 1;
   char *lineptr = ptxdata - 1;
 
@@ -308,11 +308,11 @@ void fix_duplicate_errors(char fname2[1024]) {
   // cleanup
   free(ptxdata);
   fclose(ptxdest);
-  snprintf(commandline, 1024, "rm -f %s", tempfile);
+  snprintf(commandline, 1024, "rm -f %s", tempfile.c_str());
   printf("Running: %s\n", commandline);
   result = system(commandline);
   if (result != 0) {
-    fprintf(stderr, "GPGPU-Sim PTX: ERROR ** while deleting %s", tempfile);
+    fprintf(stderr, "GPGPU-Sim PTX: ERROR ** while deleting %s", tempfile.c_str());
     exit(1);
   }
 }
@@ -320,7 +320,7 @@ void fix_duplicate_errors(char fname2[1024]) {
 // we need the application name here too.
 char *get_app_binary_name() {
   char exe_path[1025];
-  char *self_exe_path = NULL;
+  char *self_exe_path = nullptr;
 #ifdef __APPLE__
   // AMRUTH:  get apple device and check the result.
   printf("WARNING: not tested for Apple-mac devices \n");
@@ -346,16 +346,17 @@ char *get_app_binary_name() {
 void gpgpu_context::gpgpu_ptx_info_load_from_filename(const char *filename,
                                                       unsigned sm_version) {
   std::string ptxas_filename(std::string(filename) + "as");
-  char buff[1024], extra_flags[1024];
-  extra_flags[0] = 0;
-  if (!device_runtime->g_cdp_enabled)
-    snprintf(extra_flags, 1024, "--gpu-name=sm_%u", sm_version);
-  else
-    snprintf(extra_flags, 1024, "--compile-only --gpu-name=sm_%u", sm_version);
+  char buff[1024];
+  std::ostringstream extra_flags_stream;
+  if (!device_runtime->g_cdp_enabled) {
+    extra_flags_stream << "--gpu-name=sm_" << sm_version;
+  }else {
+    extra_flags_stream << "--compile-only --gpu-name=sm_" << sm_version;
+  }
   snprintf(
       buff, 1024,
       "$CUDA_INSTALL_PATH/bin/ptxas %s -v %s --output-file  /dev/null 2> %s",
-      extra_flags, filename, ptxas_filename.c_str());
+      extra_flags_stream.str().c_str(), filename, ptxas_filename.c_str());
   int result = system(buff);
   if (result != 0) {
     printf("GPGPU-Sim PTX: ERROR ** while loading PTX (b) %d\n", result);
@@ -381,8 +382,8 @@ void gpgpu_context::gpgpu_ptxinfo_load_from_string(const char *p_for_info,
   // prevents the duplicate defs and declarations.
   char ptx_file[1000];
   char *name = get_app_binary_name();
-  char commandline[4096], fname[1024], fname2[1024],
-      final_tempfile_ptxinfo[1024], tempfile_ptxinfo[1024];
+  std::ostringstream oss_commandline, oss_tempfile_ptxinfo;
+  char fname[1024], fname2[1024], final_tempfile_ptxinfo[1024];
   for (int index = 1; index <= no_of_ptx; index++) {
     snprintf(ptx_file, 1000, "%s.%d.sm_%u.ptx", name, index, sm_version);
     snprintf(fname, 1024, "_ptx_XXXXXX");
@@ -391,9 +392,10 @@ void gpgpu_context::gpgpu_ptxinfo_load_from_string(const char *p_for_info,
 
     printf("GPGPU-Sim PTX: extracting embedded .ptx to temporary file \"%s\"\n",
            fname);
-    snprintf(commandline, 4096, "cat %s > %s", ptx_file, fname);
-    if (system(commandline) != 0) {
-      printf("ERROR: %s command failed\n", commandline);
+    oss_commandline.str("");
+    oss_commandline << "cat " << ptx_file << " > " << fname;
+    if (system(oss_commandline.str().c_str()) != 0) {
+      printf("ERROR: %s command failed\n", oss_commandline.str().c_str());
       exit(0);
     }
 
@@ -417,8 +419,8 @@ void gpgpu_context::gpgpu_ptxinfo_load_from_string(const char *p_for_info,
       printf("               and have \'cat\' and \'sed\' in your path.\n");
       exit(1);
     }
-
-    snprintf(tempfile_ptxinfo, 1024, "%sinfo", fname);
+    oss_tempfile_ptxinfo.str("");
+    oss_tempfile_ptxinfo << fname << "info";
     char extra_flags[1024];
     extra_flags[0] = 0;
 
@@ -439,19 +441,16 @@ void gpgpu_context::gpgpu_ptxinfo_load_from_string(const char *p_for_info,
       snprintf(extra_flags, 1024, "--compile-only --gpu-name=sm_%u",
                g_occupancy_sm_number);
 #endif
-
-    snprintf(commandline, 1024,
-             "$PTXAS_CUDA_INSTALL_PATH/bin/ptxas %s -v %s --output-file  "
-             "/dev/null 2> %s",
-             extra_flags, fname2, tempfile_ptxinfo);
-    printf("GPGPU-Sim PTX: generating ptxinfo using \"%s\"\n", commandline);
-    result = system(commandline);
+    oss_commandline.str("");
+    oss_commandline << "$PTXAS_CUDA_INSTALL_PATH/bin/ptxas " << extra_flags << " -v " << fname2 << " --output-file /dev/null 2> " << oss_tempfile_ptxinfo.str();
+    printf("GPGPU-Sim PTX: generating ptxinfo using \"%s\"\n", oss_commandline.str().c_str());
+    result = system(oss_commandline.str().c_str());
     if (result != 0) {
       // 65280 = duplicate errors
       if (result == 65280) {
         FILE *ptxinfo_in;
-        ptxinfo_in = fopen(tempfile_ptxinfo, "r");
-        ptxinfo->g_ptxinfo_filename = tempfile_ptxinfo;
+        ptxinfo_in = fopen(oss_tempfile_ptxinfo.str().c_str(), "r");
+        ptxinfo->g_ptxinfo_filename = oss_tempfile_ptxinfo.str().c_str();
         ptxinfo_lex_init(&(ptxinfo->scanner));
         ptxinfo_set_in(ptxinfo_in, ptxinfo->scanner);
         ptxinfo_parse(ptxinfo->scanner, ptxinfo);
@@ -459,13 +458,12 @@ void gpgpu_context::gpgpu_ptxinfo_load_from_string(const char *p_for_info,
         fclose(ptxinfo_in);
 
         fix_duplicate_errors(fname2);
-        snprintf(commandline, 1024,
-                 "$CUDA_INSTALL_PATH/bin/ptxas %s -v %s --output-file  "
-                 "/dev/null 2> %s",
-                 extra_flags, fname2, tempfile_ptxinfo);
+        
+        oss_commandline.str("");
+        oss_commandline << "$CUDA_INSTALL_PATH/bin/ptxas " << extra_flags << " -v " << fname2 << " --output-file /dev/null 2> " << oss_tempfile_ptxinfo.str();
         printf("GPGPU-Sim PTX: regenerating ptxinfo using \"%s\"\n",
-               commandline);
-        result = system(commandline);
+               oss_commandline.str().c_str());
+        result = system(oss_commandline.str().c_str());
       }
       if (result != 0) {
         printf("GPGPU-Sim PTX: ERROR ** while loading PTX (b) %d\n", result);
@@ -508,8 +506,8 @@ void gpgpu_context::gpgpu_ptxinfo_load_from_string(const char *p_for_info,
       printf("               and have \'cat\' and \'sed\' in your path.\n");
       exit(1);
     }
-    // char tempfile_ptxinfo[1024];
-    snprintf(tempfile_ptxinfo, 1024, "%sinfo", fname);
+    oss_tempfile_ptxinfo.str("");
+    oss_tempfile_ptxinfo << fname << "info";
     char extra_flags[1024];
     extra_flags[0] = 0;
 
@@ -522,13 +520,11 @@ void gpgpu_context::gpgpu_ptxinfo_load_from_string(const char *p_for_info,
                sm_version);
 #endif
 
-    snprintf(
-        commandline, 1024,
-        "$CUDA_INSTALL_PATH/bin/ptxas %s -v %s --output-file  /dev/null 2> %s",
-        extra_flags, fname2, tempfile_ptxinfo);
-    printf("GPGPU-Sim PTX: generating ptxinfo using \"%s\"\n", commandline);
+    oss_commandline.str("");
+    oss_commandline << "$CUDA_INSTALL_PATH/bin/ptxas " << extra_flags << " -v " << fname2 << " --output-file /dev/null 2> " << oss_tempfile_ptxinfo.str();
+    printf("GPGPU-Sim PTX: generating ptxinfo using \"%s\"\n", oss_commandline.str().c_str());
     fflush(stdout);
-    result = system(commandline);
+    result = system(oss_commandline.str().c_str());
     if (result != 0) {
       printf("GPGPU-Sim PTX: ERROR ** while loading PTX (b) %d\n", result);
       printf("               Ensure ptxas is in your path.\n");
@@ -552,7 +548,7 @@ void gpgpu_context::gpgpu_ptxinfo_load_from_string(const char *p_for_info,
   if (no_of_ptx > 0)
     ptxinfo->g_ptxinfo_filename = final_tempfile_ptxinfo;
   else
-    ptxinfo->g_ptxinfo_filename = tempfile_ptxinfo;
+    ptxinfo->g_ptxinfo_filename = oss_tempfile_ptxinfo.str().c_str();
   FILE *ptxinfo_in;
   ptxinfo_in = fopen(ptxinfo->g_ptxinfo_filename, "r");
 
@@ -562,20 +558,22 @@ void gpgpu_context::gpgpu_ptxinfo_load_from_string(const char *p_for_info,
   ptxinfo_lex_destroy(ptxinfo->scanner);
   fclose(ptxinfo_in);
 
-  snprintf(commandline, 1024, "rm -f *info");
-  if (system(commandline) != 0) {
+  oss_commandline.str("");
+  oss_commandline << "rm -f *info";
+  if (system(oss_commandline.str().c_str()) != 0) {
     printf("GPGPU-Sim PTX: ERROR ** while removing temporary info files\n");
     exit(1);
   }
   if (!g_save_embedded_ptx) {
-    if (no_of_ptx > 0)
-      snprintf(commandline, 1024, "rm -f %s %s %s", fname, fname2,
-               final_tempfile_ptxinfo);
-    else
-      snprintf(commandline, 1024, "rm -f %s %s %s", fname, fname2,
-               tempfile_ptxinfo);
-    printf("GPGPU-Sim PTX: removing ptxinfo using \"%s\"\n", commandline);
-    if (system(commandline) != 0) {
+    if (no_of_ptx > 0) {
+      oss_commandline.str("");
+      oss_commandline << "rm -f " << fname << " " << fname2 << " " << final_tempfile_ptxinfo;
+    }else {
+      oss_commandline.str("");
+      oss_commandline << "rm -f " << fname << " " << fname2 << " " << oss_tempfile_ptxinfo.str();
+    }
+    printf("GPGPU-Sim PTX: removing ptxinfo using \"%s\"\n", oss_commandline.str().c_str());
+    if (system(oss_commandline.str().c_str()) != 0) {
       printf("GPGPU-Sim PTX: ERROR ** while removing temporary files\n");
       exit(1);
     }

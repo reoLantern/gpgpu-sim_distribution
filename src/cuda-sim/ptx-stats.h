@@ -39,6 +39,7 @@ void ptx_file_line_stats_add_exec_count(const ptx_instruction* pInsn);
 // stat collection interface to gpgpu-sim
 
 void ptx_file_line_stats_create_exposed_latency_tracker(int n_shader_cores);
+void ptx_file_line_stats_destroy_exposed_latency_tracker();
 void ptx_file_line_stats_commit_exposed_latency(int sc_id, int exposed_latency);
 
 class gpgpu_context;

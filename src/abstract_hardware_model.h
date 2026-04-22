@@ -1,18 +1,45 @@
-// Copyright (c) 2009-2021, Tor M. Aamodt, Inderpreet Singh, Vijay Kandiah,
-// Nikos Hardavellas, Mahmoud Khairy, Junrui Pan, Timothy G. Rogers The
-// University of British Columbia, Northwestern University, Purdue University
+// Copyright (c) 2023-2025, Rodrigo Huerta, Mojtaba Abaie Shoushtary, Josep-Llorenç Cruz, Antonio González
+// Universitat Politecnica de Catalunya
 // All rights reserved.
 //
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are met:
 //
-// 1. Redistributions of source code must retain the above copyright notice,
-// this
+// Redistributions of source code must retain the above copyright notice, this
+// list of conditions and the following disclaimer.
+// Redistributions in binary form must reproduce the above copyright notice,
+// this list of conditions and the following disclaimer in the documentation
+// and/or other materials provided with the distribution. Neither the name of
+// The Universitat Politecnica de Catalunya nor the names of its contributors may be
+// used to endorse or promote products derived from this software without
+// specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+// ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+// CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+// SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+// INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+// CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+// ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+// POSSIBILITY OF SUCH DAMAGE.
+
+// Copyright (c) 2009-2021, Tor M. Aamodt, Inderpreet Singh, Vijay Kandiah, Nikos Hardavellas, 
+// Mahmoud Khairy, Junrui Pan, Timothy G. Rogers
+// The University of British Columbia, Northwestern University, Purdue University
+// All rights reserved.
+//
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met:
+//
+// 1. Redistributions of source code must retain the above copyright notice, this
 //    list of conditions and the following disclaimer;
 // 2. Redistributions in binary form must reproduce the above copyright notice,
 //    this list of conditions and the following disclaimer in the documentation
 //    and/or other materials provided with the distribution;
-// 3. Neither the names of The University of British Columbia, Northwestern
+// 3. Neither the names of The University of British Columbia, Northwestern 
 //    University nor the names of their contributors may be used to
 //    endorse or promote products derived from this software without specific
 //    prior written permission.
@@ -36,7 +63,9 @@
 class gpgpu_sim;
 class kernel_info_t;
 class gpgpu_context;
-class traced_instruction;  // MICRO 2025 port: warp_inst_t carries a shared_ptr to a traced_instruction
+class functional_unit;
+class l1d_cache_config; // MOD. Fixed LDST_Unit model
+class warp_inst_t;
 
 // Set a hard limit of 32 CTAs per shader [cuda only has 8]
 #define MAX_CTA_PER_SHADER 32
@@ -61,59 +90,38 @@ enum _memory_space_t {
   global_space,
   generic_space,
   instruction_space,
-  miscellaneous_space   // MICRO 2025 port: target space for MISCELLANEOUS_* ops
+  miscellaneous_space,
 };
 
-// MICRO 2025 port: LDGSTS two-stage access state (load-then-store).
+#ifndef COEFF_STRUCT
+#define COEFF_STRUCT
+
+struct PowerscalingCoefficients{
+    double int_coeff;
+    double int_mul_coeff;
+    double int_mul24_coeff;
+    double int_mul32_coeff;
+    double int_div_coeff;
+    double fp_coeff;
+    double dp_coeff;
+    double fp_mul_coeff;
+    double fp_div_coeff;
+    double dp_mul_coeff;
+    double dp_div_coeff;
+    double sqrt_coeff;
+    double log_coeff;
+    double sin_coeff;
+    double exp_coeff;
+    double tensor_coeff;
+    double tex_coeff;
+};
+#endif
+
 enum Ldgsts_State {
   UNITIALIZED = 0,
   LOAD_STAGE = 1,
   STORE_STAGE = 2
 };
-
-// MICRO 2025 port (Stage 1d.4+5): SASS control-flow classification.
-// Populated by the ported trace_warp_inst_t::parse_from_trace_struct.
-// These are Volta+ independent-thread-scheduling primitives (WARPSYNC/BSYNC/
-// YIELD) plus the conventional branch/jump/return trio.  MICRO 2025 leaves
-// consumption of this field for future steps; we port it now so the enum
-// and the per-inst tag are available when we light up the consumer later.
-enum uarch_trace_control_flow_t {
-  NOT_DEFINED = -1,
-  IS_BRANCH = 1,    // SASS BRA
-  IS_ENDCALL = 2,   // SASS RET
-  IS_JUMP = 3,      // SASS BRX (indirect branch)
-  IS_BSYNC = 4,     // SASS BSYNC
-  IS_WARPSYNC = 5,  // SASS WARPSYNC (Volta+ ITS)
-  IS_RPCMOV = 6,    // SASS RPCMOV
-  IS_YIELD = 7      // SASS YIELD
-};
-typedef enum uarch_trace_control_flow_t trace_control_flow_type;
-
-// ib_ooo_simt_info moved further down: declared after address_type is typedef'd.
-
-#ifndef COEFF_STRUCT
-#define COEFF_STRUCT
-
-struct PowerscalingCoefficients {
-  double int_coeff;
-  double int_mul_coeff;
-  double int_mul24_coeff;
-  double int_mul32_coeff;
-  double int_div_coeff;
-  double fp_coeff;
-  double dp_coeff;
-  double fp_mul_coeff;
-  double fp_div_coeff;
-  double dp_mul_coeff;
-  double dp_div_coeff;
-  double sqrt_coeff;
-  double log_coeff;
-  double sin_coeff;
-  double exp_coeff;
-  double tensor_coeff;
-  double tex_coeff;
-};
-#endif
 
 enum FuncCache {
   FuncCachePreferNone = 0,
@@ -128,29 +136,23 @@ enum AdaptiveCache { FIXED = 0, ADAPTIVE_CACHE = 1 };
 #include <stdio.h>
 #include <string.h>
 #include <set>
+#include <cassert>
+
+#include "operation_type.h"
+#include "../../../util/traces_enhanced/src/traced_instruction.h" // MOD. Improved tracer
 
 typedef unsigned long long new_addr_type;
 typedef unsigned long long cudaTextureObject_t;
 typedef unsigned long long address_type;
 typedef unsigned long long addr_t;
 
-// MICRO 2025 port: out-of-order IBuffer SIMT update info (reissued inst + next PC).
-struct ib_ooo_simt_info {
-  ib_ooo_simt_info()
-      : m_is_simt_updated(false), m_is_inst_reissued(false), m_next_pc(0) {}
-  bool m_is_simt_updated;
-  bool m_is_inst_reissued;
-  address_type m_next_pc;
-};
-
-// uarch_op_t enum + SPEC_UNIT_START_ID live in operation_type.h so that
-// the MICRO 2025 tracer (util/traces_enhanced/src/traced_instruction.h)
-// can include operation_type.h without pulling in the full simulator
-// dependency chain.  Byte-identical to MICRO 2025.
-#include "operation_type.h"
-
 enum uarch_bar_t { NOT_BAR = -1, SYNC = 1, ARRIVE, RED };
 typedef enum uarch_bar_t barrier_type;
+
+// MOD. Begin. MOD. VPREG. MOD. Improving branch behavior in traces
+enum uarch_trace_control_flow_t { NOT_DEFINED = -1, IS_BRANCH = 1, IS_ENDCALL = 2, IS_JUMP = 3, IS_BSYNC = 4, IS_WARPSYNC = 5, IS_RPCMOV = 6, IS_YIELD = 7  };
+typedef enum uarch_trace_control_flow_t trace_control_flow_type;
+// MOD. End. MOD. VPREG. MOD. Improving branch behavior in traces
 
 enum uarch_red_t { NOT_RED = -1, POPC_RED = 1, AND_RED, OR_RED };
 typedef enum uarch_red_t reduction_type;
@@ -197,16 +199,16 @@ typedef enum mem_operation_t mem_operation;
 
 enum _memory_op_t { no_memory_op = 0, memory_load, memory_store };
 
+
 #include <assert.h>
-#include <atomic>
 #include <stdlib.h>
 #include <algorithm>
 #include <bitset>
 #include <deque>
 #include <list>
 #include <map>
-#include <memory>   // MICRO 2025 port: std::unique_ptr / shared_ptr
 #include <vector>
+#include <memory>  // for std::unique_ptr
 
 #if !defined(__VECTOR_TYPES_H__)
 #include "vector_types.h"
@@ -245,11 +247,6 @@ class kernel_info_t {
   //      m_num_cores_running=0;
   //      m_param_mem=NULL;
   //   }
-  kernel_info_t(dim3 gridDim, dim3 blockDim, class function_info *entry,
-                unsigned long long streamID);
-  // MICRO 2025 port (Stage 1d.4+5): 3-arg ctor matching MICRO 2025's
-  // trace_kernel_info_t base delegation.  streamID defaults to 0 since
-  // trace-driven kernels don't participate in our per-stream stats bucket.
   kernel_info_t(dim3 gridDim, dim3 blockDim, class function_info *entry);
   kernel_info_t(
       dim3 gridDim, dim3 blockDim, class function_info *entry,
@@ -257,13 +254,12 @@ class kernel_info_t {
       std::map<std::string, const struct textureInfo *> nameToTextureInfo);
   ~kernel_info_t();
 
-  void inc_running() { m_num_cores_running.fetch_add(1); }
-  int dec_running() {
-    int prev = m_num_cores_running.fetch_sub(1);
-    assert(prev > 0);
-    return prev;  // caller checks prev==1 to detect last completion
+  void inc_running() { m_num_cores_running++; }
+  void dec_running() {
+    assert(m_num_cores_running > 0);
+    m_num_cores_running--;
   }
-  bool running() const { return m_num_cores_running.load() > 0; }
+  bool running() const { return m_num_cores_running > 0; }
   bool done() const { return no_more_ctas_to_run() && !running(); }
   class function_info *entry() {
     return m_kernel_entry;
@@ -310,7 +306,6 @@ class kernel_info_t {
            m_next_tid.x < m_block_dim.x;
   }
   unsigned get_uid() const { return m_uid; }
-  unsigned long long get_streamID() const { return m_streamID; }
   std::string get_name() const { return name(); }
   std::string name() const;
 
@@ -344,8 +339,7 @@ class kernel_info_t {
 
   class function_info *m_kernel_entry;
 
-  unsigned m_uid;  // Kernel ID
-  unsigned long long m_streamID;
+  unsigned m_uid;
 
   // These maps contain the snapshot of the texture mappings at kernel launch
   std::map<std::string, const struct cudaArray *> m_NameToCudaArray;
@@ -356,7 +350,7 @@ class kernel_info_t {
   dim3 m_next_cta;
   dim3 m_next_tid;
 
-  std::atomic<int> m_num_cores_running;
+  unsigned m_num_cores_running;
 
   std::list<class ptx_thread_info *> m_active_threads;
   class memory_space *m_param_mem;
@@ -386,6 +380,8 @@ class kernel_info_t {
 
   // Jin: kernel timing
  public:
+  bool is_captured_from_binary;
+  unsigned int function_unique_id;
   unsigned long long launch_cycle;
   unsigned long long start_cycle;
   unsigned long long end_cycle;
@@ -395,17 +391,6 @@ class kernel_info_t {
 
   unsigned m_kernel_TB_latency;  // this used for any CPU-GPU kernel latency and
                                  // counted in the gpu_cycle
-
-  // MICRO 2025 port: set by the tracer-v2 adapter (Stage 1d) when the kernel
-  // is_captured_from_binary == kernel was traced from a real binary (vs. ptx).
-  // Default false; remodeling code gates "traditional scoreboarding" on the
-  // negation of this flag, so defaulting false keeps it in "traditional" mode.
-  bool is_captured_from_binary = false;
-  // MICRO 2025 port: per-kernel unique ID matching the static-JSON function
-  // index emitted by the tracer-v2.  Used by the new trace-parser / trace-driven
-  // (Stage 1d.4+5) to look up static traced_instruction entries via the
-  // m_extra_trace_instruction_info map.  Default 0 == "not yet assigned".
-  unsigned int function_unique_id = 0;
 };
 
 class core_config {
@@ -436,6 +421,9 @@ class core_config {
   unsigned shmem_bank_func(address_type addr) const {
     return ((addr / WORD_SIZE) % num_shmem_bank);
   }
+
+  gpgpu_context *get_gpu_context() const { return gpgpu_ctx; }
+
   unsigned mem_warp_parts;
   mutable unsigned gpgpu_shmem_size;
   char *gpgpu_shmem_option;
@@ -464,29 +452,24 @@ typedef std::bitset<MAX_WARP_SIZE> active_mask_t;
 typedef std::bitset<MAX_WARP_SIZE_SIMT_STACK> simt_mask_t;
 typedef std::vector<address_type> addr_vector_t;
 
+// MOD. Begin. IBuffer_ooo
+struct ib_ooo_simt_info {
+    ib_ooo_simt_info() {
+        m_is_simt_updated = false;
+        m_is_inst_reissued = false; // MOD. VPREG
+        m_next_pc = 0;
+    }
+    bool m_is_simt_updated;
+    bool m_is_inst_reissued; // MOD. VPREG
+    address_type m_next_pc;
+};
+// MOD. End. IBuffer_ooo
+
+typedef int rrs_id_type; // MOD. LOOG. Type for holding the RRS ids of the proposal
+
 class simt_stack {
  public:
-  simt_stack(unsigned wid, unsigned warpSize, class gpgpu_sim *gpu);
-
-  void reset();
-  void launch(address_type start_pc, const simt_mask_t &active_mask);
-  void update(simt_mask_t &thread_done, addr_vector_t &next_pc,
-              address_type recvg_pc, op_type next_inst_op,
-              unsigned next_inst_size, address_type next_inst_pc);
-
-  const simt_mask_t &get_active_mask() const;
-  void get_pdom_stack_top_info(unsigned *pc, unsigned *rpc) const;
-  unsigned get_rp() const;
-  void print(FILE *fp) const;
-  void resume(char *fname);
-  void print_checkpoint(FILE *fout) const;
-
- protected:
-  unsigned m_warp_id;
-  unsigned m_warp_size;
-
   enum stack_entry_type { STACK_ENTRY_TYPE_NORMAL = 0, STACK_ENTRY_TYPE_CALL };
-
   struct simt_stack_entry {
     address_type m_pc;
     unsigned int m_calldepth;
@@ -503,6 +486,29 @@ class simt_stack {
           m_type(STACK_ENTRY_TYPE_NORMAL){};
   };
 
+  simt_stack(unsigned wid, unsigned warpSize, class gpgpu_sim *gpu);
+
+  void reset();
+  void launch(address_type start_pc, const simt_mask_t &active_mask);
+  void update(simt_mask_t &thread_done, addr_vector_t &next_pc,
+              address_type recvg_pc, op_type next_inst_op,
+              unsigned next_inst_size, address_type next_inst_pc);
+
+  const simt_mask_t &get_active_mask() const;
+  void get_pdom_stack_top_info(unsigned *pc, unsigned *rpc) const;
+  unsigned get_rp() const;
+  void print(FILE *fp) const;
+  void resume(char *fname);
+  void print_checkpoint(FILE *fout) const;
+  std::deque<simt_stack_entry> *get_SIMT_Stack() { return &m_stack; };
+
+ protected:
+  unsigned m_warp_id;
+  unsigned m_warp_size;
+  int m_last_num_entries; // MOD. IBuffer_ooo  
+
+  
+
   std::deque<simt_stack_entry> m_stack;
 
   class gpgpu_sim *m_gpu;
@@ -518,10 +524,10 @@ const unsigned long long SHARED_MEM_SIZE_MAX = 96 * (1 << 10);
 const unsigned long long LOCAL_MEM_SIZE_MAX = 1 << 14;
 // Volta Titan V has 80 SMs
 const unsigned MAX_STREAMING_MULTIPROCESSORS = 80;
-// Max 2048 threads / SM
-const unsigned MAX_THREAD_PER_SM = 1 << 11;
-// MAX 64 warps / SM
-const unsigned MAX_WARP_PER_SM = 1 << 6;
+// Max 4096 threads / SM
+const unsigned MAX_THREAD_PER_SM = 1 << 12; // MOD. Allowing more warps per SM
+// MAX 128 warps / SM
+const unsigned MAX_WARP_PER_SM = 1 << 7; // MOD. Allowing more warps per SM
 const unsigned long long TOTAL_LOCAL_MEM_PER_SM =
     MAX_THREAD_PER_SM * LOCAL_MEM_SIZE_MAX;
 const unsigned long long TOTAL_SHARED_MEM =
@@ -565,6 +571,24 @@ struct textureReferenceAttr {
 
 class gpgpu_functional_sim_config {
  public:
+  gpgpu_functional_sim_config() {
+    m_ptx_convert_to_ptxplus = 0;
+    m_ptx_use_cuobjdump = 0;
+    m_experimental_lib_support = 0;
+    m_ptx_force_max_capability = 0;
+    checkpoint_option = 0;
+    checkpoint_kernel = 0;
+    checkpoint_CTA = 0;
+    resume_option = 0;
+    resume_kernel = 0;
+    resume_CTA = 0;
+    checkpoint_CTA_t = 0;
+    checkpoint_insn_Y = 0;
+    g_ptx_inst_debug_to_file = 0;
+    g_ptx_inst_debug_file = nullptr;
+    g_ptx_inst_debug_thread_uid = 0;
+    m_texcache_linesize = 0;
+  }
   void reg_options(class OptionParser *opp);
 
   void ptx_set_tex_cache_linesize(unsigned linesize);
@@ -615,6 +639,7 @@ class gpgpu_functional_sim_config {
 class gpgpu_t {
  public:
   gpgpu_t(const gpgpu_functional_sim_config &config, gpgpu_context *ctx);
+  virtual ~gpgpu_t();
   // backward pointer
   class gpgpu_context *gpgpu_ctx;
   int checkpoint_option;
@@ -629,6 +654,9 @@ class gpgpu_t {
   // Move some cycle core stats here instead of being global
   unsigned long long gpu_sim_cycle;
   unsigned long long gpu_tot_sim_cycle;
+
+  unsigned long long dram_sim_cycle;
+  unsigned long long dram_tot_sim_cycle;
 
   void *gpu_malloc(size_t size);
   void *gpu_mallocarray(size_t count);
@@ -699,8 +727,6 @@ class gpgpu_t {
   std::map<std::string, const struct textureInfo *> getNameInfoMapping() {
     return m_NameToTextureInfo;
   }
-
-  virtual ~gpgpu_t() {}
 
  protected:
   const gpgpu_functional_sim_config &m_function_model_config;
@@ -783,7 +809,7 @@ class memory_space_t {
     return (m_type == local_space) || (m_type == param_space_local);
   }
   bool is_global() const { return (m_type == global_space); }
-  // MICRO 2025 port: shared-space test.
+  
   bool is_shared() const { return (m_type == shared_space); }
 
  private:
@@ -804,9 +830,8 @@ typedef std::bitset<SECTOR_CHUNCK_SIZE> mem_access_sector_mask_t;
   MA_TUP(GLOBAL_ACC_R), MA_TUP(LOCAL_ACC_R), MA_TUP(CONST_ACC_R),       \
       MA_TUP(TEXTURE_ACC_R), MA_TUP(GLOBAL_ACC_W), MA_TUP(LOCAL_ACC_W), \
       MA_TUP(L1_WRBK_ACC), MA_TUP(L2_WRBK_ACC), MA_TUP(INST_ACC_R),     \
-      MA_TUP(L1_WR_ALLOC_R), MA_TUP(L2_WR_ALLOC_R),                     \
-      MA_TUP(GRID_BARRIER_ACC),                         /* MICRO 2025 */ \
-      MA_TUP(TLB_MISS_ACC_DATA), MA_TUP(TLB_MISS_ACC_INST),             \
+      MA_TUP(L1_WR_ALLOC_R), MA_TUP(L2_WR_ALLOC_R), MA_TUP(GRID_BARRIER_ACC), \
+      MA_TUP(TLB_MISS_ACC_DATA), MA_TUP(TLB_MISS_ACC_INST), \
       MA_TUP(NUM_MEM_ACCESS_TYPE) MA_TUP_END(mem_access_type)
 
 #define MA_TUP_BEGIN(X) enum X {
@@ -839,9 +864,6 @@ enum cache_operator_type {
   CACHE_WRITE_THROUGH  // .wt
 };
 
-// MICRO 2025 port: selection policies referenced by shader_core_config
-// fields registered in gpu-sim.cc and consumed by ldst_unit_sm / InterWarp
-// coalescing code.  Value ordering matches MICRO 2025 exactly.
 enum InterWarpCoalescingSelectionPolicies {
   IWCOAL_OLDEST = 0,
   GTL_WARPID,
@@ -857,28 +879,18 @@ enum PRTSelectionPolicies {
   OLDEST = 0,
   SAME_LAST_WARP_ID_THEN_OLDEST,
   SAME_LAST_INST_PC_THEN_OLDEST,
-  WARPID_N_CLUSTERS_WITH_OLDEST,
+  WARPID_N_CLUSTERS_WITH_OLDEST, // WARPPOOL ALIKE. Clusterizes warpIDs in 16 clusters EG. Cluster 0: 0, 1, 2. Cluster 1: 3, 4, 5. .... And tries to select the oldest entry of the lowerest ID cluster
   DEP_COUNT_WAIT_GENERIC_THEN_OLDEST,
   DEP_COUNT_WAIT_CHECKING_WARP_ID_THEN_OLDEST,
 };
 
-// Forward-declaration: mem_access_t carries a warp_inst_t* (full defn below).
-class warp_inst_t;
-
-// MICRO 2025 port: metadata attached to every mem_access_t describing which
-// PCs, warp IDs, dependency counters, and PRT entries are waiting on it.
-// ldst_unit_sm's inter-warp coalescing + PRT management use it.
 struct AccessCoalescingInformation {
-  AccessCoalescingInformation()
-      : m_pcs_requesting(),
-        m_dep_counters_id_requesting(),
-        m_warp_id_requesting(),
-        m_prts_requesting() {}
+  AccessCoalescingInformation() : m_pcs_requesting(), m_dep_counters_id_requesting(), m_warp_id_requesting(), m_prts_requesting() {}
 
-  std::set<addr_t> m_pcs_requesting;
+  std::set<new_addr_type> m_pcs_requesting;
   std::set<unsigned int> m_dep_counters_id_requesting;
   std::set<unsigned int> m_warp_id_requesting;
-  std::vector<unsigned int> m_prts_requesting;
+  std::vector<unsigned int> m_prts_requesting; // Can be repetead if the same instruction request several times the same address
 };
 
 class mem_access_t {
@@ -891,6 +903,12 @@ class mem_access_t {
     m_addr = address;
     m_req_size = size;
     m_write = wr;
+    m_is_l1d_bypass = false;
+    m_is_last_access = false;
+    m_l1d_bank = std::numeric_limits<unsigned int>::max();
+    m_space = undefined_space;
+    m_inst = nullptr;
+    m_cycle_inserted_inter_coal = std::numeric_limits<unsigned long long>::max();
   }
   mem_access_t(mem_access_type type, new_addr_type address, unsigned size,
                bool wr, const active_mask_t &active_mask,
@@ -904,16 +922,27 @@ class mem_access_t {
     m_addr = address;
     m_req_size = size;
     m_write = wr;
+    m_is_l1d_bypass = false;
+    m_is_last_access = false;
+    m_l1d_bank = std::numeric_limits<unsigned int>::max();
+    m_inst = nullptr;
+    m_cycle_inserted_inter_coal = std::numeric_limits<unsigned long long>::max();
   }
 
   new_addr_type get_addr() const { return m_addr; }
   void set_addr(new_addr_type addr) { m_addr = addr; }
   unsigned get_size() const { return m_req_size; }
+  void set_size(unsigned size) { m_req_size = size; }
   const active_mask_t &get_warp_mask() const { return m_warp_mask; }
   bool is_write() const { return m_write; }
+  void set_write(bool w) { m_write = w; }
   enum mem_access_type get_type() const { return m_type; }
+  void set_type(mem_access_type type) { m_type = type; }
   mem_access_byte_mask_t get_byte_mask() const { return m_byte_mask; }
   mem_access_sector_mask_t get_sector_mask() const { return m_sector_mask; }
+  void set_sector_mask(const mem_access_sector_mask_t &sector_mask) {
+    m_sector_mask = sector_mask;
+  }
 
   void print(FILE *fp) const {
     fprintf(fp, "addr=0x%llx, %s, size=%u, ", m_addr,
@@ -946,6 +975,12 @@ class mem_access_t {
       case L1_WRBK_ACC:
         fprintf(fp, "L1_WRBK ");
         break;
+      case TLB_MISS_ACC_DATA:
+        fprintf(fp, "TLB_MISS DATA");
+        break;
+      case TLB_MISS_ACC_INST:
+        fprintf(fp, "TLB_MISS INST");
+        break;
       default:
         fprintf(fp, "unknown ");
         break;
@@ -954,11 +989,6 @@ class mem_access_t {
 
   gpgpu_context *gpgpu_ctx;
 
-  // ==========================================================================
-  // MICRO 2025 port additions (Stage 1c.4.5).  Per-access metadata carried
-  // through the ldst_unit_sm pipeline.  Default-inert (all false/0/nullptr).
-  // ==========================================================================
- public:
   bool is_l1d_bypass() const { return m_is_l1d_bypass; }
   void set_l1d_bypass(bool bypass) { m_is_l1d_bypass = bypass; }
 
@@ -972,13 +1002,11 @@ class mem_access_t {
   void set_space(memory_space_t space) { m_space = space; }
 
   warp_inst_t *get_inst() const { return m_inst; }
-  void set_inst(warp_inst_t *inst) { m_inst = inst; }
+  void set_inst(warp_inst_t *inst) { 
+    m_inst = inst; 
+  }
 
   AccessCoalescingInformation &get_access_coal_info() { return m_access_coal_info; }
-  void set_size(unsigned size) { m_req_size = size; }
-  void set_write(bool w) { m_write = w; }
-  void set_type(mem_access_type t) { m_type = t; }
-  void set_sector_mask(const mem_access_sector_mask_t &m) { m_sector_mask = m; }
 
   unsigned long long get_cycle_inserted_inter_coal() const { return m_cycle_inserted_inter_coal; }
   void set_cycle_inserted_inter_coal(unsigned long long cycle) { m_cycle_inserted_inter_coal = cycle; }
@@ -997,37 +1025,34 @@ class mem_access_t {
   active_mask_t m_warp_mask;
   mem_access_byte_mask_t m_byte_mask;
   mem_access_sector_mask_t m_sector_mask;
+  unsigned int m_l1d_bank;
+  bool m_is_l1d_bypass;
+  bool m_is_last_access;
 
-  // MICRO 2025 port additions
-  bool m_is_l1d_bypass = false;
-  bool m_is_last_access = false;
-  unsigned m_l1d_bank = 0;
   memory_space_t m_space;
-  warp_inst_t *m_inst = nullptr;
+  warp_inst_t* m_inst; // It is only the leader instruciont
+  mem_access_t *m_previous_acc; // ONLY FOR TLB
+
   AccessCoalescingInformation m_access_coal_info;
-  unsigned long long m_cycle_inserted_inter_coal = 0;
-  mem_access_t *m_previous_acc = nullptr;
+  unsigned long long m_cycle_inserted_inter_coal;
 };
 
 class mem_fetch;
 
 class mem_fetch_interface {
  public:
-  virtual ~mem_fetch_interface() = default;  // MICRO 2025 port: L0_icnt derives, marks ~ override
+  virtual ~mem_fetch_interface() {};
   virtual bool full(unsigned size, bool write) const = 0;
   virtual void push(mem_fetch *mf) = 0;
-  // MICRO 2025 port: cache_invalidate hook called from SM::cycle.  Default no-op.
-  // Stage 1e-B3 (W1): match MICRO 2025 abstract_hardware_model.h:1047 —
-  // force every mem_fetch_interface subclass to explicitly declare its
-  // flush intent.  Empty-body stubs live on the subclasses.
   virtual void flush() = 0;
 };
 
 class mem_fetch_allocator {
  public:
+  virtual ~mem_fetch_allocator() {};
   virtual mem_fetch *alloc(new_addr_type addr, mem_access_type type,
-                           unsigned size, bool wr, unsigned long long cycle,
-                           unsigned long long streamID) const = 0;
+                           unsigned size, bool wr,
+                           unsigned long long cycle) const = 0;
   virtual mem_fetch *alloc(const class warp_inst_t &inst,
                            const mem_access_t &access,
                            unsigned long long cycle) const = 0;
@@ -1037,8 +1062,7 @@ class mem_fetch_allocator {
                            const mem_access_sector_mask_t &sector_mask,
                            unsigned size, bool wr, unsigned long long cycle,
                            unsigned wid, unsigned sid, unsigned tpc,
-                           mem_fetch *original_mf,
-                           unsigned long long streamID) const = 0;
+                           mem_fetch *original_mf) const = 0;
 };
 
 // the maximum number of destination, source, or address uarch operands in a
@@ -1062,13 +1086,15 @@ class inst_t {
   inst_t() {
     m_decoded = false;
     pc = (address_type)-1;
+    next_traced_pc = (address_type)-1;
+    unique_function_id = 0;
+    m_has_the_instruction_been_traced = false;
+    m_has_the_constant_addr_already_calculated = false;
+    m_is_tensor_core_op_with_4_registers_per_op = false;
     reconvergence_pc = (address_type)-1;
-    next_traced_pc = (address_type)-1;                   // MICRO 2025 port
-    m_has_the_instruction_been_traced = false;           // MICRO 2025 port
-    m_is_tensor_core_op_with_4_registers_per_op = false;  // MICRO 2025 port
-    latency_extra_predicate_op = 0;                      // MICRO 2025 port
     op = NO_OP;
     bar_type = NOT_BAR;
+    control_flow_type = NOT_DEFINED; // MOD. VPREG. Improving branch behavior in traces
     red_type = NOT_RED;
     bar_id = (unsigned)-1;
     bar_count = (unsigned)-1;
@@ -1086,12 +1112,31 @@ class inst_t {
     space = memory_space_t();
     cache_op = CACHE_UNDEFINED;
     latency = 1;
+    latency_extra_predicate_op = 0;
     initiation_interval = 1;
     for (unsigned i = 0; i < MAX_REG_OPERANDS; i++) {
       arch_reg.src[i] = -1;
       arch_reg.dst[i] = -1;
+      vpreg_physical_regs.src[i] = -1; // MOD. VPREG
+      vpreg_physical_regs.dst[i] = -1; // MOD. VPREG
+      vpreg_virtual_regs.src[i] = -1; // MOD. VPREG
+      vpreg_virtual_regs.dst[i] = -1; // MOD. VPREG
     }
     isize = 0;
+    m_ib_ooo_id_entry = -1; // MOD. IBuffer_ooo
+    m_cu_rrs_id = -1; // MOD. LOOG
+    m_loog_queue_idx_entry = -1; // MOD. LOOG
+    // MOD. Begin. VPREG
+    m_is_reissued = -1; 
+    skip_wb = false;
+    memset(vpreg_virtual_out, 0, sizeof(unsigned) * 8);
+    memset(vpreg_virtual_extra_reads_for_merge, 0, sizeof(unsigned) * 8);
+    memset(vpreg_physical_extra_reads_for_merge, 0, sizeof(unsigned) * 8);
+    memset(vpreg_previous_virtual_out, 0, sizeof(unsigned) * 8);
+    memset(vpreg_virtual_in, 0, sizeof(unsigned) * 24);
+    memset(vpreg_physical_out, 0, sizeof(unsigned)* 8);
+    memset(vpreg_physical_in, 0, sizeof(unsigned) * 24);
+    // MOD. End. VPREG
   }
   bool valid() const { return m_decoded; }
   virtual void print_insn(FILE *fp) const {
@@ -1106,29 +1151,44 @@ class inst_t {
             memory_op == memory_store);
   }
 
-  bool is_fp() const { return ((sp_op == FP__OP)); }  // VIJAY
-  bool is_fpdiv() const { return ((sp_op == FP_DIV_OP)); }
-  bool is_fpmul() const { return ((sp_op == FP_MUL_OP)); }
-  bool is_dp() const { return ((sp_op == DP___OP)); }
-  bool is_dpdiv() const { return ((sp_op == DP_DIV_OP)); }
-  bool is_dpmul() const { return ((sp_op == DP_MUL_OP)); }
-  bool is_imul() const { return ((sp_op == INT_MUL_OP)); }
-  bool is_imul24() const { return ((sp_op == INT_MUL24_OP)); }
-  bool is_imul32() const { return ((sp_op == INT_MUL32_OP)); }
-  bool is_idiv() const { return ((sp_op == INT_DIV_OP)); }
-  bool is_sfu() const {
-    return ((sp_op == FP_SQRT_OP) || (sp_op == FP_LG_OP) ||
-            (sp_op == FP_SIN_OP) || (sp_op == FP_EXP_OP) ||
-            (sp_op == TENSOR__OP));
+  bool is_memory_barrier() const {
+    return (op == MEMORY_BARRIER_OP);
   }
-  bool is_alu() const { return (sp_op == INT__OP); }
 
-  // MICRO 2025 port: referenced by remodeling/subcore.cc when classifying
-  // tensor-core instructions with 4-register operand tuples (wgmma etc).
-  bool is_tensor_core_op() const { return (op == TENSOR_CORE_OP); }
-  bool is_tensor_core_op_with_4_registers_per_op() const {
-    return (op == TENSOR_CORE_OP) && m_is_tensor_core_op_with_4_registers_per_op;
+  bool is_grid_barrier() const {
+    return (op == GRID_BARRIER_OP);
   }
+
+  bool is_any_kind_of_barrier() const {
+    return (op == MEMORY_BARRIER_OP) || (op == LDGDEPBAR_OP) || (op == BARRIER_OP) || (op == GRID_BARRIER_OP);
+  }
+
+  bool is_memory_miscelanous() const {
+    return (op == MEMORY_MISCELLANEOUS_OP);
+  }
+
+  bool is_texture() const { return (op == TEXTURE_OP); }
+  bool is_tensor_core_op() const { return (op == TENSOR_CORE_OP); }
+  bool is_tensor_core_load_op() const { return (op == TENSOR_CORE_LOAD_OP); }
+  bool is_tensor_core_store_op() const { return (op == TENSOR_CORE_STORE_OP); }
+  bool is_tensor_core_op_with_4_registers_per_op() const { return (op == TENSOR_CORE_OP) && m_is_tensor_core_op_with_4_registers_per_op; }
+  bool is_miscellaneous_queue() const {return (op == MISCELLANEOUS_QUEUE_OP);}
+  bool is_sfu_useful() const {return ((op == SFU_OP));}
+
+  bool is_fp() const { return ((sp_op == FP__OP));}    //VIJAY
+  bool is_fpdiv() const { return ((sp_op == FP_DIV_OP));} 
+  bool is_fpmul() const { return ((sp_op == FP_MUL_OP));} 
+  bool is_dp() const { return ((sp_op == DP___OP));}    
+  bool is_dp_op() const { return ((op == DP_OP));}    
+  bool is_dpdiv() const { return ((sp_op == DP_DIV_OP));} 
+  bool is_dpmul() const { return ((sp_op == DP_MUL_OP));}
+  bool is_imul() const { return ((sp_op == INT_MUL_OP));} 
+  bool is_imul24() const { return ((sp_op == INT_MUL24_OP));} 
+  bool is_imul32() const { return ((sp_op == INT_MUL32_OP));} 
+  bool is_idiv() const { return ((sp_op == INT_DIV_OP));}   
+  bool is_sfu() const {return ((sp_op == FP_SQRT_OP) || (sp_op == FP_LG_OP)  || (sp_op == FP_SIN_OP)  || (sp_op == FP_EXP_OP) || (sp_op == TENSOR__OP));}
+  bool is_alu() const {return (sp_op == INT__OP);}
+  
 
   unsigned get_num_operands() const { return num_operands; }
   unsigned get_num_regs() const { return num_regs; }
@@ -1137,11 +1197,16 @@ class inst_t {
   void set_bar_id(unsigned id) { bar_id = id; }
   void set_bar_count(unsigned count) { bar_count = count; }
 
+  unsigned int unique_function_id;
+
   address_type pc;  // program counter address of instruction
+  address_type next_traced_pc;  // program counter address of the next traced instruction
   unsigned isize;   // size of instruction in bytes
   op_type op;       // opcode (uarch visible)
+  bool skip_wb;
 
   barrier_type bar_type;
+  trace_control_flow_type control_flow_type; // MOD. VPREG. Improving branch behavior in traces
   reduction_type red_type;
   unsigned bar_id;
   unsigned bar_count;
@@ -1153,7 +1218,7 @@ class inst_t {
   operation_pipeline op_pipe;  // code (uarch visible) identify the pipeline of
                                // the operation (SP, SFU or MEM)
   mem_operation mem_op;        // code (uarch visible) identify memory type
-  bool const_cache_operand;    // has a load from constant memory as an operand
+  bool const_cache_operand;   // has a load from constant memory as an operand
   _memory_op_t memory_op;      // memory_op used by ptxplus
   unsigned num_operands;
   unsigned num_regs;  // count vector operand as one register operand
@@ -1174,31 +1239,52 @@ class inst_t {
     int dst[MAX_REG_OPERANDS];
     int src[MAX_REG_OPERANDS];
   } arch_reg;
+
+  rrs_id_type m_cu_rrs_id; // MOD. LOOG. Holds the RRS id assgined to the instruction when reaches the OPC stage.
+
+  // MOD. Begin. VPREG
+  unsigned vpreg_virtual_out[8];
+  unsigned vpreg_virtual_extra_reads_for_merge[8];
+  unsigned vpreg_physical_extra_reads_for_merge[8];
+  unsigned vpreg_previous_virtual_out[8];
+  unsigned vpreg_virtual_in[24];
+  int vpreg_virtual_ar1, vpreg_virtual_ar2;
+  unsigned vpreg_physical_out[8];
+  unsigned vpreg_physical_in[24];
+  int vpreg_physical_ar1, vpreg_physical_ar2;
+  struct {
+    int dst[MAX_REG_OPERANDS];
+    int src[MAX_REG_OPERANDS];
+  } vpreg_virtual_regs;
+
+  struct {
+    int dst[MAX_REG_OPERANDS];
+    int src[MAX_REG_OPERANDS];
+  } vpreg_physical_regs;
+  // MOD. End. VPREG
+
   // int arch_reg[MAX_REG_OPERANDS]; // register number for bank conflict
   // evaluation
   unsigned latency;  // operation latency
   unsigned initiation_interval;
+  unsigned int latency_extra_predicate_op;
 
   unsigned data_size;  // what is the size of the word being operated on?
   memory_space_t space;
   cache_operator_type cache_op;
 
-  // MICRO 2025 port: set by subcore.cc when a tensor-core op is detected to
-  // use 4 regs per operand (e.g., wgmma variants).  Default false.
-  bool m_is_tensor_core_op_with_4_registers_per_op;
+  int m_ib_ooo_id_entry; // MOD. IBuffer_ooo
 
-  // MICRO 2025 port: PC of the next traced instruction + whether this one
-  // was produced by the traced path (vs ptx).  IBuffer_Remodeled uses both.
-  address_type next_traced_pc;
+  int m_loog_queue_idx_entry; // MOD. LOOG
+
+  bool m_is_reissued; // MOD. VPREG
+  
   bool m_has_the_instruction_been_traced;
 
-  // MICRO 2025 port: predicate-mode latency override added when the decoded
-  // op is PREDICATE_OP (from ctrl_bits).  Functional_unit gates dispatch on it.
-  unsigned int latency_extra_predicate_op;
+  bool m_has_the_constant_addr_already_calculated;
 
-  // MICRO 2025 port: per-intermediate-stage cycle counter used by functional_unit.
-  std::vector<unsigned int> m_num_cycles_per_intermediate_stage;
-
+  bool m_is_tensor_core_op_with_4_registers_per_op;
+  
  protected:
   bool m_decoded;
   virtual void pre_decode() {}
@@ -1213,67 +1299,89 @@ class warp_inst_t : public inst_t {
   // constructors
   warp_inst_t() {
     m_uid = 0;
-    m_streamID = (unsigned long long)-1;
+    m_unique_inst_id = 0;
     m_empty = true;
+    m_isatomic = false;
+    m_per_scalar_thread_valid = false;
+    m_per_scalar_thread_valid_memref2 = false;
     m_config = NULL;
+    m_vpreg_need_to_reissue = false; // MOD. VPREG
+    m_is_the_oldest_instruction_of_the_warp = false; // MOD. VPREG
+    m_is_setp_opcode = false; // MOD. VPREG
+    m_is_selp_opcode = false; // MOD. VPREG
+    m_is_predicate_source_operands = false; // MOD. VPREG
 
-    // Ni:
+    m_extra_trace_instruction_info = nullptr; // MOD. Extra Trace Info
+    m_generated_constant_accesses = false;
+
     m_is_ldgsts = false;
-    m_is_ldgdepbar = false;
-    m_is_depbar = false;
-
-    m_depbar_group_no = 0;
-
-    // MICRO 2025 port additions
-    m_extra_trace_instruction_info = nullptr;
-    m_num_cycles_to_wait_to_free_WAR = 0;
+    m_has_perform_control_stage = false;
+    m_ldgsts_state = Ldgsts_State::UNITIALIZED;
+    m_reg_offset = 0;
+    m_num_pending_cycles_to_finish_wb_from_sm_struct_to_subcore = 0;
     m_has_wb_from_sm_struct_to_subcore = false;
-    m_ldgsts_state = UNITIALIZED;
     m_latency_of_mem_operation_at_sm_structure = 0;
+    m_num_cycles_to_wait_to_free_WAR = 0;
+    m_num_cycles_per_intermediate_stage.resize(0);
+    m_fu_assigned = nullptr;
     m_num_cycles_to_stall_SM = 0;
     m_prt_assigned = false;
-    m_prt_id = 0xFFFFFFFFu;
-    unique_function_id = 0;
-    skip_wb = false;
-    m_fu_assigned = nullptr;
-    control_flow_type = NOT_DEFINED;  // Stage 1d.4+5
+    m_prt_id = std::numeric_limits<unsigned int>::max();
   }
   warp_inst_t(const core_config *config) {
     m_uid = 0;
-    m_streamID = (unsigned long long)-1;
+    m_unique_inst_id = 0;
     assert(config->warp_size <= MAX_WARP_SIZE);
     m_config = config;
     m_empty = true;
     m_isatomic = false;
     m_per_scalar_thread_valid = false;
+    m_per_scalar_thread_valid_memref2 = false;
     m_mem_accesses_created = false;
     m_cache_hit = false;
     m_is_printf = false;
     m_is_cdp = 0;
     should_do_atomic = true;
+    m_vpreg_need_to_reissue = false; // MOD. VPREG
+    m_is_the_oldest_instruction_of_the_warp = false; // MOD. VPREG
+    m_is_setp_opcode = false; // MOD. VPREG
+    m_is_selp_opcode = false; // MOD. VPREG
+    m_is_predicate_source_operands = false; // MOD. VPREG
 
-    // Ni:
+    m_extra_trace_instruction_info = nullptr; // MOD. Extra Trace Info
+    m_generated_constant_accesses = false;
+
     m_is_ldgsts = false;
-    m_is_ldgdepbar = false;
-    m_is_depbar = false;
-
-    m_depbar_group_no = 0;
-
-    // MICRO 2025 port additions
-    m_extra_trace_instruction_info = nullptr;
-    m_num_cycles_to_wait_to_free_WAR = 0;
+    m_has_perform_control_stage = false;
+    m_ldgsts_state = Ldgsts_State::UNITIALIZED;
+    m_reg_offset = 0;
+    m_num_pending_cycles_to_finish_wb_from_sm_struct_to_subcore = 0;
     m_has_wb_from_sm_struct_to_subcore = false;
-    m_ldgsts_state = UNITIALIZED;
     m_latency_of_mem_operation_at_sm_structure = 0;
+    m_num_cycles_to_wait_to_free_WAR = 0;
+    m_num_cycles_per_intermediate_stage.resize(0);
+    m_fu_assigned = nullptr;
     m_num_cycles_to_stall_SM = 0;
     m_prt_assigned = false;
-    m_prt_id = 0xFFFFFFFFu;
-    unique_function_id = 0;
-    skip_wb = false;
-    m_fu_assigned = nullptr;
-    control_flow_type = NOT_DEFINED;  // Stage 1d.4+5
+    m_prt_id = std::numeric_limits<unsigned int>::max();
   }
   virtual ~warp_inst_t() {}
+
+  // MOD. Begin. Improved tracer
+  virtual void set_extra_trace_instruction_info(
+      std::shared_ptr<traced_instruction> extra_info_trace) {
+    m_extra_trace_instruction_info = extra_info_trace;
+  }
+
+  traced_instruction &get_extra_trace_instruction_info() const {
+    return *m_extra_trace_instruction_info;
+  }
+
+  bool has_extra_trace_instruction_info() const {
+    return m_extra_trace_instruction_info != nullptr;
+  }
+  // MOD. Begin. Improved tracer
+  
 
   // modifiers
   void broadcast_barrier_reduction(const active_mask_t &access_mask);
@@ -1281,37 +1389,42 @@ class warp_inst_t : public inst_t {
   void do_atomic(const active_mask_t &access_mask, bool forceDo = false);
   void clear() { m_empty = true; }
 
+  void set_some_warp_attributes(unsigned int warp_id, unsigned int dynamic_warp_id);
   void issue(const active_mask_t &mask, unsigned warp_id,
-             unsigned long long cycle, int dynamic_warp_id, int sch_id,
-             unsigned long long streamID);
+             unsigned long long cycle, int dynamic_warp_id, int sch_id);
 
   const active_mask_t &get_active_mask() const { return m_warp_active_mask; }
   void completed(unsigned long long cycle)
       const;  // stat collection: called when the instruction is completed
 
   void set_addr(unsigned n, new_addr_type addr) {
+    unsigned int config_warp_size = 32;
+    if(m_config != nullptr) {
+      config_warp_size = m_config->warp_size;
+    }
     if (!m_per_scalar_thread_valid) {
-      m_per_scalar_thread.resize(m_config->warp_size);
+      m_per_scalar_thread.resize(config_warp_size);
       m_per_scalar_thread_valid = true;
     }
     m_per_scalar_thread[n].memreqaddr[0] = addr;
   }
   void set_addr(unsigned n, new_addr_type *addr, unsigned num_addrs) {
+    unsigned int config_warp_size = 32;
+    if(m_config != nullptr) {
+      config_warp_size = m_config->warp_size;
+    }
     if (!m_per_scalar_thread_valid) {
-      m_per_scalar_thread.resize(m_config->warp_size);
+      m_per_scalar_thread.resize(config_warp_size);
       m_per_scalar_thread_valid = true;
     }
     assert(num_addrs <= MAX_ACCESSES_PER_INSN_PER_THREAD);
     for (unsigned i = 0; i < num_addrs; i++)
       m_per_scalar_thread[n].memreqaddr[i] = addr[i];
   }
-  // MICRO 2025 port (Stage 1d.4+5): paired memory-access addresses.  For
-  // LDGSTS (async copy) and other 2-access-per-inst SASS ops, the second
-  // memory reference lives in the memref2 vector.  Ours matches MICRO 2025's
-  // set_addr_memref2 verbatim (abstract_hardware_model.h:1425-1448).
+
   void set_addr_memref2(unsigned n, new_addr_type addr) {
     unsigned int config_warp_size = 32;
-    if (m_config != nullptr) {
+    if(m_config != nullptr) {
       config_warp_size = m_config->warp_size;
     }
     if (!m_per_scalar_thread_valid_memref2) {
@@ -1322,7 +1435,7 @@ class warp_inst_t : public inst_t {
   }
   void set_addr_memref2(unsigned n, new_addr_type *addr, unsigned num_addrs) {
     unsigned int config_warp_size = 32;
-    if (m_config != nullptr) {
+    if(m_config != nullptr) {
       config_warp_size = m_config->warp_size;
     }
     if (!m_per_scalar_thread_valid_memref2) {
@@ -1333,6 +1446,23 @@ class warp_inst_t : public inst_t {
     for (unsigned i = 0; i < num_addrs; i++)
       m_per_scalar_thread_memref2[n].memreqaddr[i] = addr[i];
   }
+
+  void ldgsts_change_to_sts_mode(gpgpu_sim *gpu);
+
+  void change_ldgsts_state() { 
+    if(m_is_ldgsts) {
+      if(m_ldgsts_state == Ldgsts_State::LOAD_STAGE) {
+        m_ldgsts_state = Ldgsts_State::STORE_STAGE;
+      } else if (m_ldgsts_state == Ldgsts_State::UNITIALIZED){
+        m_ldgsts_state = Ldgsts_State::LOAD_STAGE;
+      }else {
+        assert(0 && "ERROR: Invalid LDGSTS state movement");
+        fflush(stdout);
+        abort();
+      }
+    }
+  }
+
   void print_m_accessq() {
     if (accessq_empty())
       return;
@@ -1346,8 +1476,11 @@ class warp_inst_t : public inst_t {
       }
     }
   }
+
+  std::vector<mem_access_t> granted_accesses(std::vector<bool> &used_banks, std::vector<std::deque<mem_fetch *>> &l1_latency_queue, unsigned int inst_latency, l1d_cache_config &L1D_config, unsigned int max_allowed_searches, bool &is_a_bank_conflict); // MOD. Fixed LDST_Unit model
+
   struct transaction_info {
-    std::bitset<4> chunks;  // bitmask: 32-byte chunks accessed
+    std::bitset<SECTOR_CHUNCK_SIZE> chunks;  // bitmask: 32-byte chunks accessed
     mem_access_byte_mask_t bytes;
     active_mask_t active;  // threads in this transaction
 
@@ -1358,6 +1491,17 @@ class warp_inst_t : public inst_t {
     }
   };
 
+  void generate_fixed_latency_constant_accesses(new_addr_type c_addr);
+  virtual void generate_miscellaneous_queue_latencies(gpgpu_sim *gpu);
+  virtual void generate_texture_latencies(gpgpu_sim *gpu);
+  virtual void assign_predicate_latencies_if_needed(gpgpu_sim *gpu);
+  virtual void generate_other_mem_ops_latencies(gpgpu_sim *gpu);
+  virtual void generate_dp_latencies(gpgpu_sim *gpu);
+  virtual void generate_mem_latencies(gpgpu_sim *gpu);
+  void get_tensor_core_instruction_info();
+  virtual void generate_tensor_core_latencies(gpgpu_sim *gpu);
+  bool has_sm_shared_wb_finished();
+  bool sm_shared_wb_consumed(bool can_do_wb_this_cycle, unsigned int num_cycles_to_transfer_reg, bool &conflict_detected); // WB is for saying if use the write RF ports
   void generate_mem_accesses();
   void memory_coalescing_arch(bool is_write, mem_access_type access_type);
   void memory_coalescing_arch_atomic(bool is_write,
@@ -1382,11 +1526,6 @@ class warp_inst_t : public inst_t {
     m_per_scalar_thread[lane_id].callback.instruction = inst;
     m_per_scalar_thread[lane_id].callback.thread = thread;
   }
-  void set_active(const active_mask_t &active);
-  // MICRO 2025 port (Stage 1d.4+5): overload that accepts an explicit warp_size.
-  // Needed by trace_warp_inst_t::parse_from_trace_struct when m_config is not
-  // yet bound (the inst may be set up before being attached to a core).  Our
-  // existing 1-arg version continues to route through m_config->warp_size.
   void set_active(const active_mask_t &active, unsigned int warp_size);
 
   void clear_active(const active_mask_t &inactive);
@@ -1426,6 +1565,19 @@ class warp_inst_t : public inst_t {
     return m_per_scalar_thread[n].memreqaddr[0];
   }
 
+  new_addr_type get_first_addr_valid() const {
+    assert(m_per_scalar_thread_valid);
+    new_addr_type res = 0;
+    bool found = false;
+    for(unsigned int i = 0; (i < m_per_scalar_thread.size()) && !found; i++) {
+      if(m_warp_active_mask.test(i)) {
+        res = m_per_scalar_thread[i].memreqaddr[0];
+        found = true;
+      }
+    }
+    return res;
+  }
+
   bool isatomic() const { return m_isatomic; }
 
   unsigned warp_size() const { return m_config->warp_size; }
@@ -1433,39 +1585,87 @@ class warp_inst_t : public inst_t {
   bool accessq_empty() const { return m_accessq.empty(); }
   unsigned accessq_count() const { return m_accessq.size(); }
   const mem_access_t &accessq_back() { return m_accessq.back(); }
-  // Stage 1e-B1: MICRO 2025 abstract_hardware_model.h:1594.  coalescingStats
-  // iterates accesses by index, so a snapshot vector is the convenient API.
-  // Our m_accessq is std::list; we materialize a vector on demand.
-  std::vector<mem_access_t> get_mem_accesses() const {
+  void accessq_pop_back() { m_accessq.pop_back(); }
+  void accessq_clear() { m_accessq.clear(); }
+
+  std::list<mem_access_t>& get_mem_access_queue() { return m_accessq; }
+
+  // MOD. Begin. LOOG
+  std::vector<mem_access_t> get_mem_accesses() const { 
     std::vector<mem_access_t> res;
     assert(!m_accessq.empty());
-    for (auto it = m_accessq.begin(); it != m_accessq.end(); ++it) {
+    for(auto it = m_accessq.begin(); it != m_accessq.end(); it++) {
       res.push_back(*it);
     }
     return res;
   }
-  void accessq_pop_back() { m_accessq.pop_back(); }
+  // MOD. End. LOOG
+
+  // MOD. Begin. VPREG
+  warp_inst_t *get_original_instruction() const { return m_original_inst;} 
+  void set_original_instruction(warp_inst_t *original_inst) { m_original_inst = original_inst;}
+  bool get_vpreg_need_to_reissue() { return m_vpreg_need_to_reissue;}
+  void set_vpreg_need_to_reissue(bool need_to_reissue) { m_vpreg_need_to_reissue = need_to_reissue;} 
+  bool get_is_the_oldest_instruction_of_the_warp() { return m_is_the_oldest_instruction_of_the_warp;}
+  void set_is_the_oldest_instruction_of_the_warp(bool is_the_oldest_instruction_of_the_warp) { m_is_the_oldest_instruction_of_the_warp = is_the_oldest_instruction_of_the_warp;}
+  bool get_is_setp_opcode() const { return m_is_setp_opcode;}
+  bool get_is_selp_opcode() const { return m_is_selp_opcode;}
+  bool get_is_predicate_source_operands() const { return m_is_predicate_source_operands;}
+  // MOD. End. VPREG
 
   bool dispatch_delay() {
     if (cycles > 0) cycles--;
     return cycles > 0;
   }
 
+  void set_new_dispatch_delay(unsigned int cyc) { 
+    cycles = cyc;
+  }
+
   bool has_dispatch_delay() { return cycles > 0; }
 
+  unsigned get_num_cycles() const { return cycles; } // MOD. Memory stats
+
   void print(FILE *fout) const;
-  unsigned get_uid() const { return m_uid; }
-  unsigned long long get_streamID() const { return m_streamID; }
-  unsigned get_schd_id() const { return m_scheduler_id; }
+  unsigned int get_uid() const { return m_uid; }
+  unsigned int get_schd_id() const { return m_scheduler_id; }
+  unsigned int get_subcore_id() const { return m_scheduler_id; } // MOD. Remodeling
+  unsigned int get_mem_pipe_icnt_id() const {
+    unsigned int res = m_scheduler_id;
+    if (m_ldgsts_state == Ldgsts_State::LOAD_STAGE) {
+      res = m_icnt_mem_pipe_id; // It is the case when we need to send a finished load part to the icnt to be sent to the shared memory
+    }
+    return res;
+  }
+  unsigned int get_final_dst_reg(unsigned int reg_id) {
+    unsigned int res = reg_id + m_reg_offset;
+    return res;
+  }
+  // MOD. Remodeling
   active_mask_t get_warp_active_mask() const { return m_warp_active_mask; }
+
+  bool get_generated_constant_accesses() const { return m_generated_constant_accesses; }
+  void set_generated_constant_accesses(bool generated_constant_accesses) { m_generated_constant_accesses = generated_constant_accesses; }
+
+  unsigned long long get_unique_inst_id() const { return m_unique_inst_id; }
+  void set_unique_inst_id(unsigned long long unique_inst_id) { m_unique_inst_id = unique_inst_id; }
+
+  void set_fu_assigned(functional_unit *fu) { m_fu_assigned = fu; }
+  functional_unit *get_fu_assigned() const { return m_fu_assigned; }
+
+  bool get_per_scalar_thread_valid() const { return m_per_scalar_thread_valid; }
+  bool get_per_scalar_thread_valid_memref2() const { return m_per_scalar_thread_valid_memref2; }
+
+  new_addr_type get_memreqaddr(unsigned int thread_id, unsigned int pos_id) const { return m_per_scalar_thread[thread_id].memreqaddr[pos_id]; }
+  new_addr_type get_memreqaddr_memref2(unsigned int thread_id, unsigned int pos_id) const { return m_per_scalar_thread_memref2[thread_id].memreqaddr[pos_id]; }
 
  protected:
   unsigned m_uid;
-  unsigned long long m_streamID;
+  unsigned long long m_unique_inst_id;
   bool m_empty;
   bool m_cache_hit;
   unsigned long long issue_cycle;
-  unsigned cycles;  // used for implementing initiation interval delay
+  unsigned int cycles;  // used for implementing initiation interval delay
   bool m_isatomic;
   bool should_do_atomic;
   bool m_is_printf;
@@ -1492,202 +1692,51 @@ class warp_inst_t : public inst_t {
                                                        // of 4B each)
   };
   bool m_per_scalar_thread_valid;
+  bool m_per_scalar_thread_valid_memref2;
   std::vector<per_thread_info> m_per_scalar_thread;
+  std::vector<per_thread_info> m_per_scalar_thread_memref2;
   bool m_mem_accesses_created;
   std::list<mem_access_t> m_accessq;
 
   unsigned m_scheduler_id;  // the scheduler that issues this inst
+    
+  warp_inst_t *m_original_inst; // MOD. VPREG. Allowing to get access at issue_warp to the original warp_inst that gets modified in some PTX implementations
+  bool m_vpreg_need_to_reissue; // MOD. VPREG
+  bool m_is_the_oldest_instruction_of_the_warp; // MOD. VPREG
+  bool m_is_setp_opcode; // MOD. VPREG
+  bool m_is_selp_opcode; // MOD. VPREG
+  bool m_is_predicate_source_operands; // MOD. VPREG
+  
+  std::shared_ptr<traced_instruction> m_extra_trace_instruction_info; // MOD. Improved tracer
+  bool m_generated_constant_accesses;
+  
+  functional_unit *m_fu_assigned; // MOD. Remodeling
 
   // Jin: cdp support
  public:
   int m_is_cdp;
-
-  // Ni: add boolean to indicate whether the instruction is ldgsts
-  bool m_is_ldgsts;
-  bool m_is_ldgdepbar;
-  bool m_is_depbar;
-
-  unsigned int m_depbar_group_no;
-
-  // MICRO 2025 port additions: extra trace metadata (populated by the
-  // Stage 1d NVBit v1.8 -> traced_instruction adapter) + WAR scoreboard
-  // free countdown used by Subcore's dep-tracking.  Default-constructed
-  // values are inert: nullptr shared_ptr, zero WAR wait.
- public:
-  void set_extra_trace_instruction_info(
-      std::shared_ptr<traced_instruction> extra_info_trace) {
-    m_extra_trace_instruction_info = extra_info_trace;
-  }
-  traced_instruction &get_extra_trace_instruction_info() const {
-    return *m_extra_trace_instruction_info;
-  }
-  bool has_extra_trace_instruction_info() const {
-    return m_extra_trace_instruction_info != nullptr;
-  }
-
-  std::shared_ptr<traced_instruction> m_extra_trace_instruction_info;
-  unsigned int m_num_cycles_to_wait_to_free_WAR;
-  bool m_has_wb_from_sm_struct_to_subcore;
-
-  // More MICRO 2025 port fields.  Default-inert.
-  Ldgsts_State m_ldgsts_state;
-  unsigned int m_latency_of_mem_operation_at_sm_structure;
   unsigned int m_num_cycles_to_stall_SM;
   bool m_prt_assigned;
-  unsigned int m_prt_id;
-  unsigned int unique_function_id;
-  bool skip_wb;
-  class functional_unit *m_fu_assigned;
-  class functional_unit *get_fu_assigned() const { return m_fu_assigned; }
-
-  // Additional MICRO 2025 methods / members called by remodeling/*
-  unsigned int m_icnt_mem_pipe_id = 0;
-  unsigned int get_mem_pipe_icnt_id() const { return m_icnt_mem_pipe_id; }
-  bool m_has_perform_control_stage = false;
-  void change_ldgsts_state() {
-    if (m_ldgsts_state == LOAD_STAGE) m_ldgsts_state = STORE_STAGE;
-    else if (m_ldgsts_state == UNITIALIZED) m_ldgsts_state = LOAD_STAGE;
-  }
-  void accessq_clear() { m_accessq.clear(); }
-  unsigned get_num_cycles() const { return cycles; }
-  unsigned int get_subcore_id() const { return m_scheduler_id; }
-
-  bool is_any_kind_of_barrier() const {
-    return (op == MEMORY_BARRIER_OP) || (op == LDGDEPBAR_OP) ||
-           (op == BARRIER_OP) || (op == GRID_BARRIER_OP);
-  }
-
-  // Extra predicate helpers used by subcore/ldst_unit_sm.
-  bool is_texture() const { return (op == TEXTURE_OP); }
-  bool is_sfu_useful() const { return (op == SFU_OP); }
-  bool is_miscellaneous_queue() const { return (op == MISCELLANEOUS_QUEUE_OP); }
-
-  // MICRO 2025 port: inert field/method stubs.
-  void set_fu_assigned(class functional_unit *fu) { m_fu_assigned = fu; }
-  bool m_has_the_constant_addr_already_calculated = false;
-  int m_cu_rrs_id = -1;          // LOOG rename id (dead path in Stage 1)
-  // MICRO 2025 port (abstract_hardware_model.cc:378): real ldgsts mode switch
-  // (swaps per-scalar-thread memref info, regenerates accesses, regenerates
-  // mem latencies).  Body in .cc file.
-  void ldgsts_change_to_sts_mode(class gpgpu_sim *gpu);
-
-  // Predicate helpers.
-  bool is_memory_miscelanous() const { return (op == MEMORY_MISCELLANEOUS_OP); }
-  bool is_memory_barrier() const { return (op == MEMORY_BARRIER_OP); }
-  bool is_grid_barrier() const { return (op == GRID_BARRIER_OP); }
-
-  // MICRO 2025 port: VPREG / shared-wb hooks.  Real bodies live in
-  // abstract_hardware_model.cc (Stage 1c.7.2) — they track a per-inst
-  // countdown rather than the Stage-1c.4.5 one-shot stub.
-  bool has_sm_shared_wb_finished();
-  bool sm_shared_wb_consumed(bool can_do_wb_this_cycle,
-                             unsigned int num_cycles_to_transfer_reg,
-                             bool &conflict_detected);
-
-  bool get_vpreg_need_to_reissue() const { return false; }
-  unsigned long long get_unique_inst_id() const { return m_uid; }
-
-  // MICRO 2025 port: instr-latency generation hooks.  Real bodies live in
-  // abstract_hardware_model.cc (Stage 1c.7.2, port of MICRO 2025 .cc:353-620).
-  virtual void generate_miscellaneous_queue_latencies(class gpgpu_sim *gpu);
-  virtual void generate_texture_latencies(class gpgpu_sim *gpu);
-  virtual void generate_other_mem_ops_latencies(class gpgpu_sim *gpu);
-  virtual void generate_tensor_core_latencies(class gpgpu_sim *gpu);
-  virtual void generate_mem_latencies(class gpgpu_sim *gpu);
-  virtual void generate_dp_latencies(class gpgpu_sim *gpu);
-  virtual void assign_predicate_latencies_if_needed(class gpgpu_sim *gpu);
-  void get_tensor_core_instruction_info();
-  // MICRO 2025 port: constant-access generator (abstract_hardware_model.cc:353).
-  virtual void generate_fixed_latency_constant_accesses(new_addr_type c_addr);
-  // Backward-compat no-op overload used by old stub call sites.
-  virtual void generate_fixed_latency_constant_accesses(class gpgpu_sim * /*gpu*/) {}
-
-  // MICRO 2025 port: Fixed LDST_Unit helper — extracts coalesced accesses
-  // that don't conflict on L1D banks or latency-queue slots.
-  std::vector<mem_access_t> granted_accesses(
-      std::vector<bool> &used_banks,
-      std::vector<std::deque<class mem_fetch *>> &l1_latency_queue,
-      unsigned int inst_latency, class l1d_cache_config &L1D_config,
-      unsigned int max_allowed_searches, bool &is_a_bank_conflict);
-
-  // MICRO 2025 port: first valid memreqaddr + "final" dst reg (= out[]).
-  new_addr_type get_first_addr_valid() const {
-    for (unsigned n = 0; n < m_per_scalar_thread.size(); ++n) {
-      if (m_warp_active_mask.test(n)) return m_per_scalar_thread[n].memreqaddr[0];
-    }
-    return 0;
-  }
-  unsigned int get_final_dst_reg(unsigned int reg_id) const {
-    return out[reg_id];
-  }
-
-  // MICRO 2025 port: extra helpers used by remodeling/subcore.cc and
-  // ldst_unit_sm.cc.  is_dp_op and is_dp are v2-equivalent; the generated-
-  // const-accesses flag is initialised in MICRO 2025 at decode time.
-  bool is_dp_op() const { return is_dp(); }
-  bool get_generated_constant_accesses() const { return m_generated_constant_accesses; }
-  void set_generated_constant_accesses(bool v) { m_generated_constant_accesses = v; }
-  // Stage 1e-B1: MICRO 2025's get_mem_accesses returns `std::vector`.  The
-  // real impl is above (inline near accessq_back); the list-reference
-  // variant was a v2-local convenience helper with only 2 call sites, both
-  // compatible with the vector-returning API.  Removed to match upstream.
-  bool m_generated_constant_accesses = false;
-
-  // MICRO 2025 port: extra overload of issue() whose trailing arg is the
-  // scheduler id (no streamID).  Forwards to the streamID=0 variant.
-  void issue(const active_mask_t &mask, unsigned warp_id,
-             unsigned long long cycle, int dynamic_warp_id, int sch_id) {
-    issue(mask, warp_id, cycle, dynamic_warp_id, sch_id,
-          /*streamID=*/0ULL);
-  }
-
-  // MICRO 2025 port additions.  Inert stubs / passthroughs.
-  unsigned int vpreg_virtual_out[MAX_OUTPUT_VALUES] = {0};
-  bool m_sm_shared_wb_consumed = false;  // backing field for the sm_shared_wb* helpers
-  void set_unique_inst_id(unsigned long long /*uid*/) {}
-  // Stage 1g G2: real body ported from MICRO 2025 abstract_hardware_model.cc:101.
-  // This is what clears m_empty at decode time — without it, Subcore::issue's
-  // are_l1c_operands_ready calls alloc(*pI, ...) on an m_empty=true inst and
-  // warp_inst_t::warp_id() aborts on !m_empty.
-  void set_some_warp_attributes(unsigned int warp_id,
-                                unsigned int dynamic_warp_id) {
-    m_warp_id = warp_id;
-    m_dynamic_warp_id = dynamic_warp_id;
-    m_empty = false;
-  }
-
-  // MICRO 2025 port additional fields read by the ported generate_*_latencies
-  // / sm_shared_wb_consumed / ldgsts_change_to_sts_mode methods in
-  // abstract_hardware_model.cc.
-  unsigned int m_num_pending_cycles_to_finish_wb_from_sm_struct_to_subcore = 0;
-  unsigned int m_reg_offset = 0;
-  bool m_per_scalar_thread_valid_memref2 = false;
-  std::vector<per_thread_info> m_per_scalar_thread_memref2;
-  // Stage 1d.4+5: SASS control-flow classification (WARPSYNC / BSYNC / YIELD /
-  // BRANCH / JUMP / ENDCALL / RPCMOV / NOT_DEFINED).  Populated by the ported
-  // trace_warp_inst_t::parse_from_trace_struct based on opcode.
-  trace_control_flow_type control_flow_type = NOT_DEFINED;
+  unsigned int m_prt_id; 
+  unsigned int m_icnt_mem_pipe_id;
+  bool m_is_ldgsts;
+  bool m_has_perform_control_stage;
+  Ldgsts_State m_ldgsts_state;
+  bool m_has_wb_from_sm_struct_to_subcore;
+  unsigned int m_reg_offset;
+  unsigned int m_num_pending_cycles_to_finish_wb_from_sm_struct_to_subcore;
+  unsigned int m_latency_of_mem_operation_at_sm_structure;
+  std::vector<unsigned int> m_num_cycles_per_intermediate_stage; // Just used if the instruction goes to a functional unit of queue type
+  unsigned int m_num_cycles_to_wait_to_free_WAR;
 };
 
 void move_warp(warp_inst_t *&dst, warp_inst_t *&src);
-
-// MICRO 2025 port: swap two warp_inst_t smart pointers by moving the content
-// from src into dst, keeping dst's previous (empty) slot reusable.  Used by
-// register_set_uniptr below.
-inline void move_warp_uniptr(std::unique_ptr<warp_inst_t>& dst,
-                             std::unique_ptr<warp_inst_t>& src) {
-  assert(dst && dst->empty());
-  std::unique_ptr<warp_inst_t> temp = std::move(dst);
-  dst = std::move(src);
-  src = std::move(temp);
-  src->clear();
-}
 
 size_t get_kernel_code_size(class function_info *entry);
 class checkpoint {
  public:
   checkpoint();
-  ~checkpoint() { printf("clasfsfss destructed\n"); }
+  ~checkpoint() {}
 
   void load_global_mem(class memory_space *temp_mem, char *f1name);
   void store_global_mem(class memory_space *mem, char *fname, char *format);
@@ -1724,12 +1773,18 @@ class core_t {
       }
     }
   }
-  virtual ~core_t() { free(m_thread); }
+  virtual ~core_t() { 
+    free(m_thread);
+    for(unsigned i = 0; i < m_warp_count; i++) {
+      delete m_simt_stack[i];
+    }
+    delete[] m_simt_stack;
+  }
   virtual void warp_exit(unsigned warp_id) = 0;
   virtual bool warp_waiting_at_barrier(unsigned warp_id) const = 0;
   virtual void checkExecutionStatusAndUpdate(warp_inst_t &inst, unsigned t,
                                              unsigned tid) = 0;
-  class gpgpu_sim *get_gpu() {
+  virtual class gpgpu_sim *get_gpu() {
     return m_gpu;
   }
   void execute_warp_inst_t(warp_inst_t &inst, unsigned warpId = (unsigned)-1);
@@ -1777,6 +1832,11 @@ class register_set {
     }
     m_name = name;
   }
+  ~register_set() {
+    for (unsigned i = 0; i < regs.size(); i++) {
+      delete regs[i];
+    }
+  }
   const char *get_name() { return m_name; }
   bool has_free() {
     for (unsigned i = 0; i < regs.size(); i++) {
@@ -1814,7 +1874,7 @@ class register_set {
     assert(has_ready());
     warp_inst_t **ready;
     ready = NULL;
-    unsigned reg_id = 0;
+    unsigned int reg_id = 0;
     for (unsigned i = 0; i < regs.size(); i++) {
       if (not regs[i]->empty()) {
         if (ready and (*ready)->get_uid() < regs[i]->get_uid()) {
@@ -1919,18 +1979,32 @@ class register_set {
 
   unsigned get_size() { return regs.size(); }
 
+  unsigned int get_num_ready() {
+    unsigned int count = 0;
+    for (unsigned i = 0; i < regs.size(); i++) {
+      if (!regs[i]->empty()) {
+        count++;
+      }
+    }
+    return count;
+  }
+
  private:
   std::vector<warp_inst_t *> regs;
   const char *m_name;
 };
 
-// ============================================================================
-// MICRO 2025 port: register_set_uniptr (+ helper) — unique_ptr-backed variant
-// of register_set used by the new Subcore / functional_unit / ldst_unit_sm
-// pipelines.  Owns warp_inst_t instances instead of reusing pointer slots.
-// Matches MICRO 2025 abstract_hardware_model.h:2007-2168 verbatim except for
-// formatting.
-// ============================================================================
+// New function: move_warp_uniptr
+inline void move_warp_uniptr(std::unique_ptr<warp_inst_t>& dst, std::unique_ptr<warp_inst_t>& src) {
+    // dst is expected to be empty
+    assert(dst && dst->empty());
+    std::unique_ptr<warp_inst_t> temp = std::move(dst);
+    dst = std::move(src);
+    src = std::move(temp);
+    src->clear();
+}
+
+// New class: register_set_uniptr
 class register_set_uniptr {
  public:
   register_set_uniptr(unsigned num, const char *name) : m_name(name) {
@@ -1938,13 +2012,15 @@ class register_set_uniptr {
       regs.push_back(std::make_unique<warp_inst_t>());
     }
   }
+  // Destructor is defaulted
   ~register_set_uniptr() = default;
 
-  const char *get_name() { return m_name; }
+  const char* get_name() { return m_name; }
 
   bool has_free() {
     for (auto &reg : regs) {
-      if (reg->empty()) return true;
+      if (reg->empty())
+        return true;
     }
     return false;
   }
@@ -1955,7 +2031,8 @@ class register_set_uniptr {
   }
   bool has_ready() {
     for (auto &reg : regs) {
-      if (!reg->empty()) return true;
+      if (!reg->empty())
+        return true;
     }
     return false;
   }
@@ -1966,7 +2043,7 @@ class register_set_uniptr {
   }
 
   warp_inst_t *get_ready() {
-    warp_inst_t *ready = nullptr;
+    warp_inst_t* ready = nullptr;
     for (auto &reg : regs) {
       if (!reg->empty()) {
         if (!ready || reg->get_uid() < ready->get_uid()) {
@@ -1976,20 +2053,25 @@ class register_set_uniptr {
     }
     return ready;
   }
-  warp_inst_t *get_ready(bool sub_core_model, unsigned reg_id) {
-    if (!sub_core_model) return get_ready();
+
+  
+
+  warp_inst_t* get_ready(bool sub_core_model, unsigned reg_id) {
+    if (!sub_core_model)
+      return get_ready();
     assert(reg_id < regs.size());
     return regs[reg_id]->empty() ? nullptr : regs[reg_id].get();
   }
 
-  warp_inst_t *get_free() {
+  warp_inst_t* get_free() {
     for (auto &reg : regs) {
-      if (reg->empty()) return reg.get();
+      if (reg->empty())
+        return reg.get();
     }
     assert(0 && "No free registers found");
     return nullptr;
   }
-  warp_inst_t *get_free(bool sub_core_model, unsigned reg_id) {
+  warp_inst_t* get_free(bool sub_core_model, unsigned reg_id) {
     if (!sub_core_model) return get_free();
     assert(reg_id < regs.size());
     if (regs[reg_id]->empty()) return regs[reg_id].get();
@@ -1997,24 +2079,22 @@ class register_set_uniptr {
     return nullptr;
   }
 
-  void move_in(std::unique_ptr<warp_inst_t> &src) {
-    std::unique_ptr<warp_inst_t> &free_ptr = regs[get_index_of_free()];
+  void move_in(std::unique_ptr<warp_inst_t>& src) {
+    // Obtain free unique pointer and move src into it using move_warp_uniptr.
+    // Note: Here we assume that the free pointer is wrapped in the vector.
+    std::unique_ptr<warp_inst_t>& free_ptr = regs[get_index_of_free()];
     move_warp_uniptr(free_ptr, src);
   }
-  void move_in(bool sub_core_model, unsigned reg_id,
-               std::unique_ptr<warp_inst_t> &src) {
-    std::unique_ptr<warp_inst_t> &free_ptr =
-        regs[sub_core_model ? reg_id : get_index_of_free()];
+  void move_in(bool sub_core_model, unsigned reg_id, std::unique_ptr<warp_inst_t>& src) {
+    std::unique_ptr<warp_inst_t>& free_ptr = regs[sub_core_model ? reg_id : get_index_of_free()];
     move_warp_uniptr(free_ptr, src);
   }
-  void move_out_to(std::unique_ptr<warp_inst_t> &dest) {
-    std::unique_ptr<warp_inst_t> &ready_ptr = regs[get_index_of_ready()];
+  void move_out_to(std::unique_ptr<warp_inst_t>& dest) {
+    std::unique_ptr<warp_inst_t>& ready_ptr = regs[get_index_of_ready()];
     move_warp_uniptr(dest, ready_ptr);
   }
-  void move_out_to(bool sub_core_model, unsigned reg_id,
-                   std::unique_ptr<warp_inst_t> &dest) {
-    std::unique_ptr<warp_inst_t> &ready_ptr =
-        regs[sub_core_model ? reg_id : get_index_of_ready()];
+  void move_out_to(bool sub_core_model, unsigned reg_id, std::unique_ptr<warp_inst_t>& dest) {
+    std::unique_ptr<warp_inst_t>& ready_ptr = regs[sub_core_model ? reg_id : get_index_of_ready()];
     assert(ready_ptr);
     move_warp_uniptr(dest, ready_ptr);
   }
@@ -2037,16 +2117,21 @@ class register_set_uniptr {
     }
   }
 
-  std::unique_ptr<warp_inst_t> &get_ready_smartptr() {
-    return regs[get_index_of_ready()];
-  }
-  std::unique_ptr<warp_inst_t> &get_free_smartptr() {
-    return regs[get_index_of_free()];
+  std::unique_ptr<warp_inst_t>& get_ready_smartptr() {
+    unsigned idx = get_index_of_ready();  // This will assert if no ready reg found
+    return regs[idx];
   }
 
+  std::unique_ptr<warp_inst_t>& get_free_smartptr() {
+    unsigned idx = get_index_of_free();  // This will assert if no free reg found
+    return regs[idx];
+  }
+  
   std::vector<std::unique_ptr<warp_inst_t>> regs;
 
+
  private:
+  // Helper functions to retrieve an index of a free or ready entry
   unsigned get_index_of_free() {
     for (unsigned i = 0; i < regs.size(); i++) {
       if (regs[i]->empty()) return i;
@@ -2071,14 +2156,15 @@ class register_set_uniptr {
   const char *m_name;
 };
 
-inline void move_warp_between_reg_sets(register_set_uniptr &dst_set,
-                                       unsigned dst_idx,
-                                       register_set_uniptr &src_set,
-                                       unsigned src_idx) {
-  assert(dst_idx < dst_set.get_size());
-  assert(src_idx < src_set.get_size());
-  assert(dst_set.regs[dst_idx]->empty());
-  move_warp_uniptr(dst_set.regs[dst_idx], src_set.regs[src_idx]);
+// Add this after move_warp_uniptr definition:
+
+// Moves warp between two register sets at specified indices
+inline void move_warp_between_reg_sets(register_set_uniptr& dst_set, unsigned dst_idx,
+                                     register_set_uniptr& src_set, unsigned src_idx) {
+    assert(dst_idx < dst_set.get_size());
+    assert(src_idx < src_set.get_size());
+    assert(dst_set.regs[dst_idx]->empty());
+    move_warp_uniptr(dst_set.regs[dst_idx], src_set.regs[src_idx]);
 }
 
 #endif  // #ifdef __cplusplus

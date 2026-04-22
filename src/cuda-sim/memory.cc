@@ -203,7 +203,7 @@ int main(int argc, char *argv[]) {
     mem->read(addr, 4, &tmp);
     if (tmp != addr) {
       errors_found = 1;
-      printf("ERROR ** mem[0x%x] = 0x%x, expected 0x%x\n", addr, tmp, addr);
+      printf("ERROR ** mem[0x%llx] = 0x%llx, expected 0x%llx\n", addr, tmp, addr);
     }
   }
 
@@ -218,7 +218,7 @@ int main(int argc, char *argv[]) {
     unsigned char val = (addr + 128) % 256;
     if (tmp != val) {
       errors_found = 1;
-      printf("ERROR ** mem[0x%x] = 0x%x, expected 0x%x\n", addr, tmp,
+      printf("ERROR ** mem[0x%llx] = 0x%llx, expected 0x%llx\n", addr, tmp,
              (unsigned)val);
     }
   }

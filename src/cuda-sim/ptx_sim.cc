@@ -202,9 +202,8 @@ unsigned ptx_thread_info::get_builtin(int builtin_id, unsigned dim_mod) {
     case CLOCK_REG:
       return (unsigned)(m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
     case CLOCK64_REG:
-      // Change return value to unsigned long long?
-      // Currently returns 32-bit unsigned, which may cause truncation for large
-      // values. GPGPUSim clock is 4 times slower - multiply by 4
+      abort();  // change return value to unsigned long long?
+                // GPGPUSim clock is 4 times slower - multiply by 4
       return (m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle) * 4;
     case HALFCLOCK_ID:
       // GPGPUSim clock is 4 times slower - multiply by 4
@@ -361,7 +360,7 @@ static void print_reg(FILE *fp, std::string name, ptx_reg_t value,
       fprintf(fp, ".u8  %u [0x%02x]\n", value.u8, (unsigned)value.u8);
       break;
     case U16_TYPE:
-      fprintf(fp, ".u16 %u [0x%04x]\n", value.u16, (unsigned)value.u16);
+      fprintf(fp, ".u16 %hu [0x%04x]\n", value.u16, (unsigned)value.u16);
       break;
     case U32_TYPE:
       fprintf(fp, ".u32 %u [0x%08x]\n", value.u32, (unsigned)value.u32);
@@ -370,8 +369,7 @@ static void print_reg(FILE *fp, std::string name, ptx_reg_t value,
       fprintf(fp, ".u64 %llu [0x%llx]\n", value.u64, value.u64);
       break;
     case F16_TYPE:
-      fprintf(fp, ".f16 %f [0x%04x]\n", static_cast<float>(value.f16),
-              (unsigned)value.u16);
+      fprintf(fp, ".f16 %f [0x%04x]\n", static_cast<float>(value.f16), (unsigned)value.u16);
       break;
     case F32_TYPE:
       fprintf(fp, ".f32 %.15lf [0x%08x]\n", value.f32, value.u32);
@@ -611,6 +609,29 @@ void ptx_thread_info::set_npc(const function_info *f) {
   m_NPC = f->get_start_PC();
   m_func_info = const_cast<function_info *>(f);
   m_symbol_table = m_func_info->get_symtab();
+}
+
+void ptx_thread_info::print_reg_thread(char *fname) {
+  FILE *fp = fopen(fname, "w");
+  assert(fp != NULL);
+
+  int size = m_regs.size();
+
+  if (size > 0) {
+    reg_map_t reg = m_regs.back();
+
+    reg_map_t::const_iterator it;
+    for (it = reg.begin(); it != reg.end(); ++it) {
+      const std::string &name = it->first->name();
+      const std::string &dec = it->first->decl_location();
+      unsigned size = it->first->get_size_in_bytes();
+      fprintf(fp, "%s %s %d. Content: ", name.c_str(), dec.c_str(),
+              size);
+      print_reg(fp, name, it->second, m_symbol_table);
+    }
+    // m_regs.pop_back();
+  }
+  fclose(fp);
 }
 
 void feature_not_implemented(const char *f) {

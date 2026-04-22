@@ -262,6 +262,13 @@ void ptx_file_line_stats_create_exposed_latency_tracker(int n_shader_cores) {
   inflight_mem_tracker = new ptx_inflight_memory_insn_tracker[n_shader_cores];
 }
 
+void ptx_file_line_stats_destroy_exposed_latency_tracker() {
+  if(inflight_mem_tracker) {
+    delete[] inflight_mem_tracker;
+    inflight_mem_tracker = NULL;
+  }
+}
+
 // add an inflight memory instruction
 void ptx_stats::ptx_file_line_stats_add_inflight_memory_insn(int sc_id,
                                                              unsigned pc) {

@@ -206,7 +206,7 @@ void ptx_recognizer::end_function() {
   gpgpu_ptx_assemble(g_func_info->get_name(), g_func_info);
   g_current_symbol_table = g_global_symbol_table;
 
-  PTX_PARSE_DPRINTF("function %s, PC = %llu\n", g_func_info->get_name().c_str(),
+  PTX_PARSE_DPRINTF("function %s, PC = %llx\n", g_func_info->get_name().c_str(),
                     g_func_info->get_start_PC());
 }
 
@@ -519,9 +519,9 @@ void ptx_recognizer::add_constptr(const char *identifier1,
   parse_assert(s1 != NULL, "'from' constant identifier does not exist.");
   parse_assert(s1 != NULL, "'to' constant identifier does not exist.");
 
-  unsigned addr = s2->get_address();
+  addr_t addr = s2->get_address();
 
-  printf("GPGPU-Sim PTX: moving \"%s\" from 0x%llx to 0x%x (%s+%d)\n",
+  printf("GPGPU-Sim PTX: moving \"%s\" from 0x%llx to 0x%llx (%s+%x)\n",
          identifier1, s1->get_address(), addr + offset, identifier2, offset);
 
   s1->set_address(addr + offset);

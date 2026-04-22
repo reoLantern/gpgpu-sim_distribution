@@ -21,7 +21,10 @@ class device_launch_config_t {
 
 class device_launch_operation_t {
  public:
-  device_launch_operation_t() {}
+  device_launch_operation_t() {
+    grid = nullptr;
+    stream = nullptr;
+  }
   device_launch_operation_t(kernel_info_t* _grid, CUstream_st* _stream)
       : grid(_grid), stream(_stream) {}
 

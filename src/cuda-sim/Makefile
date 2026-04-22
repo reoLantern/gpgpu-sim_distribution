@@ -55,10 +55,10 @@ endif
 
 CXX_OPT = $(OPT)
 ifeq ($(INTEL),1)
-    CXX_OPT += -std=c++0x
+    CXX_OPT += -std=c++17
 else 
 ifeq ($(GNUC_CPP0X),1)
-    CXX_OPT += -std=c++0x
+    CXX_OPT += -std=c++17
 endif
 endif
 
@@ -91,16 +91,16 @@ $(OUTPUT_DIR)/lex.ptxinfo_.o: $(OUTPUT_DIR)/lex.ptxinfo_.c $(OUTPUT_DIR)/ptxinfo
 	$(CPP) -c $(CXX_OPT) $(OUTPUT_DIR)/lex.ptxinfo_.c -o $(OUTPUT_DIR)/lex.ptxinfo_.o
 
 $(OUTPUT_DIR)/ptx.tab.c: ptx.y
-	bison --name-prefix=ptx_ -v -d ptx.y --file-prefix=$(OUTPUT_DIR)/ptx 2> /dev/null
+	bison --name-prefix=ptx_ -v -d ptx.y --file-prefix=$(OUTPUT_DIR)/ptx
 
 $(OUTPUT_DIR)/ptxinfo.tab.c: ptxinfo.y
-	bison --name-prefix=ptxinfo_ -v -d ptxinfo.y --file-prefix=$(OUTPUT_DIR)/ptxinfo 2> /dev/null
+	bison --name-prefix=ptxinfo_ -v -d ptxinfo.y --file-prefix=$(OUTPUT_DIR)/ptxinfo
 
 $(OUTPUT_DIR)/lex.ptx_.c: ptx.l
-	flex --outfile=$(OUTPUT_DIR)/lex.ptx_.c ptx.l 2> /dev/null
+	flex --outfile=$(OUTPUT_DIR)/lex.ptx_.c ptx.l 
 
 $(OUTPUT_DIR)/lex.ptxinfo_.c: ptxinfo.l
-	flex --outfile=$(OUTPUT_DIR)/lex.ptxinfo_.c ptxinfo.l 2> /dev/null
+	flex --outfile=$(OUTPUT_DIR)/lex.ptxinfo_.c ptxinfo.l 
 
 clean:
 	rm -f *~ *.o *.gcda *.gcno *.gcov libgpgpu_ptx_sim.a \

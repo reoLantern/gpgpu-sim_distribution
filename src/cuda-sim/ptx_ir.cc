@@ -1,19 +1,18 @@
 // Copyright (c) 2009-2021, Tor M. Aamodt, Ali Bakhoda, Wilson W.L. Fung,
 // George L. Yuan, Vijay Kandiah, Nikos Hardavellas,
 // Mahmoud Khairy, Junrui Pan, Timothy G. Rogers
-// The University of British Columbia, Northwestern University, Purdue
-// University All rights reserved.
+// The University of British Columbia, Northwestern University, Purdue University
+// All rights reserved.
 //
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are met:
 //
-// 1. Redistributions of source code must retain the above copyright notice,
-// this
+// 1. Redistributions of source code must retain the above copyright notice, this
 //    list of conditions and the following disclaimer;
 // 2. Redistributions in binary form must reproduce the above copyright notice,
 //    this list of conditions and the following disclaimer in the documentation
 //    and/or other materials provided with the distribution;
-// 3. Neither the names of The University of British Columbia, Northwestern
+// 3. Neither the names of The University of British Columbia, Northwestern 
 //    University nor the names of their contributors may be used to
 //    endorse or promote products derived from this software without specific
 //    prior written permission.
@@ -47,8 +46,7 @@ typedef void *yyscan_t;
 
 #define STR_SIZE 1024
 
-// MICRO 2025 port (Stage 1c.7.4): returns mutable pointer — see gpgpu_context.h.
-ptx_instruction *gpgpu_context::pc_to_instruction(unsigned pc) {
+ptx_instruction *gpgpu_context::pc_to_instruction(unsigned pc) { // MOD. VPREG
   if (pc < s_g_pc_to_insn.size())
     return s_g_pc_to_insn[pc];
   else
@@ -136,22 +134,6 @@ symbol *symbol_table::lookup(const char *identifier) {
   }
   if (m_parent) {
     return m_parent->lookup(identifier);
-  }
-  return NULL;
-}
-
-symbol *symbol_table::lookup_by_addr(addr_t addr) {
-  for (auto it = m_symbols.begin(); it != m_symbols.end(); ++it) {
-    symbol *sym = it->second;
-
-    // check if symbol has the addr to be found
-    if ((!sym->is_reg()) && (sym->has_valid_address()) &&
-        (sym->get_address() == addr)) {
-      return sym;
-    }
-  }
-  if (m_parent) {
-    return m_parent->lookup_by_addr(addr);
   }
   return NULL;
 }
@@ -1217,6 +1199,9 @@ ptx_instruction::ptx_instruction(
     const char *file, unsigned line, const char *source,
     const core_config *config, gpgpu_context *ctx)
     : warp_inst_t(config), m_return_var(ctx) {
+  m_is_setp_opcode = opcode == SETP_OP; // MOD. VPREG
+  m_is_selp_opcode = opcode == SELP_OP; // MOD. VPREG
+  m_is_predicate_source_operands = scalar_type.size() && scalar_type.front() == PRED_TYPE; // MOD. VPREG
   gpgpu_ctx = ctx;
   m_uid = ++(ctx->g_num_ptx_inst_uid);
   m_PC = 0;
@@ -1244,8 +1229,6 @@ ptx_instruction::ptx_instruction(
   m_rounding_mode = RN_OPTION;
   m_compare_op = -1;
   m_saturation_mode = 0;
-  m_clamp_mode = 0;
-  m_left_mode = 0;
   m_geom_spec = 0;
   m_vector_spec = 0;
   m_atomic_spec = 0;
@@ -1311,18 +1294,6 @@ ptx_instruction::ptx_instruction(
         break;
       case SAT_OPTION:
         m_saturation_mode = 1;
-        break;
-      case WRAP_OPTION:
-        m_clamp_mode = 0;
-        break;
-      case CLAMP_OPTION:
-        m_clamp_mode = 1;
-        break;
-      case LEFT_OPTION:
-        m_left_mode = 1;
-        break;
-      case RIGHT_OPTION:
-        m_left_mode = 0;
         break;
       case RNI_OPTION:
       case RZI_OPTION:
@@ -1418,7 +1389,7 @@ ptx_instruction::ptx_instruction(
       case CS_OPTION:
       case LU_OPTION:
       case CV_OPTION:
-      case WB_OPTION:
+      case WB_OPTION: 
       case WT_OPTION:
         m_cache_option = last_ptx_inst_option;
         break;
@@ -1501,8 +1472,8 @@ std::string ptx_instruction::to_string() const {
   char buf[STR_SIZE];
   unsigned used_bytes = 0;
   if (!is_label()) {
-    used_bytes += snprintf(buf + used_bytes, STR_SIZE - used_bytes,
-                           " PC=0x%03llx ", m_PC);
+    used_bytes +=
+        snprintf(buf + used_bytes, STR_SIZE - used_bytes, " PC=0x%03llx ", m_PC);
   } else {
     used_bytes +=
         snprintf(buf + used_bytes, STR_SIZE - used_bytes, "                ");
@@ -1516,9 +1487,15 @@ operand_info ptx_instruction::get_pred() const {
   return operand_info(m_pred, gpgpu_ctx);
 }
 
+unsigned int function_info::m_next_func_uid_no_gpu_context = 1;
+
 function_info::function_info(int entry_point, gpgpu_context *ctx) {
   gpgpu_ctx = ctx;
-  m_uid = (gpgpu_ctx->function_info_sm_next_uid)++;
+  if(gpgpu_ctx == nullptr){
+    m_uid = m_next_func_uid_no_gpu_context++;
+  } else {
+    m_uid = (gpgpu_ctx->function_info_sm_next_uid)++;
+  }
   m_entry_point = (entry_point == 1) ? true : false;
   m_extern = (entry_point == 2) ? true : false;
   num_reconvergence_pairs = 0;
