@@ -39,6 +39,7 @@
 #include <sstream>
 #include <string>
 #include <vector>
+#include <memory>
 
 using namespace std;
 
@@ -70,7 +71,7 @@ template <class T>
 class OptionRegistry : public OptionRegistryInterface {
  public:
   OptionRegistry(const string name, const string desc, T &variable)
-      : OptionRegistryInterface(name, desc), m_variable(variable) {}
+      : OptionRegistryInterface(name, desc), m_variable(variable), m_memory_allocated(false) {}
 
   virtual ~OptionRegistry() {}
 
@@ -109,6 +110,7 @@ class OptionRegistry : public OptionRegistryInterface {
 
  private:
   T &m_variable;
+  bool m_memory_allocated;
 };
 
 // specialized parser for string-type options
@@ -122,10 +124,20 @@ bool OptionRegistry<string>::fromString(const string str) {
 // specialized parser for c-string type options
 template <>
 bool OptionRegistry<char *>::fromString(const string str) {
+  m_memory_allocated = true;
   m_variable = new char[str.size() + 1];
   strcpy(m_variable, str.c_str());
   m_isParsed = true;
   return true;
+}
+
+template <>
+OptionRegistry<char *>::~OptionRegistry() {
+  if (m_memory_allocated && (m_variable != NULL) ) {
+    delete[] m_variable;
+    m_memory_allocated = false;
+    m_variable = NULL;
+  }
 }
 
 // specialized default assignment for c-string type option to allow NULL default

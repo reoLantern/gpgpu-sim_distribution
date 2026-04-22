@@ -34,11 +34,11 @@ TRACE?=1
 
 include ../version_detection.mk
 
-CXXFLAGS = -Wall -DDEBUG
+CXXFLAGS = -Wall -DDEBUG -fopenmp
 CXXFLAGS += -DCUDART_VERSION=$(CUDART_VERSION)
 
 ifeq ($(GNUC_CPP0X), 1)
-    CXXFLAGS += -std=c++0x
+    CXXFLAGS += -std=c++17
 endif
 
 ifeq ($(TRACE),1)
@@ -48,7 +48,7 @@ endif
 ifneq ($(DEBUG),1)
 	OPTFLAGS += -O3
 else
-	CXXFLAGS += 
+	CXXFLAGS += -O0
 endif
 
 CXXFLAGS += -I$(CUDA_INSTALL_PATH)/include

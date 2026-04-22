@@ -42,7 +42,7 @@ namespace Trace {
 #undef TS_TUP_END
 
 bool enabled = false;
-int sampling_core = 0;
+unsigned int sampling_core = 0;
 int sampling_memory_partition = -1;
 bool trace_streams_enabled[NUM_TRACE_STREAMS] = {false};
 const char* config_str;

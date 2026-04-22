@@ -45,7 +45,7 @@ namespace Trace {
 #undef TS_TUP_END
 
 extern bool enabled;
-extern int sampling_core;
+extern unsigned int sampling_core;
 extern int sampling_memory_partition;
 extern const char* trace_streams_str[];
 extern bool trace_streams_enabled[NUM_TRACE_STREAMS];

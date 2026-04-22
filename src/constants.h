@@ -33,8 +33,7 @@
 
 #define MAX(a, b) (((a) > (b)) ? (a) : (b))
 
-// NOTE: WARP_PER_CTA_MAX is intentionally NOT defined here; our v2 shader.h
-// already defines it (=64).  MICRO 2025 uses 128; we stay at 64 for 2070S.
+const unsigned WARP_PER_CTA_MAX = 128; // MOD. Allowing more warps per SM
 
 #define MAX_DST 1
 #define MAX_SRC 5 // MOD. Fix tensor Turing. Previously was 4
