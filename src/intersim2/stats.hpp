@@ -47,6 +47,10 @@ class Stats : public Module {
 public:
   Stats( Module *parent, const string &name,
 	 double bin_size = 1.0, int num_bins = 10 );
+  
+  virtual ~Stats() override {
+    _hist.clear();
+  }
 
   void Clear( );
 

@@ -35,7 +35,7 @@
 #include<map>
 #include<vector>
 
-int yyparse();
+extern "C" int yyparse();
 
 class Configuration {
   static Configuration * theConfig;

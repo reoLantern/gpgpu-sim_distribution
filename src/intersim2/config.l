@@ -13,6 +13,9 @@ extern int config_input(char *, int);
 
 %}
 
+%option nounput
+%option noinput
+
 Digit [0-9]
 Exponent [eE][+-]?{Digit}+
 DblConst ({Digit}*\.)?{Digit}+{Exponent}?

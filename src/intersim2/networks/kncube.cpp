@@ -231,7 +231,7 @@ void KNCube::InsertRandomFaults( const Configuration &config )
   int num_fails;
   unsigned long prev_seed;
 
-  int node, chan = 0;
+  int node = 0, chan = 0;
   int i, j, t, n, c;
   bool available;
 

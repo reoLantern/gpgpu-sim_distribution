@@ -80,75 +80,63 @@ void QTree::RegisterRoutingFunctions(){
 
 }
 
-void QTree::_BuildNet( const Configuration& config )
-{
-
+void QTree::_BuildNet(const Configuration& config) {
   ostringstream routerName;
-  int h, r = 0 , pos, port;
+  int h, r = 0, pos, port;
 
   for (h = 0; h < _n; h++) {
-    for (pos = 0 ; pos < powi( _k, h ) ; ++pos ) {
-      
-      int id = h * 256 + pos;  
-      r = _RouterIndex( h, pos );
+    for (pos = 0; pos < powi(_k, h); ++pos) {
+      int id = h * 256 + pos;
+      r = _RouterIndex(h, pos);
 
       routerName << "router_" << h << "_" << pos;
 
-      int d = ( h == 0 ) ? _k : _k + 1;
-      _routers[r] = Router::NewRouter( config, this,
-				       routerName.str( ),
-				       id, d, d);
+      int d = (h == 0) ? _k : _k + 1;
+      _routers[r] = Router::NewRouter(config, this, routerName.str(), id, d, d);
       _timed_modules.push_back(_routers[r]);
       routerName.str("");
     }
   }
-  
+
   // Injection & Ejection Channels
-  for ( pos = 0 ; pos < powi( _k, _n-1 ) ; ++pos ) {
-    r = _RouterIndex( _n-1, pos );
-    for ( port = 0 ; port < _k ; port++ ) {
+  for (pos = 0; pos < powi(_k, _n - 1); ++pos) {
+    r = _RouterIndex(_n - 1, pos);
+    for (port = 0; port < _k; port++) {
+      _routers[r]->AddInputChannel(_inject[_k * pos + port],
+                                   _inject_cred[_k * pos + port]);
 
-      _routers[r]->AddInputChannel( _inject[_k*pos+port],
-				    _inject_cred[_k*pos+port]);
-
-      _routers[r]->AddOutputChannel( _eject[_k*pos+port],
-				     _eject_cred[_k*pos+port]);
+      _routers[r]->AddOutputChannel(_eject[_k * pos + port],
+                                    _eject_cred[_k * pos + port]);
     }
   }
 
   int c;
-  for ( h = 0 ; h < _n ; ++h ) {
-    for ( pos = 0 ; pos < powi( _k, h ) ; ++pos ) {
-      for ( port = 0 ; port < _k ; port++ ) {
+  for (h = 0; h < _n; ++h) {
+    for (pos = 0; pos < powi(_k, h); ++pos) {
+      for (port = 0; port < _k; port++) {
+        r = _RouterIndex(h, pos);
 
-	r = _RouterIndex( h, pos );
+        if (h < _n - 1) {
+          // Channels to Children Nodes
+          c = _InputIndex(h, pos, port);
+          _routers[r]->AddInputChannel(_chan[c], _chan_cred[c]);
 
-	if ( h < _n-1 ) {
-	  // Channels to Children Nodes
-	  c = _InputIndex( h , pos, port );
-	  _routers[r]->AddInputChannel( _chan[c], 
-					_chan_cred[c] );
-
-	  c = _OutputIndex( h, pos, port );
-	  _routers[r]->AddOutputChannel( _chan[c], 
-					 _chan_cred[c] );
-
-	}
+          c = _OutputIndex(h, pos, port);
+          _routers[r]->AddOutputChannel(_chan[c], _chan_cred[c]);
+        }
       }
-      if ( h > 0 ) {
-	// Channels to Parent Nodes
-	c = _OutputIndex( h - 1, pos / _k, pos % _k );
-	_routers[r]->AddInputChannel( _chan[c],
-				      _chan_cred[c] );
+      if (h > 0) {
+        // Channels to Parent Nodes
+        c = _OutputIndex(h - 1, pos / _k, pos % _k);
+        _routers[r]->AddInputChannel(_chan[c], _chan_cred[c]);
 
-	c = _InputIndex( h - 1, pos / _k, pos % _k );
-	_routers[r]->AddOutputChannel( _chan[c],
-				       _chan_cred[c]);
+        c = _InputIndex(h - 1, pos / _k, pos % _k);
+        _routers[r]->AddOutputChannel(_chan[c], _chan_cred[c]);
       }
     }
   }
 }
- 
+
 int QTree::_RouterIndex( int height, int pos ) 
 {
   int r = 0;

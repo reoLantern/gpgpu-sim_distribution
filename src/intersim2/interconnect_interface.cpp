@@ -200,7 +200,7 @@ void InterconnectInterface::Push(unsigned input_deviceID, unsigned output_device
 void* InterconnectInterface::Pop(unsigned deviceID)
 {
   int icntID = _node_map[deviceID];
-#if 0
+#if DEBUG
   cout<<"Call interconnect POP  " << output<<endl;
 #endif
 

@@ -58,7 +58,7 @@ public:
   int  atime;
 
   unsigned long long  id;
-  unsigned long long  pid;
+  int  pid;
 
   bool record;
 

@@ -483,15 +483,15 @@ void AnyNet::readFile(){
   assert(router_list[0].size() == router_list[1].size());
 
   //traffic generator assumes node list is sequenctial and starts at 0
-  vector<int> node_check;
+  vector<long unsigned int> node_check;
   for(map<int,int>::iterator i = node_list.begin();
       i!=node_list.end();
       i++){
     node_check.push_back(i->first);
   }
   sort(node_check.begin(), node_check.end());
-  for(size_t i = 0; i<node_check.size(); i++){
-    if(node_check[i] != (int)i){
+  for(std::size_t i = 0; i<node_check.size(); i++){
+    if(node_check[i] != i){
       cout<<"Anynet:booksim trafficmanager assumes sequential node numbering starting at 0\n";
       assert(false);
     }
