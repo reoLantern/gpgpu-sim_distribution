@@ -1,7 +1,6 @@
 #ifndef __cuda_api_object_h__
 #define __cuda_api_object_h__
 
-#include <functional>
 #include <list>
 #include <map>
 #include <set>
@@ -194,25 +193,9 @@ class cuda_runtime_api {
   // backward pointer
   class gpgpu_context *gpgpu_ctx;
   // member function list
-
-  // For SST and other potential simulator interface
-  void cuobjdumpInit(const char *fn);
-  void extract_code_using_cuobjdump(const char *fn);
-  void extract_ptx_files_using_cuobjdump(CUctx_st *context, const char *fn);
-
-  // For running GPGPUSim alone
   void cuobjdumpInit();
   void extract_code_using_cuobjdump();
   void extract_ptx_files_using_cuobjdump(CUctx_st *context);
-
-  // Internal functions for the above public methods
-  void cuobjdumpInit_internal(std::function<void()> ctx_extract_code_func);
-  void extract_code_using_cuobjdump_internal(
-      CUctx_st *context, std::string &app_binary,
-      std::function<void(CUctx_st *)> ctx_extract_ptx_func);
-  void extract_ptx_files_using_cuobjdump_internal(CUctx_st *context,
-                                                  std::string &app_binary);
-
   std::list<cuobjdumpSection *> pruneSectionList(CUctx_st *context);
   std::list<cuobjdumpSection *> mergeMatchingSections(std::string identifier);
   std::list<cuobjdumpSection *> mergeSections();
@@ -227,7 +210,7 @@ class cuda_runtime_api {
                                               struct dim3 gridDim,
                                               struct dim3 blockDim,
                                               struct CUctx_st *context);
-  int load_static_globals(symbol_table *symtab, unsigned min_gaddr,
+  int load_static_globals(symbol_table *symtab, unsigned long long min_gaddr,
                           unsigned max_gaddr, gpgpu_t *gpu);
   int load_constants(symbol_table *symtab, addr_t min_gaddr, gpgpu_t *gpu);
 };

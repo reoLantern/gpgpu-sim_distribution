@@ -85,10 +85,10 @@
 #endif
 #include "xmlParser.h"
 #ifdef _XMLWINDOWS
-// #ifdef _DEBUG
-// #define _CRTDBG_MAP_ALLOC
-// #include <crtdbg.h>
-// #endif
+//#ifdef _DEBUG
+//#define _CRTDBG_MAP_ALLOC
+//#include <crtdbg.h>
+//#endif
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>  // to have IsTextUnicode, MultiByteToWideChar, WideCharToMultiByte to handle unicode files
 // to have "MessageBoxA" to display error messages for openFilHelper
@@ -99,6 +99,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <algorithm>
+#include <iostream>
 
 XMLCSTR XMLNode::getVersion() { return _CXML("v2.39"); }
 void freeXMLString(XMLSTR t) {
@@ -1236,10 +1238,12 @@ static NextToken GetNextToken(XML *pXML, int *pcbToken,
       // Indicate we are dealing with text
       *pType = eTokenText;
       while ((ch = getNextChar(pXML))) {
-        if XML_isSPACECHAR (ch) {
-          indexStart++;
-          break;
-        } else if (ch == _CXML('/')) {
+        if
+          XML_isSPACECHAR(ch) {
+            indexStart++;
+            break;
+          }
+        else if (ch == _CXML('/')) {
           // If we find a slash then this maybe text or a short hand end tag
           // Peek at the next character to see it we have short hand end tag
           ch = pXML->lpXML[pXML->nIndex];
@@ -1511,8 +1515,9 @@ void XMLNode::exactMemory(XMLNodeData *d) {
   if (d->pOrder)
     d->pOrder = (int *)realloc(
         d->pOrder, (d->nChild + d->nText + d->nClear) * sizeof(int));
-  if (d->pChild)
+  if (d->pChild) {
     d->pChild = (XMLNode *)realloc(d->pChild, d->nChild * sizeof(XMLNode));
+  }
   if (d->pAttribute)
     d->pAttribute = (XMLAttribute *)realloc(
         d->pAttribute, d->nAttribute * sizeof(XMLAttribute));
@@ -2191,15 +2196,15 @@ int XMLNode::CreateXMLStringR(XMLNodeData *pEntry, XMLSTR lpszMarker,
         nResult++;
       }
     } else
-      // If there are child nodes we need to terminate the start tag
-      if (nElementI) {
-        if (lpszMarker) lpszMarker[nResult - 1] = _CXML('>');
-        if (nFormat >= 0) {
-          if (lpszMarker) lpszMarker[nResult] = _CXML('\n');
-          nResult++;
-        }
-      } else
-        nResult--;
+        // If there are child nodes we need to terminate the start tag
+        if (nElementI) {
+      if (lpszMarker) lpszMarker[nResult - 1] = _CXML('>');
+      if (nFormat >= 0) {
+        if (lpszMarker) lpszMarker[nResult] = _CXML('\n');
+        nResult++;
+      }
+    } else
+      nResult--;
   }
 
   // Calculate the child format for when we recurse.  This is used to
@@ -2376,10 +2381,12 @@ int XMLNode::detachFromParent(XMLNodeData *d) {
   int i = 0;
   while (((void *)(pa[i].d)) != ((void *)d)) i++;
   d->pParent->nChild--;
-  if (d->pParent->nChild)
-    memmove(pa + i, pa + i + 1, (d->pParent->nChild - i) * sizeof(XMLNode));
-  else {
-    free(pa);
+  if (d->pParent->nChild) {
+    for (int j = i; j < d->pParent->nChild; ++j) {
+      pa[j] = pa[j + 1];
+    }
+  } else {
+    delete[] pa;
     d->pParent->pChild = NULL;
   }
   return removeOrderElement(d->pParent, eNodeChild, i);

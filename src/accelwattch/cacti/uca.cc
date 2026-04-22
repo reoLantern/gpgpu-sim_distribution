@@ -89,9 +89,9 @@ UCA::UCA(const DynamicParameter & dyn_p)
 			  num_addr_b_bank, num_di_b_bank,num_si_b_bank, num_do_b_bank, num_so_b_bank, num_banks_ver_dir*2, num_banks_hor_dir*2, Data_in_htree, true);
 	  htree_out_data = new Htree2(g_ip->wt, bank.area.w, bank.area.h,
 			  num_addr_b_bank, num_di_b_bank,num_si_b_bank, num_do_b_bank, num_so_b_bank, num_banks_ver_dir*2, num_banks_hor_dir*2, Data_out_htree, true);
-	  htree_in_search  = new Htree2(g_ip->wt, bank.area.w, bank.area.h,
+	  htree_in_search  = std::make_unique<Htree2>(g_ip->wt, bank.area.w, bank.area.h,
 			  num_addr_b_bank, num_di_b_bank,num_si_b_bank, num_do_b_bank, num_so_b_bank, num_banks_ver_dir*2, num_banks_hor_dir*2, Data_in_htree, true);
-	  htree_out_search = new Htree2(g_ip->wt, bank.area.w, bank.area.h,
+	  htree_out_search = std::make_unique<Htree2>(g_ip->wt, bank.area.w, bank.area.h,
 			  num_addr_b_bank, num_di_b_bank,num_si_b_bank, num_do_b_bank, num_so_b_bank, num_banks_ver_dir*2, num_banks_hor_dir*2, Data_out_htree, true);
   }
 

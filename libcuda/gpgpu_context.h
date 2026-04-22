@@ -1,6 +1,5 @@
 #ifndef __gpgpu_context_h__
 #define __gpgpu_context_h__
-#include <atomic>
 #include "../src/cuda-sim/cuda-sim.h"
 #include "../src/cuda-sim/cuda_device_runtime.h"
 #include "../src/cuda-sim/ptx-stats.h"
@@ -30,11 +29,20 @@ class gpgpu_context {
     device_runtime = new cuda_device_runtime(this);
     stats = new ptx_stats(this);
   }
+  ~gpgpu_context() {
+    delete api;
+    delete ptxinfo;
+    delete ptx_parser;
+    delete the_gpgpusim;
+    delete func_sim;
+    delete device_runtime;
+    delete stats;
+  }
   // global list
   symbol_table *g_global_allfiles_symbol_table;
   const char *g_filename;
-  std::atomic<unsigned> sm_next_access_uid;
-  std::atomic<unsigned> warp_inst_sm_next_uid;
+  unsigned sm_next_access_uid;
+  unsigned warp_inst_sm_next_uid;
   unsigned operand_info_sm_next_uid;  // uid for operand_info
   unsigned kernel_info_m_next_uid;    // uid for kernel_info_t
   unsigned g_num_ptx_inst_uid;        // uid for ptx inst inside ptx_instruction
@@ -44,9 +52,6 @@ class gpgpu_context {
   std::vector<ptx_instruction *>
       s_g_pc_to_insn;  // a direct mapping from PC to instruction
   bool debug_tensorcore;
-
-  // SST related
-  bool requested_synchronize = false;
 
   // objects pointers for each file
   cuda_runtime_api *api;
@@ -58,7 +63,6 @@ class gpgpu_context {
   ptx_stats *stats;
   // member function list
   void synchronize();
-  bool synchronize_check();
   void exit_simulation();
   void print_simulation_time();
   int gpgpu_opencl_ptx_sim_main_perf(kernel_info_t *grid);
@@ -79,13 +83,8 @@ class gpgpu_context {
   void start_sim_thread(int api);
   struct _cuda_device_id *GPGPUSim_Init();
   void ptx_reg_options(option_parser_t opp);
-  // MICRO 2025 port: return type const -> mutable (Stage 1c.7.4).  Per
-  // MICRO 2025 gpgpu_context.h:86, Subcore::single_decode mutates the
-  // returned instruction (trace info, tensor-core info, latencies).  The
-  // underlying s_g_pc_to_insn storage is mutable; v2's legacy caller never
-  // wrote through the const pointer, so dropping const is behaviorally safe.
-  ptx_instruction *pc_to_instruction(unsigned pc);
-  warp_inst_t *ptx_fetch_inst(address_type pc);
+  ptx_instruction *pc_to_instruction(unsigned pc); // MOD. VPREG
+  warp_inst_t *ptx_fetch_inst(address_type pc); // MOD. VPREG
   unsigned translate_pc_to_ptxlineno(unsigned pc);
 };
 gpgpu_context *GPGPU_Context();

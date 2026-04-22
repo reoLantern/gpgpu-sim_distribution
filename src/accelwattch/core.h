@@ -90,6 +90,9 @@ class InstFetchU : public Component {
   inst_decoder *ID_inst;
   inst_decoder *ID_operand;
   inst_decoder *ID_misc;
+  ArrayST *VPREG_RAT_Decode;  // MOD. VPREG. RAT of Decode stage. Also known as VMT
+  ArrayST *VPREG_FreePool_Decode;  // MOD. VPREG. Freelist/Free pool of Decode stage for the VMTs
+  ArrayST *VPREG_Consumers_table;  // MOD. VPREG. Consumers' Table. Accesed at Decode and OPC stage
   bool exist;
 
   InstFetchU(ParseXML *XML_interface, int ithCore_,
@@ -213,6 +216,10 @@ class RegFU : public Component {
   ArrayST *FRF;
   ArrayST *RFWIN;
   ArrayST *OPC;  // Operand collectors
+
+  ArrayST *VPREG_RAT_OPC;  // MOD. VPREG. RAT of OPC stage. Also known as PMT
+  ArrayST *VPREG_FreePool_OPC;  // MOD. VPREG. Freelist/Free pool of OPC stage for the PMT
+  
   bool exist;
   double exClockRate;
   // OC Modelling (Syed)
@@ -507,18 +514,23 @@ class Core : public Component {
     value += exu->rfu->xbar_rfu->power.readOp.dynamic / (32 /**1.5*/);
     value += (exu->rfu->arbiter_rfu->power.readOp.dynamic / 32 /**1.5)*/);
     value += exu->rfu->OPC->local_result.power.readOp.dynamic /*/1.5*/;
+
     return value;
   }
 
   float get_coefficient_regwrites_accesses() {
-    return ((exu->rfu->IRF->local_result.power.writeOp.dynamic / 32) *
+    // Value has the original return
+    float value = ((exu->rfu->IRF->local_result.power.writeOp.dynamic / 32) *
             (4 * 2) /*/1.5*/);
+    return value;
   }
 
   float get_coefficient_noregfileops_accesses() {
-    return ((exu->rfu->xbar_rfu->power.readOp.dynamic / (32 /**1.5*/)) +
+    // Value has the original return
+    float value = ((exu->rfu->xbar_rfu->power.readOp.dynamic / (32 /**1.5*/)) +
             (exu->rfu->arbiter_rfu->power.readOp.dynamic / (32 /**1.5*/)) +
             (exu->rfu->OPC->local_result.power.readOp.dynamic /*/(1.5)*/));
+    return value;
   }
 
   float get_coefficient_ialu_accesses() {

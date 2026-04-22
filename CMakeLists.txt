@@ -21,6 +21,12 @@ set(GPGPUSIM_USE_OPENCL OFF)
 # Check for dependencies
 include(gpgpusim_check.cmake)
 
+# Stage 1h pivot: MICRO 2025 extended AccelWattch ABI (init_mcpat +1 arg) and
+# its gpgpu_sim_wrapper.cc now includes gpgpu-sim/shader.h → needs CUDA
+# include path in accelwattch CMakeLists.  Deferred re-enable to Phase 5;
+# override the auto-detect from gpgpusim_check.cmake.
+set(GPGPUSIM_USE_POWER_MODEL OFF)
+
 # Create version file
 add_custom_target(gen_build_string ALL 
                     COMMAND ${CMAKE_COMMAND} -D INPUT_DIR=${CMAKE_CURRENT_SOURCE_DIR} -D OUTPUT_DIR=${CMAKE_BINARY_DIR} -P ${CMAKE_CURRENT_SOURCE_DIR}/gpgpusim_gen_build_string.cmake

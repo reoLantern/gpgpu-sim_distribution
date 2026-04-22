@@ -14,6 +14,7 @@ list(APPEND gpgpusim_SRC addrdec.cc
     mem_latency_stat.cc
     power_interface.cc
     power_stat.cc
+    result_bus.cc   # Stage 1h pivot B1: ResultBusses extracted to own file
     scoreboard.cc
     scoreboard_reads.cc   # MICRO 2025 port: WAR scoreboard (Stage 1c.4.4)
     shader.cc

@@ -34,6 +34,8 @@
 #ifndef __UCA_H__
 #define __UCA_H__
 
+#include <memory>
+
 #include "area.h"
 #include "bank.h"
 #include "component.h"
@@ -55,8 +57,9 @@ class UCA : public Component
     Htree2   * htree_in_add;
     Htree2   * htree_in_data;
     Htree2   * htree_out_data;
-    Htree2   * htree_in_search;
-    Htree2   * htree_out_search;
+    std::unique_ptr<Htree2>   htree_in_search;
+    std::unique_ptr<Htree2>   htree_out_search;
+
 
     powerDef power_routing_to_bank;
 

@@ -1,17 +1,16 @@
-// Copyright (c) 2009-2021, Tor M. Aamodt, Tayler Hetherington, Ahmed ElTantawy,
-// Vijay Kandiah, Nikos Hardavellas The University of British Columbia,
-// Northwestern University All rights reserved.
+// Copyright (c) 2009-2021, Tor M. Aamodt, Tayler Hetherington, Ahmed ElTantawy, Vijay Kandiah, Nikos Hardavellas
+// The University of British Columbia, Northwestern University
+// All rights reserved.
 //
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are met:
 //
-// 1. Redistributions of source code must retain the above copyright notice,
-// this
+// 1. Redistributions of source code must retain the above copyright notice, this
 //    list of conditions and the following disclaimer;
 // 2. Redistributions in binary form must reproduce the above copyright notice,
 //    this list of conditions and the following disclaimer in the documentation
 //    and/or other materials provided with the distribution;
-// 3. Neither the names of The University of British Columbia, Northwestern
+// 3. Neither the names of The University of British Columbia, Northwestern 
 //    University nor the names of their contributors may be used to
 //    endorse or promote products derived from this software without specific
 //    prior written permission.
@@ -41,7 +40,50 @@
 #include <string>
 #include "processor.h"
 
+#include "../gpgpu-sim/gpu-sim.h" //MOD. Custom powermodel stats
+
+#define MAX_NUMBER_OF_GPUS 128
+
 using namespace std;
+
+// MOD. Begin. Custom powermodel stats. Moved here to be accesed from this file
+enum pwr_cmp_t {
+  IBP=0,
+  ICP,
+  DCP,
+  TCP,
+  CCP,
+  SHRDP,
+  RFP,
+  INTP,
+  FPUP,
+  DPUP,
+  INT_MUL24P,
+  INT_MUL32P,
+  INT_MULP,
+  INT_DIVP,
+  FP_MULP,
+  FP_DIVP,
+  FP_SQRTP,
+  FP_LGP,
+  FP_SINP,
+  FP_EXP,
+  DP_MULP,
+  DP_DIVP,
+  TENSORP,
+  TEXP,
+  SCHEDP,
+  L2CP,
+  MCP,
+  NOCP,
+  DRAMP,
+  PIPEP,
+  IDLE_COREP,
+  CONSTP,
+  STATICP,
+  NUM_COMPONENTS_MODELLED
+};
+// MOD. End. Custom powermodel stats
 
 template <typename T>
 struct avg_max_min_counters {
@@ -59,32 +101,32 @@ struct avg_max_min_counters {
 #ifndef COEFF_STRUCT
 #define COEFF_STRUCT
 
-struct PowerscalingCoefficients {
-  double int_coeff;
-  double int_mul_coeff;
-  double int_mul24_coeff;
-  double int_mul32_coeff;
-  double int_div_coeff;
-  double fp_coeff;
-  double dp_coeff;
-  double fp_mul_coeff;
-  double fp_div_coeff;
-  double dp_mul_coeff;
-  double dp_div_coeff;
-  double sqrt_coeff;
-  double log_coeff;
-  double sin_coeff;
-  double exp_coeff;
-  double tensor_coeff;
-  double tex_coeff;
+struct PowerscalingCoefficients{
+    double int_coeff;
+    double int_mul_coeff;
+    double int_mul24_coeff;
+    double int_mul32_coeff;
+    double int_div_coeff;
+    double fp_coeff;
+    double dp_coeff;
+    double fp_mul_coeff;
+    double fp_div_coeff;
+    double dp_mul_coeff;
+    double dp_div_coeff;
+    double sqrt_coeff;
+    double log_coeff;
+    double sin_coeff;
+    double exp_coeff;
+    double tensor_coeff;
+    double tex_coeff;
 };
 
 #endif
 
 class gpgpu_sim_wrapper {
  public:
-  gpgpu_sim_wrapper(bool power_simulation_enabled, char* xmlfile,
-                    int power_simulation_mode, bool dvfs_enabled);
+  gpgpu_sim_wrapper(bool power_simulation_enabled, char* xmlfile, int power_simulation_mode, bool dvfs_enabled,
+    const gpgpu_sim_config *gpgpusim_config, const shader_core_config *shader_config, shader_core_stats *shader_stats); // MOD. Custom powermodel stats
   ~gpgpu_sim_wrapper();
 
   void init_mcpat(char* xmlfile, char* powerfile, char* power_trace_file,
@@ -92,9 +134,8 @@ class gpgpu_sim_wrapper {
                   bool power_sim_enabled, bool trace_enabled,
                   bool steady_state_enabled, bool power_per_cycle_dump,
                   double steady_power_deviation, double steady_min_period,
-                  int zlevel, double init_val, int stat_sample_freq,
-                  int power_sim_mode, bool dvfs_enabled, unsigned clock_freq,
-                  unsigned num_shaders);
+                  int zlevel, double init_val, int stat_sample_freq, int power_sim_mode, 
+                  bool dvfs_enabled, unsigned clock_freq, unsigned num_shaders, unsigned int gpu_id);
   void init_mcpat_hw_mode(unsigned gpu_sim_cycle);
   void detect_print_steady_state(int position, double init_val);
   void close_files();
@@ -104,6 +145,12 @@ class gpgpu_sim_wrapper {
   void print_trace_files();
   void update_components_power();
   double calculate_static_power();
+  double calculate_static_power_custom_component_per_warp(double static_power_single_component); // MOD. Custom powermodel stats
+  double calculate_dynamic_power_custom_component_per_warp(double dynamic_power_single_component); // MOD. Custom powermodel stats
+  double calculate_static_power_custom_component_per_register_file_bank(double static_power_single_component); // MOD. Custom powermodel stats
+  double calculate_dynamic_power_custom_component_per_register_file_bank(double dynamic_power_single_component); // MOD. Custom powermodel stats
+  double calculate_static_power_custom_component_per_collector_unit(double static_power_single_component); // MOD. Custom powermodel stats
+  double calculate_dynamic_power_custom_component_per_collector_unit(double dynamic_power_single_component); // MOD. Custom powermodel stats
   void update_coefficients();
   void reset_counters();
   void print_power_kernel_stats(double gpu_sim_cycle, double gpu_tot_sim_cycle,
@@ -131,15 +178,15 @@ class gpgpu_sim_wrapper {
   void set_mem_ctrl_power(double reads, double writes, double dram_precharge);
   void set_exec_unit_power(double fpu_accesses, double ialu_accesses,
                            double sfu_accesses);
-  void set_int_accesses(double ialu_accesses, double imul24_accesses,
-                        double imul32_accesses, double imul_accesses,
+  void set_int_accesses(double ialu_accesses, double imul24_accesses, 
+                        double imul32_accesses, double imul_accesses, 
                         double idiv_accesses);
-  void set_dp_accesses(double dpu_accesses, double dpmul_accesses,
+  void set_dp_accesses(double dpu_accesses, double dpmul_accesses, 
                        double dpdiv_accesses);
-  void set_fp_accesses(double fpu_accesses, double fpmul_accesses,
+  void set_fp_accesses(double fpu_accesses, double fpmul_accesses, 
                        double fpdiv_accesses);
-  void set_trans_accesses(double sqrt_accesses, double log_accesses,
-                          double sin_accesses, double exp_accesses);
+  void set_trans_accesses(double sqrt_accesses, double log_accesses, 
+                       double sin_accesses, double exp_accesses);
   void set_tensor_accesses(double tensor_accesses);
   void set_tex_accesses(double tex_accesses);
   void set_avg_active_threads(float active_threads);
@@ -148,10 +195,17 @@ class gpgpu_sim_wrapper {
   void set_NoC_power(double noc_tot_acc);
   bool sanity_check(double a, double b);
 
-  PowerscalingCoefficients* get_scaling_coeffs();
+  PowerscalingCoefficients * get_scaling_coeffs();
+
+  double get_gpu_tot_power_avg() { return gpu_tot_power.avg / total_sample_count; } // MOD. Custom powermodel stats. Energy
+  double get_register_file_power_avg() { return total_cmp_pwr[RFP].avg / total_sample_count; } // MOD. Custom powermodel stats. Energy
 
  private:
   void print_steady_state(int position, double init_val);
+  
+  const gpgpu_sim_config *m_gpgpusim_config; // MOD. Custom powermodel stats
+  const shader_core_config *m_shader_config; // MOD. Custom powermodel stats
+  shader_core_stats *m_shader_stats; // MOD. Custom powermodel stats
 
   Processor* proc;
   ParseXML* p;
@@ -172,6 +226,7 @@ class gpgpu_sim_wrapper {
       kernel_cmp_perf_counters;  // Per-kernel component avg/max/min performance
                                  // counters
 
+  std::vector<avg_max_min_counters<double> > total_cmp_pwr;  // MOD. Average. Total per-component power avg/max/min values
   double kernel_tot_power;  // Total per-kernel power
   avg_max_min_counters<double>
       kernel_power;  // Per-kernel power avg/max/min values

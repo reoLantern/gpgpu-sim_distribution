@@ -30,8 +30,8 @@
  ***************************************************************************/
 /********************************************************************
  *      Modified by:
- * Jingwen Leng, University of Texas, Austin
- * Syed Gilani, University of Wisconsin–Madison
+ * Jingwen Leng, University of Texas, Austin                
+ * Syed Gilani, University of Wisconsin–Madison         
  * Tayler Hetherington, University of British Columbia
  * Ahmed ElTantawy, University of British Columbia
  * Vijay Kandiah, Northwestern University
@@ -40,14 +40,15 @@
 #ifndef XML_PARSE_H_
 #define XML_PARSE_H_
 
-// #ifdef WIN32
-// #define _CRT_SECURE_NO_DEPRECATE
-// #endif
+//#ifdef WIN32
+//#define _CRT_SECURE_NO_DEPRECATE
+//#endif
 
 #include <stdio.h>
 #include <string.h>
 #include <iostream>
 #include "xmlParser.h"
+#include "../gpgpu-sim/gpu-sim.h" //MOD. Custom powermodel stats
 using namespace std;
 
 /*
@@ -70,7 +71,7 @@ ToXMLStringTool tx,tx2;
 extern const char* perf_count_label[];
 
 enum perf_count_t {
-  TOT_INST = 0,
+  TOT_INST=0,
   FP_INT,
   IC_H,
   IC_M,
@@ -86,23 +87,23 @@ enum perf_count_t {
   REG_RD,
   REG_WR,
   NON_REG_OPs,
-  INT_ACC,        // SPU
-  FP_ACC,         // FPU
-  DP_ACC,         // FPU
-  INT_MUL24_ACC,  // SFU
-  INT_MUL32_ACC,  // SFU
-  INT_MUL_ACC,    // SFU
-  INT_DIV_ACC,    // SFU
-  FP_MUL_ACC,     // SFU
-  FP_DIV_ACC,     // SFU
-  FP_SQRT_ACC,    // SFU
-  FP_LG_ACC,      // SFU
-  FP_SIN_ACC,     // SFU
-  FP_EXP_ACC,     // SFU
-  DP_MUL_ACC,     // SFU
-  DP_DIV_ACC,     // SFU
-  TENSOR_ACC,     // SFU
-  TEX_ACC,        // SFU
+  INT_ACC, //SPU
+  FP_ACC, //FPU
+  DP_ACC, //FPU
+  INT_MUL24_ACC, //SFU
+  INT_MUL32_ACC, //SFU
+  INT_MUL_ACC, //SFU 
+  INT_DIV_ACC, //SFU
+  FP_MUL_ACC, //SFU
+  FP_DIV_ACC, //SFU
+  FP_SQRT_ACC, //SFU
+  FP_LG_ACC, //SFU
+  FP_SIN_ACC, //SFU
+  FP_EXP_ACC, //SFU
+  DP_MUL_ACC, //SFU
+  DP_DIV_ACC, //SFU 
+  TENSOR_ACC, //SFU
+  TEX_ACC, //SFU 
   MEM_RD,
   MEM_WR,
   MEM_PRE,
@@ -723,11 +724,21 @@ typedef struct {
 
 class ParseXML {
  public:
+  // MOD. Begin. Custom powermodel stats
+  ParseXML() {
+    m_shader_config = NULL;
+  }
+  ParseXML(const shader_core_config *shader_config) {
+    m_shader_config = shader_config;
+  }
+  // MOD. End
   void parse(char* filepath);
   void initialize();
 
  public:
   root_system sys;
+  const shader_core_config *m_shader_config; // MOD. Custom powermodel stats
+
 };
 
 #endif /* XML_PARSE_H_ */

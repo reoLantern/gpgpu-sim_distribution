@@ -38,6 +38,8 @@
 #include <stdio.h>
 #include <math.h>
 
+#include "../../constants.h"
+
 /*  The following are things you might want to change
  *  when compiling
  */
@@ -102,7 +104,6 @@ const double WmuxdrvNANDp = 0;
 
 #define BIGNUM 1e30
 #define INF 9999999
-#define MAX(a,b) (((a)>(b))?(a):(b))
 #define MIN(a,b) (((a)<(b))?(a):(b))
 
 /* Used to communicate with the horowitz model */

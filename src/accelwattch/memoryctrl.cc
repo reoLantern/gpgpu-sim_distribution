@@ -1227,37 +1227,53 @@ void MemoryController::set_mc_param() {
 MCFrontEnd ::~MCFrontEnd() {
   if (MC_arb) {
     delete MC_arb;
-    MC_arb = 0;
+    MC_arb = nullptr;
   }
   if (frontendBuffer) {
     delete frontendBuffer;
-    frontendBuffer = 0;
+    frontendBuffer = nullptr;
   }
   if (readBuffer) {
     delete readBuffer;
-    readBuffer = 0;
+    readBuffer = nullptr;
   }
   if (writeBuffer) {
     delete writeBuffer;
-    writeBuffer = 0;
+    writeBuffer = nullptr;
+  }
+  if(PRT) {
+    delete PRT;
+    PRT = nullptr;
+  }
+  if(PRC) {
+    delete PRC;
+    PRC = nullptr;
+  }
+  if(threadMasks) {
+    delete threadMasks;
+    threadMasks = nullptr;
   }
 }
 
 MemoryController ::~MemoryController() {
   if (frontend) {
     delete frontend;
-    frontend = 0;
+    frontend = nullptr;
   }
   if (transecEngine) {
     delete transecEngine;
-    transecEngine = 0;
+    transecEngine = nullptr;
   }
   if (PHY) {
     delete PHY;
-    PHY = 0;
+    PHY = nullptr;
   }
   if (pipeLogic) {
     delete pipeLogic;
-    pipeLogic = 0;
+    pipeLogic = nullptr;
+  }
+  if(dram) {
+     delete dram;
+     dram = nullptr;
   }
 }

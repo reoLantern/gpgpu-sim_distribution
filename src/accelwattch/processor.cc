@@ -30,8 +30,8 @@
  ***************************************************************************/
 /********************************************************************
  *      Modified by:
- * Jingwen Leng, University of Texas, Austin
- * Syed Gilani, University of Wisconsin–Madison
+ * Jingwen Leng, University of Texas, Austin                
+ * Syed Gilani, University of Wisconsin–Madison         
  * Tayler Hetherington, University of British Columbia
  * Ahmed ElTantawy, University of British Columbia
  * Vijay Kandiah, Northwestern University
@@ -112,7 +112,7 @@ Processor::Processor(ParseXML *XML_interface)
 
   for (i = 0; i < numCore; i++) {
     cores.push_back(new Core(XML, i, &interface_ip));
-    cores[i]->computeEnergy();
+    cores[i]->computeEnergy(true);
     cores[i]->computeEnergy(false);
     if (procdynp.homoCore) {
       core.area.set_area(core.area.get_area() +
@@ -159,7 +159,7 @@ Processor::Processor(ParseXML *XML_interface)
       for (i = 0; i < numL2; i++) {
         l2array.push_back(new SharedCache(XML, i, &interface_ip));
 
-        l2array[i]->computeEnergy();
+        l2array[i]->computeEnergy(true);
         l2array[i]->computeEnergy(false);
         if (procdynp.homoL2) {
           l2.area.set_area(l2.area.get_area() +
@@ -200,7 +200,7 @@ Processor::Processor(ParseXML *XML_interface)
   if (numL3 > 0)
     for (i = 0; i < numL3; i++) {
       l3array.push_back(new SharedCache(XML, i, &interface_ip, L3));
-      l3array[i]->computeEnergy();
+      l3array[i]->computeEnergy(true);
       l3array[i]->computeEnergy(false);
       if (procdynp.homoL3) {
         l3.area.set_area(l3.area.get_area() +
@@ -237,7 +237,7 @@ Processor::Processor(ParseXML *XML_interface)
   if (numL1Dir > 0)
     for (i = 0; i < numL1Dir; i++) {
       l1dirarray.push_back(new SharedCache(XML, i, &interface_ip, L1Directory));
-      l1dirarray[i]->computeEnergy();
+      l1dirarray[i]->computeEnergy(true);
       l1dirarray[i]->computeEnergy(false);
       if (procdynp.homoL1Dir) {
         l1dir.area.set_area(l1dir.area.get_area() +
@@ -272,7 +272,7 @@ Processor::Processor(ParseXML *XML_interface)
   if (numL2Dir > 0)
     for (i = 0; i < numL2Dir; i++) {
       l2dirarray.push_back(new SharedCache(XML, i, &interface_ip, L2Directory));
-      l2dirarray[i]->computeEnergy();
+      l2dirarray[i]->computeEnergy(true);
       l2dirarray[i]->computeEnergy(false);
       if (procdynp.homoL2Dir) {
         l2dir.area.set_area(l2dir.area.get_area() +
@@ -314,7 +314,7 @@ Processor::Processor(ParseXML *XML_interface)
       printf("use 1 for fermi and 2 for quadro!\n");
       exit(1);
     }
-    mc->computeEnergy();
+    mc->computeEnergy(true);
     mc->computeEnergy(false);
     mcs.area.set_area(mcs.area.get_area() +
                       mc->area.get_area() * XML->sys.mc.number_mcs);
@@ -334,7 +334,7 @@ Processor::Processor(ParseXML *XML_interface)
   if (XML->sys.flashc.number_mcs > 0)  // flash controller
   {
     flashcontroller = new FlashController(XML, &interface_ip);
-    flashcontroller->computeEnergy();
+    flashcontroller->computeEnergy(true);
     flashcontroller->computeEnergy(false);
     double number_fcs = flashcontroller->fcp.num_mcs;
     flashcontrollers.area.set_area(flashcontrollers.area.get_area() +
@@ -351,7 +351,7 @@ Processor::Processor(ParseXML *XML_interface)
 
   if (XML->sys.niu.number_units > 0) {
     niu = new NIUController(XML, &interface_ip);
-    niu->computeEnergy();
+    niu->computeEnergy(true);
     niu->computeEnergy(false);
     nius.area.set_area(nius.area.get_area() +
                        niu->area.get_area() * XML->sys.niu.number_units);
@@ -371,7 +371,7 @@ Processor::Processor(ParseXML *XML_interface)
 
   if (XML->sys.pcie.number_units > 0 && XML->sys.pcie.num_channels > 0) {
     pcie = new PCIeController(XML, &interface_ip);
-    pcie->computeEnergy();
+    pcie->computeEnergy(true);
     pcie->computeEnergy(false);
     pcies.area.set_area(pcies.area.get_area() +
                         pcie->area.get_area() * XML->sys.pcie.number_units);
@@ -448,7 +448,7 @@ Processor::Processor(ParseXML *XML_interface)
     // Compute energy of NoC (w or w/o links) or buses
     for (i = 0; i < numNOC; i++) {
       // cout<<"******************COMPUTE NOC ENERGY********************"<<endl;
-      nocs[i]->computeEnergy();
+      nocs[i]->computeEnergy(true);
       nocs[i]->computeEnergy(false);
       if (procdynp.homoNOC) {
         set_pppm(pppm_t, procdynp.numNOC * nocs[i]->nocdynp.clockRate,
@@ -1192,16 +1192,16 @@ Processor::~Processor() {
     delete nocs.back();
     nocs.pop_back();
   }
-  if (!mc) {
+  if (mc) {
     delete mc;
   }
-  if (!niu) {
+  if (niu) {
     delete niu;
   }
-  if (!pcie) {
+  if (pcie) {
     delete pcie;
   }
-  if (!flashcontroller) {
+  if (flashcontroller) {
     delete flashcontroller;
   }
 };

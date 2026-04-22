@@ -47,39 +47,38 @@
 #include "const.h"
 #include "io.h"
 #include "parameter.h"
-// #include "globalvar.h"
-//  double exClockRate;
+//#include "globalvar.h"
+// double exClockRate;
 //*********************
-//  Operand collector (OC) modelling (Syed Gilani)
+// Operand collector (OC) modelling (Syed Gilani)
 //*********************
-//  The OCs are modelled similar to the GPGPU-Sim v3.x documentation and
-//  nVIDIA patents.
-//  the OC need the following GPGPU-Sim config options:
+// The OCs are modelled similar to the GPGPU-Sim v3.x documentation and
+// nVIDIA patents.
+// the OC need the following GPGPU-Sim config options:
 //-gpgpu_num_reg_banks                    8 # Number of register banks (default
 //= 8) -gpgpu_reg_bank_use_warp_id                    0 # Use warp ID in mapping
-//  registers to banks (default = off) -gpgpu_operand_collector_num_units_sp 6 #
-//  number of collector units (default = 4)
-//  -gpgpu_operand_collector_num_units_sfu 8 # number of collector units
-//  (default = 4) -gpgpu_operand_collector_num_units_mem                    2 #
-//  number of collector units (default = 2)
-//  -gpgpu_operand_collector_num_units_gen 0 # number of collector units
-//  (default = 0)
+// registers to banks (default = off) -gpgpu_operand_collector_num_units_sp 6 #
+// number of collector units (default = 4)
+// -gpgpu_operand_collector_num_units_sfu 8 # number of collector units (default
+// = 4) -gpgpu_operand_collector_num_units_mem                    2 # number of
+// collector units (default = 2) -gpgpu_operand_collector_num_units_gen 0 #
+// number of collector units (default = 0)
 //-gpgpu_operand_collector_num_in_ports_sp                    1 # number of
-//  collector unit in ports (default = 1)
+// collector unit in ports (default = 1)
 //-gpgpu_operand_collector_num_in_ports_sfu                    1 # number of
-//  collector unit in ports (default = 1)
+// collector unit in ports (default = 1)
 //-gpgpu_operand_collector_num_in_ports_mem                    1 # number of
-//  collector unit in ports (default = 1)
+// collector unit in ports (default = 1)
 //-gpgpu_operand_collector_num_in_ports_gen                    0 # number of
-//  collector unit in ports (default = 0)
+// collector unit in ports (default = 0)
 //-gpgpu_operand_collector_num_out_ports_sp                    1 # number of
-//  collector unit in ports (default = 1)
+// collector unit in ports (default = 1)
 //-gpgpu_operand_collector_num_out_ports_sfu                    1 # number of
-//  collector unit in ports (default = 1)
+// collector unit in ports (default = 1)
 //-gpgpu_operand_collector_num_out_ports_mem                    1 # number of
-//  collector unit in ports (default = 1)
+// collector unit in ports (default = 1)
 //-gpgpu_operand_collector_num_out_ports_gen                    0 # number of
-//  collector unit in ports (default = 0)
+// collector unit in ports (default = 0)
 
 // The total number of collector units and their input ports, and the number of
 // register file banks determine the crossbar size.
@@ -96,6 +95,9 @@ InstFetchU::InstFetchU(ParseXML* XML_interface, int ithCore_,
       ID_inst(0),
       ID_operand(0),
       ID_misc(0),
+      VPREG_RAT_Decode(0), // MOD. VPREG
+      VPREG_FreePool_Decode(0), // MOD. VPREG
+      VPREG_Consumers_table(0), // MOD. VPREG
       exist(exist_) {
   if (!exist) return;
   int idx, tag, data, size, line, assoc, banks;
@@ -1838,7 +1840,7 @@ MemManU::MemManU(ParseXML* XML_interface, int ithCore_,
   area.set_area(area.get_area() + dtlb->local_result.area);
   // output_data_csv(dtlb.tlb.local_result);
 }
-// #define FERMI
+//#define FERMI
 
 RegFU::RegFU(ParseXML* XML_interface, int ithCore_,
              InputParameter* interface_ip_, const CoreDynParam& dyn_p_,
@@ -3323,10 +3325,13 @@ void InstFetchU::computeEnergy(bool is_tdp) {
     ID_inst->rtp_stats = ID_inst->stats_t;
     ID_operand->rtp_stats = ID_operand->stats_t;
     ID_misc->rtp_stats = ID_misc->stats_t;
+
   }
 
   icache.power_t.reset();
   IB->power_t.reset();
+
+
   //	ID_inst->power_t.reset();
   //	ID_operand->power_t.reset();
   //	ID_misc->power_t.reset();
@@ -3365,6 +3370,7 @@ void InstFetchU::computeEnergy(bool is_tdp) {
       IB->local_result.power.readOp.dynamic * IB->stats_t.readAc.access +
       IB->stats_t.writeAc.access * IB->local_result.power.writeOp.dynamic;
   // cout << "IB power: "<<IB->power_t.readOp.dynamic<<endl;
+
   if (coredynp.predictionW > 0) {
     BTB->power_t.readOp.dynamic +=
         BTB->local_result.power.readOp.dynamic * BTB->stats_t.readAc.access +
@@ -3401,6 +3407,7 @@ void InstFetchU::computeEnergy(bool is_tdp) {
     ID_misc->power.readOp.dynamic *= ID_misc->tdp_stats.readAc.access;
 
     power = power + (ID_inst->power + ID_operand->power + ID_misc->power);
+
   } /* if (is_tdp) */
   else {
     //    	icache.rt_power = icache.power_t +
@@ -3435,6 +3442,7 @@ void InstFetchU::computeEnergy(bool is_tdp) {
 
     rt_power = rt_power +
                (ID_inst->rt_power + ID_operand->rt_power + ID_misc->rt_power);
+
     // cout<<"ID inst: "<<ID_inst->rt_power.readOp.dynamic << " ID operand:
     // "<<ID_operand->rt_power.readOp.dynamic<<" ID misc:
     // "<<ID_misc->rt_power.readOp.dynamic<<endl;
@@ -3550,6 +3558,59 @@ void InstFetchU::displayEnergy(uint32_t indent, int plevel, bool is_tdp) {
                 executionTime
          << " W" << endl;
     cout << endl;
+
+    // MOD. Begin. VPREG
+    cout << indent_str << "VPREG VMT Free Pool:" << endl;
+    cout << indent_str_next << "Area = "<< (VPREG_FreePool_Decode->area.get_area()) * coredynp.decodeW * 1e-6
+         << " mm^2" << endl;
+    cout << indent_str_next
+         << "Peak Dynamic = " << VPREG_FreePool_Decode->power.readOp.dynamic * clockRate << " W"
+         << endl;
+    cout << indent_str_next << "Subthreshold Leakage = "
+         << (long_channel ? VPREG_FreePool_Decode->power.readOp.longer_channel_leakage
+                          : VPREG_FreePool_Decode->power.readOp.leakage)
+         << " W" << endl;
+    cout << indent_str_next
+         << "Gate Leakage = " << VPREG_FreePool_Decode->power.readOp.gate_leakage << " W" << endl;
+    cout << indent_str_next
+         << "Runtime Dynamic = " << VPREG_FreePool_Decode->rt_power.readOp.dynamic / executionTime
+         << " W" << endl;
+    cout << endl;
+
+    cout << indent_str << "VPREG VMT RAT Table:" << endl;
+    cout << indent_str_next << "Area = "<< (VPREG_RAT_Decode->area.get_area()) * coredynp.decodeW * 1e-6
+         << " mm^2" << endl;
+    cout << indent_str_next
+         << "Peak Dynamic = " << VPREG_RAT_Decode->power.readOp.dynamic * clockRate << " W"
+         << endl;
+    cout << indent_str_next << "Subthreshold Leakage = "
+         << (long_channel ? VPREG_RAT_Decode->power.readOp.longer_channel_leakage
+                          : VPREG_RAT_Decode->power.readOp.leakage)
+         << " W" << endl;
+    cout << indent_str_next
+         << "Gate Leakage = " << VPREG_RAT_Decode->power.readOp.gate_leakage << " W" << endl;
+    cout << indent_str_next
+         << "Runtime Dynamic = " << VPREG_RAT_Decode->rt_power.readOp.dynamic / executionTime
+         << " W" << endl;
+    cout << endl;
+
+    cout << indent_str << "VPREG Consumers Table:" << endl;
+    cout << indent_str_next << "Area = "<< (VPREG_Consumers_table->area.get_area()) * coredynp.decodeW * 1e-6
+         << " mm^2" << endl;
+    cout << indent_str_next
+         << "Peak Dynamic = " << VPREG_Consumers_table->power.readOp.dynamic * clockRate << " W"
+         << endl;
+    cout << indent_str_next << "Subthreshold Leakage = "
+         << (long_channel ? VPREG_Consumers_table->power.readOp.longer_channel_leakage
+                          : VPREG_Consumers_table->power.readOp.leakage)
+         << " W" << endl;
+    cout << indent_str_next
+         << "Gate Leakage = " << VPREG_Consumers_table->power.readOp.gate_leakage << " W" << endl;
+    cout << indent_str_next
+         << "Runtime Dynamic = " << VPREG_Consumers_table->rt_power.readOp.dynamic / executionTime
+         << " W" << endl;
+    cout << endl;
+    // MOD. End. VPREG
   } else {
     //		cout << indent_str_next << "Instruction Cache    Peak Dynamic =
     //"
@@ -5592,6 +5653,7 @@ void RegFU::computeEnergy(bool is_tdp) {
   IRF->power_t.reset();
   FRF->power_t.reset();
   OPC->power_t.reset();
+
   // IRF->power_t  =  IRF->power_t + IRF->local_result.power;// +
   // xbar_rfu->power + arbiter_rfu->power;
 
@@ -5642,6 +5704,7 @@ void RegFU::computeEnergy(bool is_tdp) {
         IRF->power_t +
         IRF->local_result.power * pppm_lkg; /* *coredynp.pppm_lkg_multhread;*/
     OPC->rt_power = OPC->power_t + OPC->local_result.power * pppm_lkg;
+
     if (XML->sys.architecture == 1) {
       // Each warp operand accesses the crossbar
       xbar_rfu->rt_power.readOp.dynamic =
@@ -5662,6 +5725,7 @@ void RegFU::computeEnergy(bool is_tdp) {
     rt_power =
         rt_power + (IRF->power_t /*+ FRF->power_t*/ + xbar_rfu->rt_power +
                     arbiter_rfu->rt_power + OPC->power_t);
+    
     if (coredynp.regWindowing) {
       RFWIN->rt_power = RFWIN->power_t + RFWIN->local_result.power * pppm_lkg;
       rt_power = rt_power + RFWIN->rt_power;
@@ -5729,6 +5793,45 @@ void RegFU::displayEnergy(uint32_t indent, int plevel, bool is_tdp) {
          << arbiter_rfu->rt_power.readOp.dynamic / executionTime << " W"
          << endl;
     cout << endl;
+
+
+    // MOD. Begin. VPREG
+    cout << indent_str << "VPREG PMT RAT Table:" << endl;
+    cout << indent_str_next << "Area = " << VPREG_RAT_OPC->area.get_area() * 1e-6
+         << " mm^2" << endl;
+    cout << indent_str_next
+         << "Peak Dynamic = " << VPREG_RAT_OPC->power.readOp.dynamic * clockRate
+         << " W" << endl;
+    cout << indent_str_next << "Subthreshold Leakage = "
+         << (long_channel ? VPREG_RAT_OPC->power.readOp.longer_channel_leakage
+                          : VPREG_RAT_OPC->power.readOp.leakage)
+         << " W" << endl;
+    cout << indent_str_next
+         << "Gate Leakage = " << VPREG_RAT_OPC->power.readOp.gate_leakage << " W"
+         << endl;
+    cout << indent_str_next << "Runtime Dynamic = "
+         << VPREG_RAT_OPC->rt_power.readOp.dynamic / executionTime << " W"
+         << endl;
+    cout << endl;
+
+    cout << indent_str << "VPREG PMT Free Pool:" << endl;
+    cout << indent_str_next << "Area = " << VPREG_FreePool_OPC->area.get_area() * 1e-6
+         << " mm^2" << endl;
+    cout << indent_str_next
+         << "Peak Dynamic = " << VPREG_FreePool_OPC->power.readOp.dynamic * clockRate
+         << " W" << endl;
+    cout << indent_str_next << "Subthreshold Leakage = "
+         << (long_channel ? VPREG_FreePool_OPC->power.readOp.longer_channel_leakage
+                          : VPREG_FreePool_OPC->power.readOp.leakage)
+         << " W" << endl;
+    cout << indent_str_next
+         << "Gate Leakage = " << VPREG_FreePool_OPC->power.readOp.gate_leakage << " W"
+         << endl;
+    cout << indent_str_next << "Runtime Dynamic = "
+         << VPREG_FreePool_OPC->rt_power.readOp.dynamic / executionTime << " W"
+         << endl;
+    cout << endl;
+    // MOD. End. VPREG
 
     /*
     cout << indent_str<< "Floating Point RF:" << endl;
@@ -6475,6 +6578,7 @@ InstFetchU ::~InstFetchU() {
     delete ID_misc;
     ID_misc = 0;
   }
+
   if (coredynp.predictionW > 0) {
     if (BTB) {
       delete BTB;
@@ -6559,7 +6663,11 @@ LoadStoreU ::~LoadStoreU() {
   if (!exist) return;
   if (LSQ) {
     delete LSQ;
-    LSQ = 0;
+    LSQ = nullptr;
+  }
+  if(xbar_shared) {
+    delete xbar_shared;
+    xbar_shared = nullptr;
   }
 }
 
@@ -6567,11 +6675,11 @@ MemManU ::~MemManU() {
   if (!exist) return;
   if (itlb) {
     delete itlb;
-    itlb = 0;
+    itlb = nullptr;
   }
   if (dtlb) {
     delete dtlb;
-    dtlb = 0;
+    dtlb = nullptr;
   }
 }
 
@@ -6588,6 +6696,18 @@ RegFU ::~RegFU() {
   if (RFWIN) {
     delete RFWIN;
     RFWIN = 0;
+  }
+  if(xbar_rfu) {
+    delete xbar_rfu;
+    xbar_rfu = nullptr;
+  }
+  if(OPC) {
+    delete OPC;
+    OPC = nullptr;
+  }
+  if(arbiter_rfu) {
+    delete arbiter_rfu;
+    arbiter_rfu = nullptr;
   }
 }
 

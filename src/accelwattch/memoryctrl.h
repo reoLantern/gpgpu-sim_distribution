@@ -41,9 +41,9 @@
 
 #include "XML_Parse.h"
 #include "cacti/parameter.h"
-// #include "io.h"
+//#include "io.h"
 #include "array.h"
-// #include "Undifferentiated_Core_Area.h"
+//#include "Undifferentiated_Core_Area.h"
 #include <vector>
 #include "basic_components.h"
 
@@ -118,7 +118,7 @@ class DRAM : public Component {
   void set_dram_param();
   void computeEnergy(bool is_tdp = true);
   void displayEnergy(uint32_t indent = 0, int plevel = 100, bool is_tdp = true);
-  ~DRAM();
+  ~DRAM() {}
 };
 
 class MemoryController : public Component {
