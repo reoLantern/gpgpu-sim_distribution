@@ -35,6 +35,9 @@ add_library(accelwattch STATIC
             gpgpu_sim_wrapper.cc)
 target_include_directories(accelwattch PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_include_directories(accelwattch PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/cacti)
+# Stage 1h pivot: MICRO 2025 gpgpu_sim_wrapper.cc now transitively includes
+# gpgpu-sim/shader.h → vector_types.h (CUDA header).
+target_include_directories(accelwattch PRIVATE ${CUDAToolkit_INCLUDE_DIRS})
 # Compile options
 target_compile_options(accelwattch PRIVATE "-Wno-unknown-pragmas")
 if($<CONFIG:Debug>)

@@ -63,8 +63,11 @@ find_package(OpenMP REQUIRED)
 target_compile_options(gpgpusim PRIVATE ${OpenMP_CXX_FLAGS})
 target_link_libraries(gpgpusim PUBLIC OpenMP::OpenMP_CXX)
 
+# Stage 1h pivot: accelwattch headers always needed (gpu-sim.h declares
+# gpgpu_sim_wrapper* members unconditionally; power_interface.h includes
+# gpgpu_sim_wrapper.h unconditionally).  Compile-time define still gated.
+target_include_directories(gpgpusim PRIVATE ${GPGPUSIM_POWER_MODEL})
 if(GPGPUSIM_USE_POWER_MODEL)
 target_compile_definitions(gpgpusim PRIVATE GPGPUSIM_POWER_MODEL)
-target_include_directories(gpgpusim PRIVATE ${GPGPUSIM_POWER_MODEL})
 endif()
 
