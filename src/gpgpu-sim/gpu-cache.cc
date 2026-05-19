@@ -315,10 +315,19 @@ enum cache_request_status tag_array::probe(new_addr_type addr, unsigned &idx,
       }
     }
   }
+  // ON_FILL TAG-MSHR: check pending_lines for outstanding fills (Khairy 2018 Fig 6)
+  if (m_config.m_alloc_policy != ON_MISS) {
+    new_addr_type block = m_config.block_addr(addr);
+    if (pending_lines.count(block)) {
+      idx = set_index * m_config.m_assoc;  // dummy idx; no physical line for pending tag
+      return HIT_RESERVED;
+    }
+  }
   if (all_reserved) {
-    assert(m_config.m_alloc_policy == ON_MISS);
-    return RESERVATION_FAIL;  // miss and not enough space in cache to allocate
-                              // on miss
+    if (m_config.m_alloc_policy == ON_MISS)
+      return RESERVATION_FAIL;
+    idx = set_index * m_config.m_assoc;
+    return MISS;
   }
 
   if (invalid_line != (unsigned)-1) {
@@ -353,6 +362,8 @@ enum cache_request_status tag_array::access(new_addr_type addr, unsigned time,
   switch (status) {
     case HIT_RESERVED:
       m_pending_hit++;
+      if (m_lines[idx]->m_tag != m_config.tag(addr)) break;
+      // fall through only for real reserved lines (tag matches physical line)
     case HIT:
       m_lines[idx]->set_last_access_time(time, mf->get_access_sector_mask());
       break;
@@ -372,6 +383,9 @@ enum cache_request_status tag_array::access(new_addr_type addr, unsigned time,
         }
         m_lines[idx]->allocate(m_config.tag(addr), m_config.block_addr(addr),
                                time, mf->get_access_sector_mask());
+      } else {
+        // ON_FILL: register pending tag for secondary miss detection
+        add_pending_line(mf);
       }
       break;
     case SECTOR_MISS:
@@ -410,7 +424,10 @@ void tag_array::fill(new_addr_type addr, unsigned time, mem_fetch *mf,
 void tag_array::fill(new_addr_type addr, unsigned time,
                      mem_access_sector_mask_t mask,
                      mem_access_byte_mask_t byte_mask, bool is_write) {
-  // assert( m_config.m_alloc_policy == ON_FILL );
+  // ON_FILL: remove pending tag BEFORE re-probe to avoid self-interference
+  if (m_config.m_alloc_policy != ON_MISS) {
+    pending_lines.erase(m_config.block_addr(addr));
+  }
   unsigned idx;
   enum cache_request_status status = probe(addr, idx, mask, is_write);
   bool before = m_lines[idx]->is_modified_line();
@@ -455,6 +472,7 @@ void tag_array::flush() {
 
   m_dirty = 0;
   is_used = false;
+  pending_lines.clear();
 }
 
 void tag_array::invalidate() {
@@ -466,6 +484,7 @@ void tag_array::invalidate() {
 
   m_dirty = 0;
   is_used = false;
+  pending_lines.clear();
 }
 
 float tag_array::windowed_miss_rate() const {
@@ -1163,14 +1182,18 @@ bool baseline_cache::fill(mem_fetch *mf, unsigned time) { // MOD. Added L0I
     m_mshrs.remove_entry(e->second.m_block_addr);
   }
   if (has_atomic) {
-    assert(m_config.m_alloc_policy == ON_MISS);
-    cache_block_t *block = m_tag_array->get_block(e->second.m_cache_index);
+    cache_block_t *block;
+    if (m_config.m_alloc_policy == ON_MISS) {
+      block = m_tag_array->get_block(e->second.m_cache_index);
+    } else {
+      unsigned idx;
+      m_tag_array->probe(e->second.m_block_addr, idx, mf, mf->is_write());
+      block = m_tag_array->get_block(idx);
+    }
     if (!block->is_modified_line()) {
       m_tag_array->inc_dirty();
     }
-    block->set_status(MODIFIED,
-                      mf->get_access_sector_mask());  // mark line as dirty for
-                                                      // atomic operation
+    block->set_status(MODIFIED, mf->get_access_sector_mask());
     block->set_byte_mask(mf);
   }
   m_extra_mf_fields.erase(mf);
@@ -1846,8 +1869,13 @@ enum cache_request_status data_cache::process_tag_probe(
     } else if ((probe_status != RESERVATION_FAIL) ||
                (probe_status == RESERVATION_FAIL &&
                 m_config.m_write_alloc_policy == NO_WRITE_ALLOCATE)) {
-      access_status =
-          (this->*m_wr_miss)(addr, cache_index, mf, time, events, probe_status);
+      if (m_config.m_alloc_policy != ON_MISS) {
+        // ON_FILL: writes bypass L1 data, go directly to L2
+        access_status = wr_miss_no_wa(addr, cache_index, mf, time, events, probe_status);
+      } else {
+        access_status =
+            (this->*m_wr_miss)(addr, cache_index, mf, time, events, probe_status);
+      }
     } else {
       // the only reason for reservation fail here is LINE_ALLOC_FAIL (i.e all
       // lines are reserved)

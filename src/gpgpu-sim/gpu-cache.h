@@ -722,14 +722,8 @@ class cache_config {
              "line on fill. ");
     }
 
-    if ((m_write_alloc_policy == FETCH_ON_WRITE ||
-         m_write_alloc_policy == LAZY_FETCH_ON_READ) &&
-        m_alloc_policy == ON_FILL) {
-      assert(
-          0 &&
-          "Invalid cache configuration: FETCH_ON_WRITE and LAZY_FETCH_ON_READ "
-          "cannot work properly with ON_FILL policy. Cache must be ON_MISS. ");
-    }
+    // ON_FILL + LAZY_FETCH_ON_READ: safe because process_tag_probe routes
+    // ON_FILL writes through wr_miss_no_wa, bypassing the write-allocate handler.
     if (m_cache_type == SECTOR) {
       assert(m_line_sz / SECTOR_SIZE == SECTOR_CHUNCK_SIZE &&
              m_line_sz % SECTOR_SIZE == 0);
