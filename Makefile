@@ -149,8 +149,13 @@ $(SIM_LIB_DIR)/libcudart.so: makedirs $(LIBS) cudalib
 			$(SIM_OBJ_FILES_DIR)/cuda-sim/*.o \
 			$(SIM_OBJ_FILES_DIR)/cuda-sim/decuda_pred_table/*.o \
 			$(SIM_OBJ_FILES_DIR)/gpgpu-sim/*.o \
+			$(SIM_OBJ_FILES_DIR)/remodeling/*.o \
+			$(SIM_OBJ_FILES_DIR)/fusedMemory/*.o \
 			$(SIM_OBJ_FILES_DIR)/$(INTERSIM)/*.o \
-			$(SIM_OBJ_FILES_DIR)/*.o -lm -lz -lGL -pthread -fopenmp \
+			$(SIM_OBJ_FILES_DIR)/*.o \
+			$(BUILD_ROOT)/../../util/traces_enhanced/obj/*.o \
+			$(BUILD_ROOT)/../../util/traces_enhanced/pb_trace/obj/*.o \
+			-lm -lz -lGL -pthread -fopenmp -lprotobuf \
 			$(MCPAT) \
 			-o $(SIM_LIB_DIR)/libcudart.so
 	if [ ! -f $(SIM_LIB_DIR)/libcudart.so.2 ]; then ln -s libcudart.so $(SIM_LIB_DIR)/libcudart.so.2; fi
