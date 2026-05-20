@@ -354,13 +354,13 @@ void Subcore::issue(SM *shared_sm) {
   bool is_issued_inst = false;  // Achieved to issue an instruction?
   bool is_issue_port_busy = true;
   bool is_next_stage_availabe = true;
-  // bool has_been_possible_to_switch_warp = false;
-  // bool is_any_waiting_in_inst_barrier = false;
-  // bool is_any_waiting_in_stall_count = false;
-  // bool is_any_waiting_in_wait_barrier = false;
-  // bool is_any_waiting_in_yield = false;
-  // bool is_any_waiting_in_fu_occupied = false;
-  // bool is_any_waiting_l1c = false;
+  bool has_been_possible_to_switch_warp = false;
+  bool is_any_waiting_in_inst_barrier = false;
+  bool is_any_waiting_in_stall_count = false;
+  bool is_any_waiting_in_wait_barrier = false;
+  bool is_any_waiting_in_yield = false;
+  bool is_any_waiting_in_fu_occupied = false;
+  bool is_any_waiting_l1c = false;
 
   modify_warp_state();
   if(m_num_pending_cycles_with_issue_port_busy > 0) {
@@ -465,33 +465,33 @@ void Subcore::issue(SM *shared_sm) {
           break;
         }else {
           if(!are_switch_warp_conditions_ready) {
-            // has_been_possible_to_switch_warp = true;
-            // if(!is_fu_available) {
-            //   is_any_waiting_in_fu_occupied = true;
-            // }
-            // if(!is_not_warp_waiting_in_programmer_barrier || !is_not_warp_waiting_ldgdepbar) {
-            //   is_any_waiting_in_inst_barrier = true;
-            // }
-            // if(!is_not_yield) {
-            //   is_any_waiting_in_yield = true;
-            // }
-            // if(!is_stall_counter_0) {
-            //   is_any_waiting_in_stall_count = true;
-            // }
-            // if(!are_wait_barriers_ready) {
-            //   is_any_waiting_in_wait_barrier = true;
-            // }
-            // if(!is_l1c_ready) {
-            //   is_any_waiting_l1c = true;
-            // }
+            has_been_possible_to_switch_warp = true;
+            if(!is_fu_available) {
+              is_any_waiting_in_fu_occupied = true;
+            }
+            if(!is_not_warp_waiting_in_programmer_barrier || !is_not_warp_waiting_ldgdepbar) {
+              is_any_waiting_in_inst_barrier = true;
+            }
+            if(!is_not_yield) {
+              is_any_waiting_in_yield = true;
+            }
+            if(!is_stall_counter_0) {
+              is_any_waiting_in_stall_count = true;
+            }
+            if(!are_wait_barriers_ready) {
+              is_any_waiting_in_wait_barrier = true;
+            }
+            if(!is_l1c_ready) {
+              is_any_waiting_l1c = true;
+            }
           }else {
             if(!is_the_greedy_warp || (can_l1c_switch_warp)) {
-              // has_been_possible_to_switch_warp = true;
-              // if(!is_l1c_ready) {
-              //   is_any_waiting_l1c = true;
-              // }
+              has_been_possible_to_switch_warp = true;
+              if(!is_l1c_ready) {
+                is_any_waiting_l1c = true;
+              }
             }else {
-              // has_been_possible_to_switch_warp = false;
+              has_been_possible_to_switch_warp = false;
               break;
             }
           }
@@ -514,12 +514,12 @@ void Subcore::issue(SM *shared_sm) {
     shared_sm->m_sm_stats.m_stats_map["total_num_cycles_issue_stage_stall_no_valid_instruction"]->increment_with_integer(1);
   }else { // It has been possible to switch to another warp, but none where ready to issue
     shared_sm->m_sm_stats.m_stats_map["total_num_cycles_issue_stage_stall_no_warps_ready"]->increment_with_integer(1);
-    // m_stats->total_num_cycles_issue_stage_stall_at_least_one_warp_with_fu_occupied += is_any_waiting_in_fu_occupied;
-    // m_stats->total_num_cycles_issue_stage_stall_at_least_one_warp_waiting_inst_barrier += is_any_waiting_in_inst_barrier;
-    // m_stats->total_num_cycles_issue_stage_stall_at_least_one_warp_waiting_yield += is_any_waiting_in_yield;
-    // m_stats->total_num_cycles_issue_stage_stall_at_least_one_warp_waiting_stall_count += is_any_waiting_in_stall_count;
-    // m_stats->total_num_cycles_issue_stage_stall_at_least_one_warp_waiting_wait_barrier += is_any_waiting_in_wait_barrier;
-    // m_stats->total_num_cycles_issue_stage_stall_at_least_one_warp_waiting_l1c += is_any_waiting_l1c;
+    shared_sm->m_sm_stats.m_stats_map["total_num_cycles_issue_stage_stall_at_least_one_warp_with_fu_occupied"]->increment_with_integer(is_any_waiting_in_fu_occupied);
+    shared_sm->m_sm_stats.m_stats_map["total_num_cycles_issue_stage_stall_at_least_one_warp_waiting_inst_barrier"]->increment_with_integer(is_any_waiting_in_inst_barrier);
+    shared_sm->m_sm_stats.m_stats_map["total_num_cycles_issue_stage_stall_at_least_one_warp_waiting_yield"]->increment_with_integer(is_any_waiting_in_yield);
+    shared_sm->m_sm_stats.m_stats_map["total_num_cycles_issue_stage_stall_at_least_one_warp_waiting_stall_count"]->increment_with_integer(is_any_waiting_in_stall_count);
+    shared_sm->m_sm_stats.m_stats_map["total_num_cycles_issue_stage_stall_at_least_one_warp_waiting_wait_barrier"]->increment_with_integer(is_any_waiting_in_wait_barrier);
+    shared_sm->m_sm_stats.m_stats_map["total_num_cycles_issue_stage_stall_at_least_one_warp_waiting_l1c"]->increment_with_integer(is_any_waiting_l1c);
   }
   shared_sm->m_sm_stats.m_stats_map["total_num_cycles_issue_stage_evaluated"]->increment_with_integer(1);
 

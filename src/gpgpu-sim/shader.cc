@@ -1231,17 +1231,24 @@ void shader_core_stats::print_remodeling_stats(FILE *fout) {
   // fprintf(fout, "total_num_constant_cache_reads = %lld\n", total_num_constant_cache_reads);
   // 
 
-  // fprintf(fout, "total_num_cycles_issue_stage_evaluated = %lld\n", total_num_cycles_issue_stage_evaluated);
-  // fprintf(fout, "total_num_cycles_issue_stage_issuing = %lld\n", total_num_cycles_issue_stage_issuing);
-  // fprintf(fout, "total_num_cycles_issue_stage_stall_issue_port_busy = %lld\n", total_num_cycles_issue_stage_stall_issue_port_busy);
-  // fprintf(fout, "total_num_cycles_issue_stage_stall_no_valid_instruction = %lld\n", total_num_cycles_issue_stage_stall_no_valid_instruction);
-  // fprintf(fout, "total_num_cycles_issue_stage_stall_no_warps_ready = %lld\n", total_num_cycles_issue_stage_stall_no_warps_ready);
-  // fprintf(fout, "total_num_cycles_issue_stage_stall_at_least_one_warp_with_fu_occupied = %lld\n", total_num_cycles_issue_stage_stall_at_least_one_warp_with_fu_occupied);
-  // fprintf(fout, "total_num_cycles_issue_stage_stall_at_least_one_warp_waiting_inst_barrier = %lld\n", total_num_cycles_issue_stage_stall_at_least_one_warp_waiting_inst_barrier);
-  // fprintf(fout, "total_num_cycles_issue_stage_stall_at_least_one_warp_waiting_wait_barrier = %lld\n", total_num_cycles_issue_stage_stall_at_least_one_warp_waiting_wait_barrier);
-  // fprintf(fout, "total_num_cycles_issue_stage_stall_at_least_one_warp_waiting_yield = %lld\n", total_num_cycles_issue_stage_stall_at_least_one_warp_waiting_yield);
-  // fprintf(fout, "total_num_cycles_issue_stage_stall_at_least_one_warp_waiting_stall_count = %lld\n", total_num_cycles_issue_stage_stall_at_least_one_warp_waiting_stall_count);
-  // fprintf(fout, "total_num_cycles_issue_stage_stall_at_least_one_warp_waiting_l1c = %lld\n", total_num_cycles_issue_stage_stall_at_least_one_warp_waiting_l1c);
+  unsigned long long total_num_cycles_issue_stage_stall_at_least_one_warp_with_fu_occupied = m_gpu->m_gpu_per_sm_stats.m_stats_map["total_num_cycles_issue_stage_stall_at_least_one_warp_with_fu_occupied"]->get_value();
+  unsigned long long total_num_cycles_issue_stage_stall_at_least_one_warp_waiting_inst_barrier = m_gpu->m_gpu_per_sm_stats.m_stats_map["total_num_cycles_issue_stage_stall_at_least_one_warp_waiting_inst_barrier"]->get_value();
+  unsigned long long total_num_cycles_issue_stage_stall_at_least_one_warp_waiting_wait_barrier = m_gpu->m_gpu_per_sm_stats.m_stats_map["total_num_cycles_issue_stage_stall_at_least_one_warp_waiting_wait_barrier"]->get_value();
+  unsigned long long total_num_cycles_issue_stage_stall_at_least_one_warp_waiting_yield = m_gpu->m_gpu_per_sm_stats.m_stats_map["total_num_cycles_issue_stage_stall_at_least_one_warp_waiting_yield"]->get_value();
+  unsigned long long total_num_cycles_issue_stage_stall_at_least_one_warp_waiting_stall_count = m_gpu->m_gpu_per_sm_stats.m_stats_map["total_num_cycles_issue_stage_stall_at_least_one_warp_waiting_stall_count"]->get_value();
+  unsigned long long total_num_cycles_issue_stage_stall_at_least_one_warp_waiting_l1c = m_gpu->m_gpu_per_sm_stats.m_stats_map["total_num_cycles_issue_stage_stall_at_least_one_warp_waiting_l1c"]->get_value();
+
+  fprintf(fout, "total_num_cycles_issue_stage_evaluated = %lld\n", total_num_cycles_issue_stage_evaluated);
+  fprintf(fout, "total_num_cycles_issue_stage_issuing = %lld\n", total_num_cycles_issue_stage_issuing);
+  fprintf(fout, "total_num_cycles_issue_stage_stall_issue_port_busy = %lld\n", total_num_cycles_issue_stage_stall_issue_port_busy);
+  fprintf(fout, "total_num_cycles_issue_stage_stall_no_valid_instruction = %lld\n", total_num_cycles_issue_stage_stall_no_valid_instruction);
+  fprintf(fout, "total_num_cycles_issue_stage_stall_no_warps_ready = %lld\n", total_num_cycles_issue_stage_stall_no_warps_ready);
+  fprintf(fout, "total_num_cycles_issue_stage_stall_at_least_one_warp_with_fu_occupied = %lld\n", total_num_cycles_issue_stage_stall_at_least_one_warp_with_fu_occupied);
+  fprintf(fout, "total_num_cycles_issue_stage_stall_at_least_one_warp_waiting_inst_barrier = %lld\n", total_num_cycles_issue_stage_stall_at_least_one_warp_waiting_inst_barrier);
+  fprintf(fout, "total_num_cycles_issue_stage_stall_at_least_one_warp_waiting_wait_barrier = %lld\n", total_num_cycles_issue_stage_stall_at_least_one_warp_waiting_wait_barrier);
+  fprintf(fout, "total_num_cycles_issue_stage_stall_at_least_one_warp_waiting_yield = %lld\n", total_num_cycles_issue_stage_stall_at_least_one_warp_waiting_yield);
+  fprintf(fout, "total_num_cycles_issue_stage_stall_at_least_one_warp_waiting_stall_count = %lld\n", total_num_cycles_issue_stage_stall_at_least_one_warp_waiting_stall_count);
+  fprintf(fout, "total_num_cycles_issue_stage_stall_at_least_one_warp_waiting_l1c = %lld\n", total_num_cycles_issue_stage_stall_at_least_one_warp_waiting_l1c);
   // fprintf(fout, "total_num_kernel_not_in_binary = %u\n", num_kernel_not_in_binary);
   
   // fprintf(fout, "total_percentage_cycles_issue_stage_issuing = %.4Lf\n", ((long double) total_num_cycles_issue_stage_issuing / total_num_cycles_issue_stage_evaluated) * 100);
