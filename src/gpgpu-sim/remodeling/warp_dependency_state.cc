@@ -89,7 +89,7 @@ void Dependency_State::reset() {
 
 void Dependency_State::cycle() {
     m_yield >>=1;
-    m_stall_counter >>=1;
+    if (m_stall_counter > 0) m_stall_counter--;
 }
 
 void Dependency_State::set_yield() {
