@@ -36,7 +36,6 @@
 #include <stdio.h>
 #include "../../constants.h"
 
-class shader_core_ctx; // Definition to be allowed to compile. Code of this class in shader.h and shader.cc
 class read_only_cache;  // Definition to be allowed to compile. Code of this class in gpu-cache.h and gpu-cache.cc
 class shader_core_ctx_wrapper;  // Definition to be allowed to compile. Code of this class in gpu-cache.h and gpu-cache.cc
 

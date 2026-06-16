@@ -463,7 +463,6 @@ inline unsigned wid_from_hw_tid(unsigned tid, unsigned warp_size) {
   return tid / warp_size;
 };
 
-
 int register_bank(int regnum, int wid, unsigned num_banks,
                   unsigned bank_warp_shift, bool sub_core_model,
                   int banks_per_sched, unsigned sched_id);
@@ -494,14 +493,7 @@ enum concrete_scheduler {
   NUM_CONCRETE_SCHEDULERS
 };
 
-
-
-
-
-
-
 // Static Warp Limiting Scheduler
-
 
 class barrier_set_t {
  public:
@@ -569,19 +561,10 @@ struct ifetch_buffer_t {
 
 class shader_core_config;
 
-
-
-
-
-
-
-
-
 class simt_core_cluster;
 class shader_memory_interface;
 class shader_core_mem_fetch_allocator;
 class cache_t;
-
 
 enum pipeline_stage_name_t {
   ID_OC_SP = 0,
@@ -861,7 +844,6 @@ class shader_core_config : public core_config {
   unsigned int filter_first_kernel_id; // If it has a value of 1 or 0 it is disabled
   unsigned int filter_last_kernel_id; // If it has a value of 1 or 0 it is disabled
 
-
   // MOD. Begin. Extended IBuffer
   bool is_extended_ibuffer_enabled;
   int extended_ibuffer_size;
@@ -894,8 +876,7 @@ class shader_core_config : public core_config {
   double vpreg_collector_unit_extra_dynamic_power;
   // MOD. Begin VPREG
   // MOD. Begin. Remodeling
-  bool is_SM_remodeling_enabled; 
-  bool is_remodeling_scoreboarding_enabled; 
+  bool is_remodeling_scoreboarding_enabled;
   int num_subcores_in_SM;
   bool is_ibuffer_remodeled_enabled;
   int ibuffer_remodeled_size;
@@ -1062,7 +1043,6 @@ struct shader_core_stats_pod {
   unsigned num_scheduler_stall_cycle_due_to_war_scoreboard; // MOD. Scoreboard_reads
   unsigned num_scheduler_stall_cycle_dependencies_other_reasons_not_war_scoreboard; // MOD. Scoreboard_reads
 
-
   // MOD. Begin. IBuffer_ooo stats
   // First dimension is kernel, second is shader id, third dimension is warp
    
@@ -1183,7 +1163,6 @@ struct shader_core_stats_pod {
   std::vector<std::vector<unsigned long long>> bank_wb_from_last_power_sample; // MOD. Custom powermodel stats 
   std::vector<std::vector<unsigned long long>> collector_unit_allocations_from_last_power_sample; // MOD. Custom powermodel stats 
   // MOD. End. custom Stats
-
 
   unsigned *m_num_sim_insn;   // number of scalar thread instructions committed
                               // by this shader core
@@ -1779,7 +1758,6 @@ class shader_core_stats : public shader_core_stats_pod {
   const shader_core_config *my_custom_config; // MOD. Declared attribute to prevent crashing due to segFault because of adding to many stats doesn't like it
   const shader_core_config *m_config;
 
-
   // Counts the instructions issued for each dynamic warp.
   std::vector<std::vector<unsigned>> m_shader_dynamic_warp_issue_distro;
   std::vector<unsigned> m_last_shader_dynamic_warp_issue_distro;
@@ -1829,7 +1807,6 @@ class shader_core_mem_fetch_allocator : public mem_fetch_allocator {
   unsigned m_cluster_id;
   const memory_config *m_memory_config;
 };
-
 
 class simt_core_cluster {
  public:
@@ -1972,6 +1949,5 @@ class perfect_memory_interface : public mem_fetch_interface {
   shader_core_ctx_wrapper *m_core;
   simt_core_cluster *m_cluster;
 };
-
 
 #endif /* SHADER_H */

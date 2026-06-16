@@ -83,7 +83,6 @@
 #include "remodeling/sm.h"
 #include "remodeling/new_stats.h"
 
-
 #define PRIORITIZE_MSHR_OVER_WB 1
 #define MAX(a, b) (((a) > (b)) ? (a) : (b))
 #define MIN(a, b) (((a) < (b)) ? (a) : (b))
@@ -112,7 +111,6 @@ mem_fetch *shader_core_mem_fetch_allocator::alloc(
   return mf;
 }
 /////////////////////////////////////////////////////////////////////////////
-
 
 void check_kernel_launch_limitation(
     const kernel_info_t &k, const shader_core_config *shader_config,
@@ -173,12 +171,6 @@ void check_kernel_launch_limitation(
 // MOD. Begin. Fix WAR at baseline
 // MOD. End
 
-
-
-
-
-
-
 // return the next pc of a thread
 
 void gpgpu_sim::get_pdom_stack_top_info(unsigned sid, unsigned tid,
@@ -186,8 +178,6 @@ void gpgpu_sim::get_pdom_stack_top_info(unsigned sid, unsigned tid,
   unsigned cluster_id = m_shader_config->sid_to_cluster(sid);
   m_cluster[cluster_id]->get_pdom_stack_top_info(sid, tid, pc, rpc);
 }
-
-
 
 // MOD. Begin. Custom Stats
 void shader_core_stats::compute_derived_custom_stats()
@@ -347,8 +337,6 @@ void shader_core_stats::print_custom_shader_stats(FILE *fout) const {
   double percentage_allocated_wb_respect_expected = ( ((double) tot_num_allocated_wb)/ tot_num_expected_wb) * 100;
   fprintf(fout, "percentage_allocated_wb_respect_expected = %.4lf\n", percentage_allocated_wb_respect_expected);
 
-
-
   // MOD. Begin. Fix misaligned fetched instructions
   double per_fetch_instruction_misalignments = tot_fetch_instruction_misalignments ? ( ( ((double) tot_fetch_instruction_misalignments)/ tot_fetch_requests) * 100 ) : 0; // Avoid NaN because there is not any fetch instruction misalignment
   fprintf(fout, "tot_fetch_instruction_misalignments = %lld\n", tot_fetch_instruction_misalignments);
@@ -381,7 +369,6 @@ void shader_core_stats::print_custom_shader_stats(FILE *fout) const {
   fprintf(fout, "total_cyles_in_ldst_unit_arbiter_latch_per_ldst_unit_instruction = %.4Lf\n", total_cyles_in_ldst_unit_arbiter_latch_per_ldst_unit_instruction); // MOD. Fixed LDST_Unit model
   // MOD. End. Memory stats
 }
-
 
 void shader_core_stats::print_coalescing_stats(FILE *out) {
   total_l1d_instructions = m_gpu-> m_gpu_per_sm_stats.m_stats_map["total_l1d_instructions"]->get_value();
@@ -438,7 +425,6 @@ void shader_core_stats::print_coalescing_stats(FILE *out) {
   long double total_percentage_coalesced_interwarp_less_equal_than_100_cyc_l1d = total_num_coalesced_interwarp_l1d ? ( ( ((double) total_num_coalesced_interwarp_less_equal_than_100_cyc_l1d)/ total_num_coalesced_interwarp_l1d) * 100 ) : 0; // Avoid NaN
   long double total_percentage_coalesced_interwarp_less_equal_than_200_cyc_l1d = total_num_coalesced_interwarp_l1d ? ( ( ((double) total_num_coalesced_interwarp_less_equal_than_200_cyc_l1d)/ total_num_coalesced_interwarp_l1d) * 100 ) : 0; // Avoid NaN
   long double total_percentage_coalesced_interwarp_bigger_than_200_cyc_l1d = total_num_coalesced_interwarp_l1d ? ( ( ((double) total_num_coalesced_interwarp_bigger_than_200_cyc_l1d)/ total_num_coalesced_interwarp_l1d) * 100 ) : 0; // Avoid NaN
-
 
   fprintf(out, "total_percentage_coalesced_intrawarp_l1d = %.4Lf\n", total_percentage_coalesced_intrawarp_l1d);
   fprintf(out, "total_percentage_coalesced_interwarp_l1d = %.4Lf\n", total_percentage_coalesced_interwarp_l1d);
@@ -513,7 +499,6 @@ void shader_core_stats::print_coalescing_stats(FILE *out) {
   long double total_percentage_coalesced_interwarp_less_equal_than_200_cyc_const = total_num_coalesced_interwarp_const ? ( ( ((double) total_num_coalesced_interwarp_less_equal_than_200_cyc_const)/ total_num_coalesced_interwarp_const) * 100 ) : 0; // Avoid NaN
   long double total_percentage_coalesced_interwarp_bigger_than_200_cyc_const = total_num_coalesced_interwarp_const ? ( ( ((double) total_num_coalesced_interwarp_bigger_than_200_cyc_const)/ total_num_coalesced_interwarp_const) * 100 ) : 0; // Avoid NaN
 
-
   fprintf(out, "total_percentage_coalesced_intrawarp_const = %.4Lf\n", total_percentage_coalesced_intrawarp_const);
   fprintf(out, "total_percentage_coalesced_interwarp_const = %.4Lf\n", total_percentage_coalesced_interwarp_const);
   fprintf(out, "total_percentage_not_coalesced_const = %.4Lf\n", total_percentage_not_coalesced_const);
@@ -537,7 +522,6 @@ void shader_core_stats::print_coalescing_stats(FILE *out) {
   fprintf(out, "total_percentage_coalesced_interwarp_less_equal_than_100_cyc_const = %.4Lf\n", total_percentage_coalesced_interwarp_less_equal_than_100_cyc_const);
   fprintf(out, "total_percentage_coalesced_interwarp_less_equal_than_200_cyc_const = %.4Lf\n", total_percentage_coalesced_interwarp_less_equal_than_200_cyc_const);
   fprintf(out, "total_percentage_coalesced_interwarp_bigger_than_200_cyc_const = %.4Lf\n", total_percentage_coalesced_interwarp_bigger_than_200_cyc_const);
-
 
   unsigned long long total_num_accesses_sharedmem = m_gpu->m_coalescing_stats_across_sms_sharedmem.m_num_total_eval_accesses;
   unsigned long long total_num_coalesced_intrawarp_sharedmem = m_gpu->m_coalescing_stats_across_sms_sharedmem.m_num_intrawarp_coalescing;
@@ -587,7 +571,6 @@ void shader_core_stats::print_coalescing_stats(FILE *out) {
   long double total_percentage_coalesced_interwarp_less_equal_than_100_cyc_sharedmem = total_num_coalesced_interwarp_sharedmem ? ( ( ((double) total_num_coalesced_interwarp_less_equal_than_100_cyc_sharedmem)/ total_num_coalesced_interwarp_sharedmem) * 100 ) : 0; // Avoid NaN
   long double total_percentage_coalesced_interwarp_less_equal_than_200_cyc_sharedmem = total_num_coalesced_interwarp_sharedmem ? ( ( ((double) total_num_coalesced_interwarp_less_equal_than_200_cyc_sharedmem)/ total_num_coalesced_interwarp_sharedmem) * 100 ) : 0; // Avoid NaN
   long double total_percentage_coalesced_interwarp_bigger_than_200_cyc_sharedmem = total_num_coalesced_interwarp_sharedmem ? ( ( ((double) total_num_coalesced_interwarp_bigger_than_200_cyc_sharedmem)/ total_num_coalesced_interwarp_sharedmem) * 100 ) : 0; // Avoid NaN
-
 
   fprintf(out, "total_percentage_coalesced_intrawarp_sharedmem = %.4Lf\n", total_percentage_coalesced_intrawarp_sharedmem);
   fprintf(out, "total_percentage_coalesced_interwarp_sharedmem = %.4Lf\n", total_percentage_coalesced_interwarp_sharedmem);
@@ -642,7 +625,6 @@ void shader_core_stats::print_remodeling_stats(FILE *fout) {
   fprintf(fout, "total_num_constant_cache_different_blocks = %zu\n", all_const_cache_accessed_blocks.size());
   fprintf(fout, "total_num_global_memory_blocks = %zu\n", all_global_memory_accessed_blocks.size());
   fprintf(fout, "total_num_different_virtual_pages = %zu\n", all_virtual_pages_accessed.size());
-
 
   unsigned long long total_num_evals_rf = m_gpu-> m_gpu_per_sm_stats.m_stats_map["total_num_evals_rf"]->get_value();
   unsigned long long total_num_evals_rf_with_conflict = m_gpu-> m_gpu_per_sm_stats.m_stats_map["total_num_evals_rf_with_conflict"]->get_value();
@@ -1093,14 +1075,6 @@ void shader_core_stats::visualizer_print(gzFile visualizer_file) {
   gzprintf(visualizer_file, "\n");
 }
 
-
-
-
-
-
-
-
-
 address_type coalesced_segment(address_type addr,
                                unsigned segment_size_lg2bytes) {
   return (addr >> segment_size_lg2bytes);
@@ -1111,50 +1085,7 @@ address_type coalesced_segment(address_type addr,
 
 /////////////////////////////////////////////////////////////////////////////////////////
 
-
-
-
-
-
-
-
-
-
-
-
-
-
 // MOD. End. VPREG
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 /*
     virtual void issue( register_set& source_reg )
@@ -1164,14 +1095,8 @@ address_type coalesced_segment(address_type addr,
     }
 */
 
-
-
-
-
-
 /*
 */
-
 
 void gpgpu_sim::shader_print_runtime_stat(FILE *fout) {
   /*
@@ -1433,9 +1358,6 @@ void warp_inst_t::print(FILE *fout) const {
   fprintf(fout, "\n");
 }
 
-
-
-
 unsigned int shader_core_config::max_cta(const kernel_info_t &k) const {
   unsigned threads_per_cta = k.threads_per_cta();
   const class function_info *kernel = k.entry();
@@ -1598,10 +1520,7 @@ void shader_core_config::set_pipeline_latency() {
   max_tensor_core_latency = tensor_latency;
 }
 
-
 // Flushes all content of the cache to memory
-
-
 
 // modifiers
 
@@ -1776,25 +1695,8 @@ void barrier_set_t::dump() {
   fflush(stdout);
 }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 // MOD. Begin. L0I
 // MOD. End. L0I
-
-
 
 kernel_info_t* shd_warp_t::get_kernel_info() const { return m_shader->get_kernel_info(); }
 
@@ -1868,10 +1770,6 @@ void shd_warp_t::print_ibuffer(FILE *fout) const {
   fprintf(fout, "\n");
 }
 
-
-
-
-
 int register_bank(int regnum, int wid, unsigned num_banks,
                   unsigned bank_warp_shift, bool sub_core_model,
                   int banks_per_sched, unsigned sched_id) { 
@@ -1890,18 +1788,9 @@ int register_bank(int regnum, int wid, unsigned num_banks,
     return bank % num_banks;
 }
 
-
-
-
-
 // MOD. Begin. OPC custom stats
 
 // MOD. End. OPC custom stats
-
-
-
-
-
 
 simt_core_cluster::simt_core_cluster(class gpgpu_sim *gpu, unsigned cluster_id,
                                      const shader_core_config *config,

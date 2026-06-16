@@ -148,9 +148,6 @@ void power_config::reg_options(class OptionParser *opp) {
                          &g_power_per_cycle_dump,
                          "Dump detailed power output each cycle", "0");
 
-
-
-
   option_parser_register(opp, "-hw_perf_file_name", OPT_CSTR,
                          &g_hw_perf_file_name, "Hardware Performance Statistics file",
                          "hw_perf.csv");
@@ -232,7 +229,6 @@ void power_config::reg_options(class OptionParser *opp) {
   option_parser_register(opp, "-accelwattch_hybrid_perfsim_VOLTAGE", OPT_BOOL,
                          &accelwattch_hybrid_configuration[HW_VOLTAGE],
                          "Get Chip Voltage for Accelwattch-Hybrid from Accel-Sim", "0");
-
 
   // Output Data Formats
   option_parser_register(
@@ -859,7 +855,6 @@ void shader_core_config::reg_options(class OptionParser *opp) {
                          "0");
   // MOD. End. Extended IBuffer
 
-
   // MOD. Begin VPREG
   option_parser_register(
       opp, "-vpreg_mode", OPT_CSTR, &vpreg_mode_string,
@@ -933,12 +928,6 @@ void shader_core_config::reg_options(class OptionParser *opp) {
   // MOD. End VPREG
 
   // MOD. Begin. Remodeling
-  option_parser_register(
-      opp, "-is_SM_remodeling_enabled", OPT_BOOL, &is_SM_remodeling_enabled,
-      "If enabled, the simulator will use a more accurate model for the SMs "
-      "based on NVIDIA Volta/Turing/Ampere."
-      "is_SM_remodeling_enabled (default = disabled)",
-      "0");
   option_parser_register(opp, "-num_subcores_in_SM", OPT_INT32,
                          &num_subcores_in_SM,
                          "Configures the number of subcores in the SM. Usually "
@@ -1852,7 +1841,6 @@ void gpgpu_sim::create_gpu_per_sm_stats() {
     m_gpu_per_sm_stats.add_unsigned_long_long_stat("warp_occ_dist" + std::to_string(i), AllowedTypesStats::UNSIGNED_LONG_LONG, 0, "= ", "", true, true, false);
   }
 
-  
 }
 
 void gpgpu_sim::gather_gpu_per_sm_stats() {
@@ -2471,10 +2459,6 @@ unsigned gpgpu_sim::threads_per_core() const {
   return m_shader_config->n_thread_per_shader;
 }
 
-
-
-
-
 ////////////////////////////////////////////////////////////////////////////////////////////////
 
 /**
@@ -2483,7 +2467,6 @@ unsigned gpgpu_sim::threads_per_core() const {
  * @param kernel
  *    object that tells us which kernel to ask for a CTA from
  */
-
 
 ///////////////////////////////////////////////////////////////////////////////////////////
 
@@ -2535,8 +2518,6 @@ void gpgpu_sim::issue_block2core() {
 unsigned long long g_single_step =
     0;  // set this in gdb to single step the pipeline
 
-
-
 std::unique_ptr<grid_barrier_notify_info> gpgpu_sim::register_grid_barrier_arrivement(mem_fetch *mf) {
   std::unique_ptr<grid_barrier_notify_info> notifcation_res = nullptr;
   unsigned int kernel_id = mf->get_kernel_id();
@@ -2566,7 +2547,6 @@ void gpgpu_sim::decrease_num_threads_kernel(unsigned kernel_id, unsigned num_thr
   assert(m_grid_barrier_status[kernel_id].num_threads_kernel >= num_threads);
   m_grid_barrier_status[kernel_id].num_threads_kernel -= num_threads;
 }
-
 
 void gpgpu_sim::cycle() {
   m_active_sms_this_cycle = 0;
@@ -2889,7 +2869,6 @@ void gpgpu_sim::cycle() {
       #endif
   }
 }
-
 
 void gpgpu_sim::perf_memcpy_to_gpu(size_t dst_start_addr, size_t count) {
   if (m_memory_config->m_perf_sim_memcpy) {
