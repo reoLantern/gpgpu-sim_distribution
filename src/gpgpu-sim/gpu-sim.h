@@ -994,14 +994,4 @@ class gpgpu_sim : public gpgpu_t {
   }
 };
 
-class exec_gpgpu_sim : public gpgpu_sim {
- public:
-  exec_gpgpu_sim(const gpgpu_sim_config &config, gpgpu_context *ctx)
-      : gpgpu_sim(config, ctx) {
-    createSIMTCluster();
-  }
-
-  virtual void createSIMTCluster();
-};
-
 #endif

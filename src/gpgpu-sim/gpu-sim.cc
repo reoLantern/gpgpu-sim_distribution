@@ -1655,14 +1655,6 @@ void gpgpu_sim::stop_all_running_kernels() {
   }
 }
 
-void exec_gpgpu_sim::createSIMTCluster() {
-  m_cluster = new simt_core_cluster *[m_shader_config->n_simt_clusters];
-  for (unsigned i = 0; i < m_shader_config->n_simt_clusters; i++)
-    m_cluster[i] =
-        new exec_simt_core_cluster(this, i, m_shader_config, m_memory_config,
-                                   m_shader_stats, m_memory_stats);
-}
-
 gpgpu_sim::gpgpu_sim(const gpgpu_sim_config &config, gpgpu_context *ctx)
     : gpgpu_t(config, ctx), m_gpu_per_sm_stats("GPU_per_SM_stats"),
     m_coalescing_stats_across_sms_l1d("l1d", _memory_space_t::global_space),
@@ -2629,14 +2621,6 @@ void shader_core_ctx::release_shader_resource_1block(unsigned hw_ctaid,
  * @param kernel
  *    object that tells us which kernel to ask for a CTA from
  */
-
-unsigned exec_shader_core_ctx::sim_init_thread(
-    kernel_info_t &kernel, ptx_thread_info **thread_info, int sid, unsigned tid,
-    unsigned threads_left, unsigned num_threads, core_t *core,
-    unsigned hw_cta_id, unsigned hw_warp_id, gpgpu_t *gpu) {
-  return ptx_sim_init_thread(kernel, thread_info, sid, tid, threads_left,
-                             num_threads, core, hw_cta_id, hw_warp_id, gpu);
-}
 
 void shader_core_ctx::issue_block2core(kernel_info_t &kernel) {
   if (!m_config->gpgpu_concurrent_kernel_sm)

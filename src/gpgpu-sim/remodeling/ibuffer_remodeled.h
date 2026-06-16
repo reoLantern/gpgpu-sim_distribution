@@ -42,8 +42,6 @@ class scheduler_unit;      // Definition to be allowed to compile. Code of this
                            // class in shader.h and shader.cc
 class shd_warp_t;  // Definition to be allowed to compile. Code of this class in
                    // shader.h and shader.cc
-class trace_shader_core_ctx;  // Definition to be allowed to compile. Code of
-                              // this class in shader.h and shader.cc
 
 
 struct IBuffer_Entry {

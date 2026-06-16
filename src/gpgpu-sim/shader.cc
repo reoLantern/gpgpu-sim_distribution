@@ -197,13 +197,6 @@ Scoreboard_reads* shader_core_ctx::get_Scoreboard_reads()
 }
 // MOD. End
 
-void exec_shader_core_ctx::create_shd_warp() {
-  m_warp.resize(m_config->max_warps_per_shader);
-  for (unsigned k = 0; k < m_config->max_warps_per_shader; ++k) {
-    m_warp[k] = new shd_warp_t(this, m_config->warp_size, m_stats);
-  }
-}
-
 void shader_core_ctx::create_front_pipeline() {
   // pipeline_stages is the sum of normal pipeline stages and specialized_unit
   // stages * 2 (for ID and EX)
@@ -1661,28 +1654,6 @@ void shader_core_stats::visualizer_print(gzFile visualizer_file) {
   gzprintf(visualizer_file, "\n");
 }
 
-warp_inst_t *exec_shader_core_ctx::get_next_inst(unsigned warp_id,
-                                                       address_type pc) {
-  // read the inst from the functional model
-  return m_gpu->gpgpu_ctx->ptx_fetch_inst(pc);
-}
-
-void exec_shader_core_ctx::decrement_trace_pc(unsigned warp_id) {
-  // Empty Method. It is only used in trace mode and not in PTX mode.
-}
-
-void exec_shader_core_ctx::get_pdom_stack_top_info(unsigned warp_id,
-                                                   const warp_inst_t *pI,
-                                                   unsigned *pc,
-                                                   unsigned *rpc) {
-  m_simt_stack[warp_id]->get_pdom_stack_top_info(pc, rpc);
-}
-
-const active_mask_t &exec_shader_core_ctx::get_active_mask(
-    unsigned warp_id, const warp_inst_t *pI) {
-  return m_simt_stack[warp_id]->get_active_mask();
-}
-
 unsigned long long shader_core_ctx::get_current_gpu_cycle() {
     return m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle;
 }
@@ -1822,14 +1793,6 @@ void shader_core_ctx::fetch() {
   m_L1I->cycle();
 }
 
-
-void exec_shader_core_ctx::func_exec_inst(warp_inst_t &inst) {
-  execute_warp_inst_t(inst);
-  if (inst.is_load() || inst.is_store()) {
-    inst.generate_mem_accesses();
-    // inst.print_m_accessq();
-  }
-}
 
 void shader_core_ctx::issue_warp(register_set &pipe_reg_set,
                                  const warp_inst_t *next_inst,
@@ -4476,22 +4439,6 @@ void opndcoll_rfu_t::collector_unit_t::dispatch() {
   
 }
 
-void exec_simt_core_cluster::create_shader_core_ctx() {
-  m_core.resize(m_config->n_simt_cores_per_cluster);
-  for (unsigned i = 0; i < m_config->n_simt_cores_per_cluster; i++) {
-    unsigned sid = m_config->cid_to_sid(i, m_cluster_id);
-    if(m_config->is_SM_remodeling_enabled) {
-      m_core[i] = new SM(m_config->num_subcores_in_SM, m_gpu, this, sid, m_cluster_id,
-                                          m_config, m_mem_config, m_stats);
-      m_core[i]->init();
-    }else {
-      m_core[i] = new exec_shader_core_ctx(m_gpu, this, sid, m_cluster_id,
-                                          m_config, m_mem_config, m_stats);
-    }
-    m_core_sim_order.push_back(i);
-  }
-}
-
 simt_core_cluster::simt_core_cluster(class gpgpu_sim *gpu, unsigned cluster_id,
                                      const shader_core_config *config,
                                      const memory_config *mem_config,
@@ -4847,31 +4794,3 @@ void simt_core_cluster::get_L1T_sub_stats(struct cache_sub_stats &css) const {
   css = total_css;
 }
 
-void exec_shader_core_ctx::checkExecutionStatusAndUpdate(warp_inst_t &inst,
-                                                         unsigned t,
-                                                         unsigned tid) {
-  if (inst.isatomic()) m_warp[inst.warp_id()]->inc_n_atomic();
-  if (inst.space.is_local() && (inst.is_load() || inst.is_store())) {
-    new_addr_type localaddrs[MAX_ACCESSES_PER_INSN_PER_THREAD];
-    unsigned num_addrs;
-    num_addrs = translate_local_memaddr(
-        inst.get_addr(t), tid,
-        m_config->n_simt_clusters * m_config->n_simt_cores_per_cluster,
-        inst.data_size, (new_addr_type *)localaddrs);
-    inst.set_addr(t, (new_addr_type *)localaddrs, num_addrs);
-  }
-  if (ptx_thread_done(tid)) {
-    m_warp[inst.warp_id()]->set_completed(t);
-    m_warp[inst.warp_id()]->ibuffer_flush();
-  }
-
-  // PC-Histogram Update
-  unsigned warp_id = inst.warp_id();
-  unsigned pc = inst.pc;
-  for (unsigned t = 0; t < m_config->warp_size; t++) {
-    if (inst.active(t)) {
-      int tid = warp_id * m_config->warp_size + t;
-      cflog_update_thread_pc(m_sid, tid, pc);
-    }
-  }
-}
