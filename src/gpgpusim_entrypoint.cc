@@ -232,8 +232,11 @@ gpgpu_sim *gpgpu_context::gpgpu_ptx_sim_init_perf() {
   the_gpgpusim->g_the_gpu_config->set_custom_options(false); // MOD. General parse options
 
 
-  the_gpgpusim->g_the_gpu =
-      new exec_gpgpu_sim(*(the_gpgpusim->g_the_gpu_config), this); 
+  fprintf(stderr,
+          "GPGPU-Sim: the PTX functional-simulation path has been removed; "
+          "this build is Accel-Sim trace-driven only.\n");
+  abort();
+  the_gpgpusim->g_the_gpu = NULL;
   the_gpgpusim->g_stream_manager = new stream_manager(
       (the_gpgpusim->g_the_gpu), func_sim->g_cuda_launch_blocking);
 
