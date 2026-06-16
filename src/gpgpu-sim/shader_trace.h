@@ -52,7 +52,7 @@
     }                                                         \
   } while (0)
 
-// Intended to be called from inside a scheduler_unit.
+// Intended to be called from inside a warp scheduler.
 // Depends on a m_id member
 #define SCHED_DPRINTF(...)                                               \
   do {                                                                   \

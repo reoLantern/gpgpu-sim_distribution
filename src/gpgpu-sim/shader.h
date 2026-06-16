@@ -243,8 +243,6 @@ class shd_warp_t {
   void print(FILE *fout) const;
   void print_ibuffer(FILE *fout) const;
 
-  void set_scheduler(scheduler_unit* scheduler) { m_scheduler = scheduler; } // MOD. Added L0I
-  scheduler_unit* get_scheduler() { return m_scheduler; } // MOD. Added L0I
   bool get_is_pending_store() { return m_is_pending_store; } // MOD. Fix load after stores
   void set_is_pending_store(bool pending) { m_is_pending_store = pending; } // MOD. Fix load after stores
   bool get_is_pending_load() { return m_is_pending_load; } // MOD. Fix load after stores
@@ -439,8 +437,6 @@ class shd_warp_t {
   unsigned m_stores_outstanding;  // number of store requests sent but not yet
                                   // acknowledged
   unsigned m_inst_in_pipeline;
-
-  scheduler_unit *m_scheduler; // MOD. Added L0I
   int m_is_pending_store; // MOD. Fix loads after store
   int m_is_pending_load; // MOD. Fix loads after store
   IBuffer_Remodeled *m_IBuffer_remodeled; // MOD. Remodeling
@@ -467,7 +463,6 @@ int register_bank(int regnum, int wid, unsigned num_banks,
                   unsigned bank_warp_shift, bool sub_core_model,
                   int banks_per_sched, unsigned sched_id);
 
-class shader_core_ctx;
 class shader_core_config;
 class shader_core_stats;
 
@@ -1767,10 +1762,8 @@ class shader_core_stats : public shader_core_stats_pod {
   gpgpu_sim *m_gpu;
 
   friend class power_stat_t;
-  friend class shader_core_ctx;
   friend class ldst_unit;
   friend class simt_core_cluster;
-  friend class scheduler_unit;
   friend class TwoLevelScheduler;
   friend class LooseRoundRobbinScheduler;
 };
