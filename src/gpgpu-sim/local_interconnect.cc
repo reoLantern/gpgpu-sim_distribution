@@ -123,15 +123,20 @@ void xbar_router::Advance() {
 }
 
 void xbar_router::Perfect_Advance() {
-  for (unsigned node_id = 0; node_id < total_nodes; node_id++) {
+  for (unsigned i = 0; i < total_nodes; i++) {
+    unsigned node_id = (i + next_node_id) % total_nodes;
     if (!in_buffers[node_id].empty()) {
       Packet _packet = in_buffers[node_id].front();
       if (Has_Buffer_Out(_packet.output_deviceID, 1)) {
         out_buffers[_packet.output_deviceID].push(_packet);
         in_buffers[node_id].pop();
+      } else {
+        out_buffer_full++;
       }
     }
   }
+
+  next_node_id = (next_node_id + 1) % total_nodes;
 };
 
 void xbar_router::RR_Advance() {
@@ -367,6 +372,15 @@ void* LocalInterconnect::Pop(unsigned ouput_deviceID) {
   if (ouput_deviceID < n_shader) subnet = 1;
 
   return net[subnet]->Pop(ouput_deviceID);
+}
+
+bool xbar_router::Has_Packet(unsigned output_deviceID) const {
+  return !out_buffers[output_deviceID].empty();
+}
+
+bool LocalInterconnect::HasPacket(unsigned deviceID) const {
+  int subnet = (deviceID < n_shader) ? 1 : 0;
+  return net[subnet]->Has_Packet(deviceID);
 }
 
 void LocalInterconnect::Advance() {

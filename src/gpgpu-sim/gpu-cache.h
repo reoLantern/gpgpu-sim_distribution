@@ -1247,6 +1247,23 @@ class cache_stats {
 
   void sample_cache_port_utility(bool data_port_busy, bool fill_port_busy);
 
+  unsigned long long &get_cache_port_available_cycles() {
+    return m_cache_port_available_cycles;
+  }
+  unsigned long long &get_cache_data_port_busy_cycles() {
+    return m_cache_data_port_busy_cycles;
+  }
+  unsigned long long &get_cache_fill_port_busy_cycles() {
+    return m_cache_fill_port_busy_cycles;
+  }
+
+  unsigned long long &get_tot_stats(int access_type, int access_outcome) {
+    return m_tot_stats[access_type][access_outcome];
+  }
+  unsigned long long &get_tot_fail_stats(int access_type, int fail_outcome) {
+    return m_tot_fail_stats[access_type][fail_outcome];
+  }
+
  private:
   bool check_valid(int type, int status) const;
   bool check_fail_valid(int type, int fail) const;
@@ -1254,11 +1271,13 @@ class cache_stats {
   // CUDA streamID -> cache stats[NUM_MEM_ACCESS_TYPE]
   std::map<unsigned long long, std::vector<std::vector<unsigned long long>>>
       m_stats;
+  std::vector<std::vector<unsigned long long>> m_tot_stats;
   // AerialVision cache stats (per-window)
   std::map<unsigned long long, std::vector<std::vector<unsigned long long>>>
       m_stats_pw;
   std::map<unsigned long long, std::vector<std::vector<unsigned long long>>>
       m_fail_stats;
+  std::vector<std::vector<unsigned long long>> m_tot_fail_stats;
 
   unsigned long long m_cache_port_available_cycles;
   unsigned long long m_cache_data_port_busy_cycles;
@@ -1289,15 +1308,7 @@ class baseline_cache : public cache_t {
   baseline_cache(const char *name, cache_config &config, int core_id,
                  int type_id, mem_fetch_interface *memport,
                  enum mem_fetch_status status, enum cache_gpu_level level,
-                 gpgpu_sim *gpu)
-      : m_config(config),
-        m_tag_array(new tag_array(config, core_id, type_id)),
-        m_mshrs(config.m_mshr_entries, config.m_mshr_max_merge),
-        m_bandwidth_management(config),
-        m_level(level),
-        m_gpu(gpu) {
-    init(name, config, memport, status);
-  }
+                 gpgpu_sim *gpu);
 
   void init(const char *name, const cache_config &config,
             mem_fetch_interface *memport, enum mem_fetch_status status) {
@@ -1400,11 +1411,13 @@ class baseline_cache : public cache_t {
   cache_config &m_config;
   tag_array *m_tag_array;
   mshr_table m_mshrs;
-  std::list<mem_fetch *> m_miss_queue;
+  std::deque<mem_fetch *> m_miss_queue;
   enum mem_fetch_status m_miss_queue_status;
   mem_fetch_interface *m_memport;
   cache_gpu_level m_level;
   gpgpu_sim *m_gpu;
+
+  unsigned m_chiplet_id;
 
   struct extra_mf_fields {
     extra_mf_fields() { m_valid = false; }
@@ -1519,14 +1532,7 @@ class data_cache : public baseline_cache {
              mem_fetch_interface *memport, mem_fetch_allocator *mfcreator,
              enum mem_fetch_status status, mem_access_type wr_alloc_type,
              mem_access_type wrbk_type, class gpgpu_sim *gpu,
-             enum cache_gpu_level level)
-      : baseline_cache(name, config, core_id, type_id, memport, status, level,
-                       gpu) {
-    init(mfcreator);
-    m_wr_alloc_type = wr_alloc_type;
-    m_wrbk_type = wrbk_type;
-    m_gpu = gpu;
-  }
+             enum cache_gpu_level level);
 
   virtual ~data_cache() {}
 
@@ -1728,24 +1734,6 @@ class l1_cache : public data_cache {
            class gpgpu_sim *gpu)
       : data_cache(name, config, core_id, type_id, memport, mfcreator, status,
                    new_tag_array, L1_WR_ALLOC_R, L1_WRBK_ACC, gpu) {}
-};
-
-/// Models second level shared cache with global write-back
-/// and write-allocate policies
-class l2_cache : public data_cache {
- public:
-  l2_cache(const char *name, cache_config &config, int core_id, int type_id,
-           mem_fetch_interface *memport, mem_fetch_allocator *mfcreator,
-           enum mem_fetch_status status, class gpgpu_sim *gpu,
-           enum cache_gpu_level level)
-      : data_cache(name, config, core_id, type_id, memport, mfcreator, status,
-                   L2_WR_ALLOC_R, L2_WRBK_ACC, gpu, level) {}
-
-  virtual ~l2_cache() {}
-
-  virtual enum cache_request_status access(new_addr_type addr, mem_fetch *mf,
-                                           unsigned time,
-                                           std::list<cache_event> &events);
 };
 
 /*****************************************************************************/

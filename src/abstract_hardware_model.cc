@@ -31,6 +31,7 @@
 
 #include "abstract_hardware_model.h"
 #include <sys/stat.h>
+#include <unistd.h>
 #include <algorithm>
 #include <iostream>
 #include <sstream>
@@ -286,7 +287,8 @@ void warp_inst_t::broadcast_barrier_reduction(
 void warp_inst_t::generate_mem_accesses() {
   if (empty() || op == MEMORY_BARRIER_OP || m_mem_accesses_created) return;
   if (!((op == LOAD_OP) || (op == TENSOR_CORE_LOAD_OP) || (op == STORE_OP) ||
-        (op == TENSOR_CORE_STORE_OP)))
+        (op == TENSOR_CORE_STORE_OP) || (op == STAS_OP) ||
+        (op == TMA_OP && (is_tma_load() || is_tma_store()))))
     return;
   if (m_warp_active_mask.count() == 0) return;  // predicated off
 
@@ -295,7 +297,9 @@ void warp_inst_t::generate_mem_accesses() {
   assert(is_load() || is_store());
 
   // if((space.get_type() != tex_space) && (space.get_type() != const_space))
-  assert(m_per_scalar_thread_valid);  // need address information per thread
+  if (!is_tma()) {
+    assert(m_per_scalar_thread_valid);  // need address information per thread
+  }
 
   bool is_write = is_store();
 
@@ -320,7 +324,7 @@ void warp_inst_t::generate_mem_accesses() {
     case sstarr_space:
       break;
     default:
-      assert(0);
+      assert(0 && "Invalid memory space");
       break;
   }
 
@@ -342,7 +346,13 @@ void warp_inst_t::generate_mem_accesses() {
         for (unsigned thread = subwarp * subwarp_size;
              thread < (subwarp + 1) * subwarp_size; thread++) {
           if (!active(thread)) continue;
+          assert(!m_per_scalar_thread[thread].memreqaddr.empty());
           new_addr_type addr = m_per_scalar_thread[thread].memreqaddr[0];
+          // For STAS, the address is combined: upper 32 bits = mbarrier,
+          // lower 32 bits = store address
+          if (op == STAS_OP) {
+            addr = addr & 0xFFFFFFFF;
+          }
           // FIXME: deferred allocation of shared memory should not accumulate
           // across kernel launches assert( addr < m_config->gpgpu_shmem_size );
           unsigned bank = m_config->shmem_bank_func(addr);
@@ -454,6 +464,7 @@ void warp_inst_t::generate_mem_accesses() {
     std::map<new_addr_type, active_mask_t>::iterator a;
     for (unsigned thread = 0; thread < m_config->warp_size; thread++) {
       if (!active(thread)) continue;
+      assert(!m_per_scalar_thread[thread].memreqaddr.empty());
       new_addr_type addr = m_per_scalar_thread[thread].memreqaddr[0];
       new_addr_type block_address =
           line_size_based_tag_func(addr, cache_block_size);
@@ -533,11 +544,19 @@ void warp_inst_t::memory_coalescing_arch(bool is_write,
       assert(num_accesses <= MAX_ACCESSES_PER_INSN_PER_THREAD);
 
       //            for(unsigned access=0; access<num_accesses; access++) {
-      for (unsigned access = 0;
-           (access < MAX_ACCESSES_PER_INSN_PER_THREAD) &&
-           (m_per_scalar_thread[thread].memreqaddr[access] != 0);
-           access++) {
-        new_addr_type addr = m_per_scalar_thread[thread].memreqaddr[access];
+      // Build addresses from either m_per_scalar_thread[thread].memreqaddr or
+      // m_tma_access_addrs
+      std::vector<new_addr_type> addresses;
+      if (is_tma()) {
+        addresses = m_tma_access_addrs;
+      } else {
+        assert(m_per_scalar_thread[thread].memreqaddr.size() <=
+               MAX_ACCESSES_PER_INSN_PER_THREAD);
+        addresses = m_per_scalar_thread[thread].memreqaddr;
+      }
+
+      // Iterate over addresses for coalescing
+      for (auto &addr : addresses) {
         new_addr_type block_address =
             line_size_based_tag_func(addr, segment_size);
         unsigned chunk =
@@ -634,6 +653,7 @@ void warp_inst_t::memory_coalescing_arch_atomic(bool is_write,
          thread < subwarp_size * (subwarp + 1); thread++) {
       if (!active(thread)) continue;
 
+      assert(!m_per_scalar_thread[thread].memreqaddr.empty());
       new_addr_type addr = m_per_scalar_thread[thread].memreqaddr[0];
       new_addr_type block_address =
           line_size_based_tag_func(addr, segment_size);
@@ -744,9 +764,12 @@ void warp_inst_t::memory_coalescing_arch_reduce_and_send(
       assert(lower_half_used && upper_half_used);
     }
   }
-  m_accessq.push_back(mem_access_t(access_type, addr, size, is_write,
-                                   info.active, info.bytes, info.chunks,
-                                   m_config->gpgpu_ctx));
+  m_accessq.push_back(
+      mem_access_t(access_type, addr, size, is_write, info.active, info.bytes,
+                   info.chunks, m_config->gpgpu_ctx, this->is_tma(),
+                   this->get_tma_mbar_addr(), this->is_tma_multicast(),
+                   this->get_tma_multicast_cta_mask(), this->get_cuda_cta_id(),
+                   this->get_cuda_cluster_id(), this->get_cuda_cluster_rank()));
 }
 
 void warp_inst_t::completed(unsigned long long cycle) const {
@@ -1252,4 +1275,84 @@ void core_t::initilizeSIMTStack(unsigned warp_count, unsigned warp_size) {
 void core_t::get_pdom_stack_top_info(unsigned warpId, unsigned *pc,
                                      unsigned *rpc) const {
   m_simt_stack[warpId]->get_pdom_stack_top_info(pc, rpc);
+}
+
+inline void PerfCounter::open_for_write() {
+  output_csv = gzopen(output_csv_name.c_str(), "w");
+
+  // Create/update symlink "perf_counter.csv.gz" -> timestamped file
+  const char *symlink_name = "perf_counter.csv.gz";
+  unlink(symlink_name);  // Remove existing symlink if any
+  symlink(output_csv_name.c_str(), symlink_name);
+}
+
+inline void PerfCounter::open_for_append() {
+  output_csv = gzopen(output_csv_name.c_str(), "a");
+}
+
+void PerfCounter::add_absolute_counter(std::string name,
+                                       unsigned long long &counter) {
+  counter = 0;
+  absolute_counter_names.push_back(name);
+  absolute_counters.push_back(counter);
+}
+
+void PerfCounter::add_ratio_counter(std::string name, float &counter) {
+  counter = 0.0f;
+  ratio_counter_names.push_back(name);
+  ratio_counters.push_back(counter);
+}
+
+void PerfCounter::add_statistics_counter(
+    Statistics::AbstractStatsCounter &counter) {
+  statistics_counters.push_back(counter);
+}
+
+void PerfCounter::print_header() {
+  open_for_write();
+
+  for (auto &name : absolute_counter_names) {
+    gzprintf(output_csv, "%s,", name.c_str());
+  }
+  for (auto &name : ratio_counter_names) {
+    gzprintf(output_csv, "%s,", name.c_str());
+  }
+  for (auto &counter : statistics_counters) {
+    gzprintf(output_csv, "%s,", counter.get().csv_header_string().c_str());
+  }
+  gzprintf(output_csv, "wall_clock_ms,");
+  gzprintf(output_csv, "\n");
+
+  close();
+  header_printed = true;
+}
+
+void PerfCounter::print_counters() {
+  if (!header_printed) {
+    print_header();
+  }
+
+  open_for_append();
+
+  for (auto &counter : absolute_counters) {
+    gzprintf(output_csv, "%llu,", counter.get());
+  }
+  for (auto &counter : ratio_counters) {
+    gzprintf(output_csv, "%f,", counter.get());
+  }
+  for (auto &counter : statistics_counters) {
+    gzprintf(output_csv, "%s,", counter.get().csv_value_string().c_str());
+  }
+  auto now = std::chrono::steady_clock::now();
+  auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                now.time_since_epoch())
+                .count();
+  gzprintf(output_csv, "%lld,", ms);
+  gzprintf(output_csv, "\n");
+
+  close();
+}
+inline void PerfCounter::close() {
+  gzclose(output_csv);
+  output_csv = nullptr;
 }

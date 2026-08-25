@@ -42,6 +42,7 @@
 #include "../trace.h"
 #include "addrdec.h"
 #include "gpu-cache.h"
+#include "l2cache.h"
 #include "shader.h"
 
 // constants for statistics printouts
@@ -218,7 +219,7 @@ class memory_config {
     gpgpu_L2_queue_config = NULL;
     gpgpu_ctx = ctx;
   }
-  void init() {
+  void init(const shader_core_config *shader_config = nullptr) {
     assert(gpgpu_dram_timing_opt);
     if (strchr(gpgpu_dram_timing_opt, '=') == NULL) {
       // dram timing option in ordered variables (legacy)
@@ -301,10 +302,15 @@ class memory_config {
            "Number of DRAM banks must be a perfect multiple of memory sub "
            "partition");
     m_n_mem_sub_partition = m_n_mem * m_n_sub_partition_per_memory_channel;
+    n_chiplet = shader_config->n_chiplet;
+    chiplet_interleave = shader_config->chiplet_interleave;
+    m_n_sub_partition_per_chiplet = m_n_mem_sub_partition / n_chiplet;
+    n_simt_clusters_per_chiplet = shader_config->n_simt_clusters_per_chiplet;
     fprintf(stdout, "Total number of memory sub partition = %u\n",
             m_n_mem_sub_partition);
 
-    m_address_mapping.init(m_n_mem, m_n_sub_partition_per_memory_channel);
+    m_address_mapping.init(m_n_mem, m_n_sub_partition_per_memory_channel,
+                           shader_config);
     m_L2_config.init(&m_address_mapping);
 
     m_valid = true;
@@ -323,6 +329,17 @@ class memory_config {
    */
   bool is_SST_mode() const { return SST_mode; }
 
+  unsigned get_src_chiplet(unsigned tpc) const {
+    if (chiplet_interleave == CHIPLET_INTERLEAVED) return (tpc / 8) % n_chiplet;
+    return tpc / n_simt_clusters_per_chiplet;
+  }
+
+  unsigned get_dest_chiplet(new_addr_type addr) const {
+    return ((addr >> __builtin_ctz(chiplet_partition_stride)) &
+            (n_chiplet - 1)) ^
+           1;
+  }
+
   bool m_valid;
   mutable l2_cache_config m_L2_config;
   bool m_L2_texure_only;
@@ -337,7 +354,14 @@ class memory_config {
   unsigned m_n_mem;
   unsigned m_n_sub_partition_per_memory_channel;
   unsigned m_n_mem_sub_partition;
+  unsigned chiplet_partition_stride;
   unsigned gpu_n_mem_per_ctrlr;
+  unsigned m_n_sub_partition_per_chiplet;
+  unsigned n_simt_clusters_per_chiplet;
+  unsigned n_chiplet;
+  chiplet_tpc_mapping chiplet_interleave;
+  unsigned inter_chiplet_queue_size;
+  unsigned inter_chiplet_queue_latency;
 
   unsigned rop_latency;
   unsigned dram_latency;
@@ -400,7 +424,11 @@ class memory_config {
   unsigned write_low_watermark;
   bool m_perf_sim_memcpy;
   bool simple_dram_model;
+  unsigned simple_dram_clock_multiplier;
   bool SST_mode;
+  bool lrc_enabled;
+  unsigned lrc_max_entries;
+  unsigned lrc_max_merged;
   gpgpu_context *gpgpu_ctx;
 };
 
@@ -422,7 +450,7 @@ class gpgpu_sim_config : public power_config,
            &gpu_runtime_stat_flag);
     m_shader_config.init();
     ptx_set_tex_cache_linesize(m_shader_config.m_L1T_config.get_line_sz());
-    m_memory_config.init();
+    m_memory_config.init(&m_shader_config);
     init_clock_domains();
     power_config::init();
     Trace::init();
@@ -656,6 +684,11 @@ class gpgpu_sim : public gpgpu_t {
    */
   simt_core_cluster *getSIMTCluster();
 
+  simt_core_cluster **get_simt_core_clusters() const { return m_cluster; }
+  unsigned get_n_simt_core_clusters() const {
+    return m_shader_config->n_simt_clusters;
+  }
+
   void hit_watchpoint(unsigned watchpoint_num, ptx_thread_info *thd,
                       const ptx_instruction *pI);
 
@@ -667,8 +700,16 @@ class gpgpu_sim : public gpgpu_t {
    */
   bool is_SST_mode() { return m_config.is_SST_mode(); }
 
+  inline unsigned long long global_cycle() const {
+    return gpu_sim_cycle + gpu_tot_sim_cycle;
+  }
+
   // backward pointer
   class gpgpu_context *gpgpu_ctx;
+
+  // mbarrier try_wait stats
+  void print_mbarrier_trywait_stats() const;
+  void clear_mbarrier_trywait_stats();
 
  protected:
   // clocks
@@ -685,11 +726,26 @@ class gpgpu_sim : public gpgpu_t {
 
   void gpgpu_debug();
 
+  // Handle MF reply from memory controller to interconnect
+  // also update the parallel_reply_count and gpu_stall_icnt2sh count inside
+  bool handle_mf_reply(unsigned subpartition_id, mem_fetch *mf,
+                       unsigned &parallel_reply_count);
+
+  // Handle LRC reply and update the parallel_reply_count
+  // also update the gpu_stall_icnt2sh count inside by calling handle_mf_reply
+  void handle_lrc_reply(unsigned subpartition_id, mem_fetch *mf,
+                        unsigned &parallel_reply_count);
+
  protected:
   ///// data /////
   class simt_core_cluster **m_cluster;
-  class memory_partition_unit **m_memory_partition_unit;
-  class memory_sub_partition **m_memory_sub_partition;
+  std::vector<class memory_partition_unit *> m_memory_partition_unit;
+  std::vector<class memory_sub_partition *> m_memory_sub_partition;
+
+  std::vector<LatencyQueue<mem_fetch *>> m_request_0_to_1;
+  std::vector<LatencyQueue<mem_fetch *>> m_request_1_to_0;
+  std::vector<LatencyQueue<mem_fetch *>> m_reply_0_to_1;
+  std::vector<LatencyQueue<mem_fetch *>> m_reply_1_to_0;
 
   std::vector<kernel_info_t *> m_running_kernels;
   unsigned m_last_issued_kernel;
@@ -699,7 +755,7 @@ class gpgpu_sim : public gpgpu_t {
   // count.
   unsigned long long m_total_cta_launched;
   unsigned long long gpu_tot_issued_cta;
-  unsigned gpu_completed_cta;
+  unsigned long long gpu_completed_cta;
 
   unsigned m_last_cluster_issue;
   float *average_pipeline_duty_cycle;
@@ -752,6 +808,8 @@ class gpgpu_sim : public gpgpu_t {
   occupancy_stats gpu_occupancy;
   occupancy_stats gpu_tot_occupancy;
 
+  float gpu_occupancy_ratio;
+
   typedef struct {
     unsigned long long start_cycle;
     unsigned long long end_cycle;
@@ -763,9 +821,13 @@ class gpgpu_sim : public gpgpu_t {
   cache_stats aggregated_l1_stats;
   cache_stats aggregated_l2_stats;
 
+  PerfCounter perf_counters;
+
   // performance counter for stalls due to congestion.
-  unsigned int gpu_stall_dramfull;
-  unsigned int gpu_stall_icnt2sh;
+  unsigned long long gpu_stall_icnt2mem;
+  unsigned long long gpu_stall_mem2icnt;
+  unsigned long long gpu_stall_icnt2core;
+  unsigned long long gpu_stall_core2icnt;
   unsigned long long partiton_reqs_in_parallel;
   unsigned long long partiton_reqs_in_parallel_total;
   unsigned long long partiton_reqs_in_parallel_util;

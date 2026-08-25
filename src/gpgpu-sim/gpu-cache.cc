@@ -32,6 +32,7 @@
 
 #include "gpu-cache.h"
 #include <assert.h>
+#include <cstdint>
 #include "gpu-sim.h"
 #include "hashing.h"
 #include "stat-tool.h"
@@ -637,6 +638,16 @@ cache_stats::cache_stats() {
   m_cache_port_available_cycles = 0;
   m_cache_data_port_busy_cycles = 0;
   m_cache_fill_port_busy_cycles = 0;
+
+  m_tot_stats.resize(NUM_MEM_ACCESS_TYPE);
+  for (unsigned i = 0; i < NUM_MEM_ACCESS_TYPE; i++) {
+    m_tot_stats[i].resize(NUM_CACHE_REQUEST_STATUS, 0);
+  }
+
+  m_tot_fail_stats.resize(NUM_MEM_ACCESS_TYPE);
+  for (unsigned i = 0; i < NUM_MEM_ACCESS_TYPE; i++) {
+    m_tot_fail_stats[i].resize(NUM_CACHE_RESERVATION_FAIL_STATUS, 0);
+  }
 }
 
 void cache_stats::clear() {
@@ -678,6 +689,7 @@ void cache_stats::inc_stats(int access_type, int access_outcome,
         streamID, new_val));
   }
   m_stats.at(streamID)[access_type][access_outcome]++;
+  m_tot_stats[access_type][access_outcome]++;
 }
 
 void cache_stats::inc_stats_pw(int access_type, int access_outcome,
@@ -717,6 +729,7 @@ void cache_stats::inc_fail_stats(int access_type, int fail_outcome,
         streamID, new_val));
   }
   m_fail_stats.at(streamID)[access_type][fail_outcome]++;
+  m_tot_fail_stats[access_type][fail_outcome]++;
 }
 
 enum cache_request_status cache_stats::select_stats_status(
@@ -1585,8 +1598,8 @@ enum cache_request_status data_cache::wr_miss_wa_naive(
       mem_fetch *wb = m_memfetch_creator->alloc(
           evicted.m_block_addr, m_wrbk_type, mf->get_access_warp_mask(),
           evicted.m_byte_mask, evicted.m_sector_mask, evicted.m_modified_size,
-          true, m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle, -1, -1, -1,
-          NULL, mf->get_streamID());
+          true, m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle, -1,
+          mf->get_sid(), mf->get_tpc(), NULL, mf->get_streamID());
       // the evicted block may have wrong chip id when advanced L2 hashing  is
       // used, so set the right chip address from the original mf
       wb->set_chip(mf->get_tlx_addr().chip);
@@ -1639,8 +1652,8 @@ enum cache_request_status data_cache::wr_miss_wa_fetch_on_write(
         mem_fetch *wb = m_memfetch_creator->alloc(
             evicted.m_block_addr, m_wrbk_type, mf->get_access_warp_mask(),
             evicted.m_byte_mask, evicted.m_sector_mask, evicted.m_modified_size,
-            true, m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle, -1, -1, -1,
-            NULL, mf->get_streamID());
+            true, m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle, -1,
+            mf->get_sid(), mf->get_tpc(), NULL, mf->get_streamID());
         // the evicted block may have wrong chip id when advanced L2 hashing  is
         // used, so set the right chip address from the original mf
         wb->set_chip(mf->get_tlx_addr().chip);
@@ -1716,8 +1729,8 @@ enum cache_request_status data_cache::wr_miss_wa_fetch_on_write(
         mem_fetch *wb = m_memfetch_creator->alloc(
             evicted.m_block_addr, m_wrbk_type, mf->get_access_warp_mask(),
             evicted.m_byte_mask, evicted.m_sector_mask, evicted.m_modified_size,
-            true, m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle, -1, -1, -1,
-            NULL, mf->get_streamID());
+            true, m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle, -1,
+            mf->get_sid(), mf->get_tpc(), NULL, mf->get_streamID());
         // the evicted block may have wrong chip id when advanced L2 hashing  is
         // used, so set the right chip address from the original mf
         wb->set_chip(mf->get_tlx_addr().chip);
@@ -1784,8 +1797,8 @@ enum cache_request_status data_cache::wr_miss_wa_lazy_fetch_on_read(
       mem_fetch *wb = m_memfetch_creator->alloc(
           evicted.m_block_addr, m_wrbk_type, mf->get_access_warp_mask(),
           evicted.m_byte_mask, evicted.m_sector_mask, evicted.m_modified_size,
-          true, m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle, -1, -1, -1,
-          NULL, mf->get_streamID());
+          true, m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle, -1,
+          mf->get_sid(), mf->get_tpc(), NULL, mf->get_streamID());
       // the evicted block may have wrong chip id when advanced L2 hashing  is
       // used, so set the right chip address from the original mf
       wb->set_chip(mf->get_tlx_addr().chip);
@@ -1827,7 +1840,8 @@ enum cache_request_status data_cache::rd_hit_base(
   // Atomics treated as global read/write requests - Perform read, mark line as
   // MODIFIED
   if (mf->isatomic()) {
-    assert(mf->get_access_type() == GLOBAL_ACC_R);
+    assert(mf->get_access_type() == GLOBAL_ACC_R ||
+           mf->get_access_type() == CHIPLET_ACC_R);
     cache_block_t *block = m_tag_array->get_block(cache_index);
     if (!block->is_modified_line()) {
       m_tag_array->inc_dirty();
@@ -1868,8 +1882,8 @@ enum cache_request_status data_cache::rd_miss_base(
       mem_fetch *wb = m_memfetch_creator->alloc(
           evicted.m_block_addr, m_wrbk_type, mf->get_access_warp_mask(),
           evicted.m_byte_mask, evicted.m_sector_mask, evicted.m_modified_size,
-          true, m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle, -1, -1, -1,
-          NULL, mf->get_streamID());
+          true, m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle, -1,
+          mf->get_sid(), mf->get_tpc(), NULL, mf->get_streamID());
       // the evicted block may have wrong chip id when advanced L2 hashing  is
       // used, so set the right chip address from the original mf
       wb->set_chip(mf->get_tlx_addr().chip);
@@ -2014,15 +2028,6 @@ enum cache_request_status data_cache::access(new_addr_type addr, mem_fetch *mf,
 /// granularity of individual blocks (Set by GPGPU-Sim configuration file)
 /// (the policy used in fermi according to the CUDA manual)
 enum cache_request_status l1_cache::access(new_addr_type addr, mem_fetch *mf,
-                                           unsigned time,
-                                           std::list<cache_event> &events) {
-  return data_cache::access(addr, mf, time, events);
-}
-
-// The l2 cache access function calls the base data_cache access
-// implementation.  When the L2 needs to diverge from L1, L2 specific
-// changes should be made here.
-enum cache_request_status l2_cache::access(new_addr_type addr, mem_fetch *mf,
                                            unsigned time,
                                            std::list<cache_event> &events) {
   return data_cache::access(addr, mf, time, events);
@@ -2177,3 +2182,62 @@ void tex_cache::display_state(FILE *fp) const {
   }
 }
 /******************************************************************************************************************************************/
+baseline_cache::baseline_cache(const char *name, cache_config &config,
+                               int core_id, int type_id,
+                               mem_fetch_interface *memport,
+                               enum mem_fetch_status status,
+                               enum cache_gpu_level level, gpgpu_sim *gpu)
+    : m_config(config),
+      m_tag_array(new tag_array(config, core_id, type_id)),
+      m_mshrs(config.m_mshr_entries, config.m_mshr_max_merge),
+      m_level(level),
+      m_gpu(gpu),
+      m_bandwidth_management(config) {
+  init(name, config, memport, status);
+}
+
+data_cache::data_cache(const char *name, cache_config &config, int core_id,
+                       int type_id, mem_fetch_interface *memport,
+                       mem_fetch_allocator *mfcreator,
+                       enum mem_fetch_status status,
+                       mem_access_type wr_alloc_type, mem_access_type wrbk_type,
+                       class gpgpu_sim *gpu, enum cache_gpu_level level)
+    : baseline_cache(name, config, core_id, type_id, memport, status, level,
+                     gpu) {
+  init(mfcreator);
+  m_wr_alloc_type = wr_alloc_type;
+  m_wrbk_type = wrbk_type;
+  m_gpu = gpu;
+
+  m_gpu->perf_counters.add_absolute_counter(
+      std::string(name) + "_cache_port_available_cycles",
+      m_stats.get_cache_port_available_cycles());
+  m_gpu->perf_counters.add_absolute_counter(
+      std::string(name) + "_cache_data_port_busy_cycles",
+      m_stats.get_cache_data_port_busy_cycles());
+  m_gpu->perf_counters.add_absolute_counter(
+      std::string(name) + "_cache_fill_port_busy_cycles",
+      m_stats.get_cache_fill_port_busy_cycles());
+
+  std::vector<mem_access_type> mem_access_types = {GLOBAL_ACC_R, CHIPLET_ACC_R,
+                                                   GLOBAL_ACC_W, CHIPLET_ACC_W};
+
+  for (auto i : mem_access_types) {
+    for (unsigned j = 0; j < NUM_CACHE_REQUEST_STATUS; j++) {
+      m_gpu->perf_counters.add_absolute_counter(
+          std::string(name) + "_" + mem_access_type_str((mem_access_type)i) +
+              "_" +
+              std::string(cache_request_status_str((cache_request_status)j)),
+          m_stats.get_tot_stats(i, j));
+    }
+
+    for (unsigned j = 0; j < NUM_CACHE_RESERVATION_FAIL_STATUS; j++) {
+      m_gpu->perf_counters.add_absolute_counter(
+          std::string(name) + "_" + mem_access_type_str((mem_access_type)i) +
+              "_" +
+              std::string(
+                  cache_fail_status_str((cache_reservation_fail_reason)j)),
+          m_stats.get_tot_fail_stats(i, j));
+    }
+  }
+}

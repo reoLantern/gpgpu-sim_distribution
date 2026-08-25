@@ -7,6 +7,8 @@ on:
   push:
     branches-ignore:
       - "gh-readonly-queue**"
+  # Required for cross-repo PRs: a PR from a fork does not fire `push` in
+  # this repo, so without this the PR gets no CI at all.
   pull_request:
   # Allows you to run this workflow manually from the Actions tab
   workflow_dispatch:
@@ -35,28 +37,28 @@ jobs:
             exit 1
           fi
 
-  build-Makefile:
-    # minimal tests - Makefile is deprecated
-    strategy:
-      matrix:
-        config:
-          - QV100
-        image_tags:
-          - ubuntu-24.04-cuda-12.8-minimal
-    runs-on: ubuntu-latest
-    needs: check-format
-    name: build-Makefile
-    container:
-      image: ghcr.io/accel-sim/accel-sim-framework:${{ matrix.image_tags }}
-      env:
-        CONFIG: ${{ matrix.config }}
+  # build-Makefile:
+  #   # minimal tests - Makefile is deprecated
+  #   strategy:
+  #     matrix:
+  #       config:
+  #         - QV100
+  #       image_tags:
+  #         - ubuntu-24.04-cuda-12.8-minimal
+  #   runs-on: tgrogers-pc01
+  #   needs: check-format
+  #   name: build-Makefile
+  #   container:
+  #     image: ghcr.io/accel-sim/accel-sim-framework:${{ matrix.image_tags }}
+  #     env:
+  #       CONFIG: ${{ matrix.config }}
         
-    # Steps represent a sequence of tasks that will be executed as part of the job
-    steps:
-      # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
-      - uses: actions/checkout@v4
-      - name: Run Simulation
-        run: /bin/bash $GITHUB_WORKSPACE/short-tests.sh
+  #   # Steps represent a sequence of tasks that will be executed as part of the job
+  #   steps:
+  #     # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
+  #     - uses: actions/checkout@v4
+  #     - name: Run Simulation
+  #       run: /bin/bash $GITHUB_WORKSPACE/short-tests.sh
 
   build-CMake:
     strategy:
@@ -72,7 +74,7 @@ jobs:
         image_tags:
           - ubuntu-24.04-cuda-12.8-minimal
           - ubuntu-22.04-cuda-11.7.1-minimal
-    runs-on: ubuntu-latest
+    runs-on: tgrogers-pc01
     needs: check-format
     name: build-CMake
     container:
@@ -94,7 +96,7 @@ jobs:
         image_tags:
           - ubuntu-24.04-cuda-12.8-minimal
           - ubuntu-22.04-cuda-11.7.1-minimal
-    runs-on: ubuntu-latest
+    runs-on: tgrogers-pc01
     needs: check-format
     name: build-AccelSim
     container:
@@ -111,8 +113,9 @@ jobs:
         run: /bin/bash $GITHUB_WORKSPACE/short-tests-accelsim.sh
 
   CI-Success:
-    runs-on: ubuntu-latest
-    needs: [check-format, build-Makefile, build-CMake, build-AccelSim]
+    runs-on: tgrogers-pc01
+    needs: [check-format, build-CMake, build-AccelSim]
+    # needs: [check-format, build-Makefile, build-CMake, build-AccelSim]
     steps:
       - run: |
           echo "✅ All CI tests completed successfully!"

@@ -32,6 +32,27 @@
 #ifndef ABSTRACT_HARDWARE_MODEL_INCLUDED
 #define ABSTRACT_HARDWARE_MODEL_INCLUDED
 
+#include <assert.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <algorithm>
+#include <bitset>
+#include <chrono>
+#include <ctime>
+#include <deque>
+#include <functional>
+#include <list>
+#include <map>
+#include <memory>
+#include <unordered_set>
+#include <vector>
+#include "statistics.h"
+#include "utils.h"
+
+#if !defined(__VECTOR_TYPES_H__)
+#include "vector_types.h"
+#endif
+
 // Forward declarations
 class gpgpu_sim;
 class kernel_info_t;
@@ -44,6 +65,8 @@ class gpgpu_context;
 // After expanding the vector input and output operands
 #define MAX_INPUT_VALUES 24
 #define MAX_OUTPUT_VALUES 8
+
+const unsigned MAX_WARP_SIZE = 32;
 
 enum _memory_space_t {
   undefined_space = 0,
@@ -98,6 +121,7 @@ enum AdaptiveCache { FIXED = 0, ADAPTIVE_CACHE = 1 };
 
 #include <stdio.h>
 #include <string.h>
+#include <zlib.h>
 #include <set>
 
 typedef unsigned long long new_addr_type;
@@ -128,6 +152,14 @@ enum uarch_op_t {
   CALL_OPS,
   RET_OPS,
   EXIT_OPS,
+  // Hopper TMA and mbarrier related OPs
+  FENCE_OP,
+  SYNCS_OP,
+  TMA_OP,
+  STAS_OP,
+  ARRIVES_OP,
+  NANOSLEEP_OP,
+  // Specialized Units
   SPECIALIZED_UNIT_1_OP = SPEC_UNIT_START_ID,
   SPECIALIZED_UNIT_2_OP,
   SPECIALIZED_UNIT_3_OP,
@@ -187,29 +219,293 @@ typedef enum mem_operation_t mem_operation;
 
 enum _memory_op_t { no_memory_op = 0, memory_load, memory_store };
 
-#include <assert.h>
-#include <stdlib.h>
-#include <algorithm>
-#include <bitset>
-#include <deque>
-#include <list>
-#include <map>
-#include <vector>
+// Fence related
+// https://docs.nvidia.com/cuda/parallel-thread-execution/#parallel-synchronization-and-communication-instructions-membar
+typedef enum fence_proxy_kind_t {
+  ASYNC_SHARED_CTA = 0,
+  ASYNC_SHARED_CLUSTER
+} fence_proxy_kind;
 
-#if !defined(__VECTOR_TYPES_H__)
-#include "vector_types.h"
-#endif
-struct dim3comp {
-  bool operator()(const dim3 &a, const dim3 &b) const {
-    if (a.z < b.z)
-      return true;
-    else if (a.y < b.y)
-      return true;
-    else if (a.x < b.x)
-      return true;
-    else
-      return false;
+// Syncs related
+// Mostly just 1-1 mapping with mbarrier PTX instructions
+// So we map them to mbarrier PTX terminology
+// https://docs.nvidia.com/cuda/parallel-thread-execution/#parallel-synchronization-and-communication-instructions-mbarrier
+typedef enum syncs_op_t {
+  SYNCS_INIT = 0,
+  SYNCS_INVALIDATE,
+  SYNCS_EXPECT_TX,
+  SYNCS_COMPELTE_TX,
+  SYNCS_ARRIVE,
+  SYNCS_ARRIVE_EXPECT_TX,
+  SYNCS_ARRIVE_DROP,
+  SYNCS_TEST_WAIT,      // Not implemented, modeled as another barrier
+  SYNCS_TRY_WAIT,       // Not implemented, modeled as another barrier
+  SYNCS_PENDING_COUNT,  // Not implemented
+  SYNCS_MAX_ENUM_NO_USED
+} syncs_op;
+
+const std::string syncs_op_to_string[] = {
+    "SYNCS_INIT",          "SYNCS_INVALIDATE",      "SYNCS_EXPECT_TX",
+    "SYNCS_COMPELTE_TX",   "SYNCS_ARRIVE",          "SYNCS_ARRIVE_EXPECT_TX",
+    "SYNCS_ARRIVE_DROP",   "SYNCS_TEST_WAIT",       "SYNCS_TRY_WAIT",
+    "SYNCS_PENDING_COUNT", "SYNCS_MAX_ENUM_NO_USED"};
+
+typedef struct {
+  uint32_t addr[MAX_WARP_SIZE];
+  union {
+    struct {
+      uint32_t count[MAX_WARP_SIZE];
+    } init;
+    struct {
+      uint32_t txCount[MAX_WARP_SIZE];
+    } expect_tx;
+    struct {
+      uint32_t txCount[MAX_WARP_SIZE];
+    } complete_tx;
+    struct {
+      uint32_t count[MAX_WARP_SIZE];
+      uint32_t txCount[MAX_WARP_SIZE];
+    } arrive;
+    struct {
+      uint32_t count[MAX_WARP_SIZE];
+      uint32_t txCount[MAX_WARP_SIZE];
+    } arrive_drop;
+    struct {
+      // The phase of a prior arrive or arrive_drop operation
+      uint32_t phase[MAX_WARP_SIZE];
+    } wait;
+  } u;
+  bool init_as_one[MAX_WARP_SIZE] = {false};
+} syncs_operand;
+
+/**
+ * @brief Identifier for a cluster CTA
+ * @details Each cluster CTA is identified by <cluster_id, cluster_rank>
+ * cluster_id is the ID of the cluster
+ * cluster_rank is the rank of the CTA in the cluster
+ */
+class ClusterCTAIdentifier {
+ public:
+  dim3 cluster_id;
+  uint32_t cluster_rank;
+
+  ClusterCTAIdentifier() : cluster_id(dim3(0, 0, 0)), cluster_rank(0) {}
+  ClusterCTAIdentifier(const dim3 &id, uint32_t rank)
+      : cluster_id(id), cluster_rank(rank) {}
+
+  bool operator<(const ClusterCTAIdentifier &other) const {
+    if (utils::dim3_compare(cluster_id, other.cluster_id)) return true;
+    if (utils::dim3_compare(other.cluster_id, cluster_id)) return false;
+    return cluster_rank < other.cluster_rank;
   }
+
+  bool operator==(const ClusterCTAIdentifier &other) const {
+    return utils::dim3_equal(cluster_id, other.cluster_id) &&
+           (cluster_rank == other.cluster_rank);
+  }
+
+  bool operator!=(const ClusterCTAIdentifier &other) const {
+    return !(*this == other);
+  }
+  std::string to_string() const {
+    return "ClusterCTAIdentifier(cluster_id=" +
+           utils::dim3_to_string(cluster_id) +
+           ", cluster_rank=" + std::to_string(cluster_rank) + ")";
+  }
+};
+
+// Data structure to track mbarriers
+class mbarrier_t {
+ public:
+  // Constructors
+  mbarrier_t()
+      : cluster_cta_identifier(ClusterCTAIdentifier(dim3(-1, -1, -1), -1)),
+        cuda_cta_id(dim3(-1, -1, -1)),
+        bar_addr(0),
+        pending_thread_count(0),
+        expected_arrival_thread_count(0),
+        tx_count(0),
+        phase(0) {}
+  mbarrier_t(ClusterCTAIdentifier cluster_cta_identifier, dim3 cuda_cta_id,
+             uint32_t bar_addr, uint32_t count)
+      : cluster_cta_identifier(cluster_cta_identifier),
+        cuda_cta_id(cuda_cta_id),
+        bar_addr(bar_addr),
+        pending_thread_count(count),
+        expected_arrival_thread_count(count),
+        tx_count(0),
+        phase(0) {}
+
+  // Different operations you can perform on a mbarrier
+  // Check
+  // https://docs.nvidia.com/cuda/parallel-thread-execution/#parallel-synchronization-and-communication-instructions-mbarrier
+  // for more details
+  void arrive_on(uint32_t count) {
+    this->pending_thread_count -= count;
+    try_phase_transition();
+  }
+
+  void drop_on(uint32_t count) { this->expected_arrival_thread_count -= count; }
+
+  void expect_on(uint32_t txCount) { this->tx_count += txCount; }
+
+  void complete_on(uint32_t txCount) {
+    // complete-on op triggers phase transition
+    // but it will not return phase
+    this->tx_count -= txCount;
+    try_phase_transition();
+  }
+
+  uint32_t try_phase_transition() {
+    if (this->pending_thread_count == 0 && this->tx_count == 0) {
+      this->phase++;
+      this->pending_thread_count = this->expected_arrival_thread_count;
+    }
+    return this->phase;
+  }
+
+  // Getters
+  ClusterCTAIdentifier get_cluster_cta_identifier() const {
+    return cluster_cta_identifier;
+  }
+  dim3 get_cta_id() const { return cuda_cta_id; }
+  uint32_t get_bar_addr() const { return bar_addr; }
+  // mbarrier offset is the lower 24 bits of the bar_addr
+  uint32_t get_bar_offset() const { return bar_addr & 0xFFFFFF; }
+  uint32_t get_pending_thread_count() const { return pending_thread_count; }
+  uint32_t get_expected_arrival_thread_count() const {
+    return expected_arrival_thread_count;
+  }
+  int32_t get_tx_count() const { return tx_count; }
+  int get_phase() const { return phase; }
+  void inc_phase() { phase++; }
+
+ private:
+  // Cluster CTA identifier
+  ClusterCTAIdentifier cluster_cta_identifier;
+  // Barrier assoicated CTA ID
+  dim3 cuda_cta_id;
+  // Barrier shmem address
+  uint32_t bar_addr;
+  // Number of thread pending for this mbarrier
+  uint32_t pending_thread_count;
+  // Number of thread participated for this mbarrier
+  uint32_t expected_arrival_thread_count;
+  // Byte count, can be negative
+  int32_t tx_count;
+  // Phase of mbarrier, not used for now
+  int phase;
+};
+
+/**
+ * @brief A table to lookup mbarriers by address or offset.
+ * @details This table is used to track mbarriers for a cluster. It also force
+ * itself to be the owner of all mbarrier objects and automatically delete them
+ * when the table is destroyed.
+ *
+ */
+class ClusterMbarriersLookupTable {
+  // Mbarrier address within a cluster under distributed shared
+  using MbarrierAddr = uint32_t;
+
+  // Mbarrier offset within a cluster, correspond to address within a
+  // threadblock
+  using MbarrierOffset = uint32_t;
+
+  // Lookup table to find mbarrier by MbarrierAddr, also handling
+  // resource management of the mbarrier
+  using MbarrierLookupTable =
+      std::unordered_map<MbarrierAddr, std::unique_ptr<mbarrier_t>>;
+
+  // Lookup table to find list of mbarriers with same MbarrierOffset but
+  // different MbarrierAddr
+  using MbarriersByOffsetTable =
+      std::unordered_multimap<MbarrierOffset, mbarrier_t *>;
+
+ public:
+  ClusterMbarriersLookupTable() = default;
+
+  /**
+   * @brief Insert a mbarrier into the table
+   *
+   * @param mbarrier
+   */
+  void insert_mbarrier(std::unique_ptr<mbarrier_t> mbarrier) {
+    MbarrierAddr addr = mbarrier->get_bar_addr();
+    MbarrierOffset offset = mbarrier->get_bar_offset();
+
+    auto [iter, inserted] = m_mbarrier_lookup_table.insert(
+        std::make_pair(addr, std::move(mbarrier)));
+    assert(inserted && "Failed to insert mbarrier into lookup table");
+    m_mbarriers_by_offset_table.insert(
+        std::make_pair(offset, iter->second.get()));
+  }
+
+  /**
+   * @brief Remove a mbarrier from the table
+   *
+   * @param mbarrier
+   */
+  void remove_mbarrier(MbarrierAddr addr) {
+    // Find the mbarrier in the address lookup table
+    auto iter = m_mbarrier_lookup_table.find(addr);
+    assert(iter != m_mbarrier_lookup_table.end() &&
+           "Failed to find mbarrier in lookup table");
+    mbarrier_t *mbarrier = iter->second.get();
+
+    // Remove the specific mbarrier from the offset lookup table
+    // using the mbarrier address as criteria to erase
+    // the only matched one
+    MbarrierOffset offset = mbarrier->get_bar_offset();
+    auto [begin, end] = m_mbarriers_by_offset_table.equal_range(offset);
+    for (auto it = begin; it != end; ++it) {
+      if (it->second->get_bar_addr() == addr) {
+        m_mbarriers_by_offset_table.erase(it);
+        break;
+      }
+    }
+
+    // Remove from the address lookup table, the mbarrier will be deleted
+    // automatically
+    m_mbarrier_lookup_table.erase(iter);
+  }
+
+  /**
+   * @brief Lookup a mbarrier by MbarrierAddr
+   *
+   * @param addr mbarrier address within a cluster
+   * @return mbarrier_t*
+   */
+  mbarrier_t *lookup_clustermbar(MbarrierAddr addr) {
+    auto it = m_mbarrier_lookup_table.find(addr);
+    assert(it != m_mbarrier_lookup_table.end() &&
+           "Accessing non-existent mbarrier is undefined behavior per PTX");
+    return it->second.get();
+  }
+
+  mbarrier_t *lookup_clustermbar_allow_nonexist(MbarrierAddr addr) {
+    auto it = m_mbarrier_lookup_table.find(addr);
+    if (it == m_mbarrier_lookup_table.end()) {
+      return nullptr;
+    }
+    return it->second.get();
+  }
+
+  /**
+   * @brief Lookup a list of mbarriers with matching MbarrierOffset
+   *
+   * @param addr mbarrier address within a threadblock
+   * @return std::pair<MbarriersByOffsetTable::iterator,
+   * MbarriersByOffsetTable::iterator>
+   */
+  auto lookup_clustermbars_by_offset(MbarrierOffset offset) {
+    return m_mbarriers_by_offset_table.equal_range(offset);
+  }
+
+ private:
+  // Private tables to track mbarriers for quick lookup
+  MbarrierLookupTable m_mbarrier_lookup_table;
+  MbarriersByOffsetTable m_mbarriers_by_offset_table;
 };
 
 void increment_x_then_y_then_z(dim3 &i, const dim3 &bound);
@@ -239,7 +535,7 @@ class kernel_info_t {
       dim3 gridDim, dim3 blockDim, class function_info *entry,
       std::map<std::string, const struct cudaArray *> nameToCudaArray,
       std::map<std::string, const struct textureInfo *> nameToTextureInfo);
-  ~kernel_info_t();
+  virtual ~kernel_info_t();
 
   void inc_running() { m_num_cores_running++; }
   void dec_running() {
@@ -248,9 +544,7 @@ class kernel_info_t {
   }
   bool running() const { return m_num_cores_running > 0; }
   bool done() const { return no_more_ctas_to_run() && !running(); }
-  class function_info *entry() {
-    return m_kernel_entry;
-  }
+  class function_info *entry() { return m_kernel_entry; }
   const class function_info *entry() const { return m_kernel_entry; }
 
   size_t num_blocks() const {
@@ -300,9 +594,7 @@ class kernel_info_t {
   std::list<class ptx_thread_info *> &active_threads() {
     return m_active_threads;
   }
-  class memory_space *get_param_memory() {
-    return m_param_mem;
-  }
+  class memory_space *get_param_memory() { return m_param_mem; }
 
   // The following functions access texture bindings present at the kernel's
   // launch
@@ -364,7 +656,7 @@ class kernel_info_t {
   dim3 m_parent_ctaid;
   dim3 m_parent_tid;
   std::list<kernel_info_t *> m_child_kernels;  // child kernel launched
-  std::map<dim3, std::list<CUstream_st *>, dim3comp>
+  std::map<dim3, std::list<CUstream_st *>, utils::Dim3Compare>
       m_cta_streams;  // streams created in each CTA
 
   // Jin: kernel timing
@@ -378,7 +670,23 @@ class kernel_info_t {
 
   unsigned m_kernel_TB_latency;  // this used for any CPU-GPU kernel latency and
                                  // counted in the gpu_cycle
+
+  // mbarrier state management
+  // Hashmap to track mbarrier state for each cluster
+  // Dynamically allocated when a cluster needs mbarrier access
+ private:
+  std::unordered_map<dim3, ClusterMbarriersLookupTable, utils::Dim3Hash,
+                     utils::Dim3Equal>
+      m_cluster_mbarrier_lookup_table;
+
+ public:
+  ClusterMbarriersLookupTable &get_cluster_mbarrier_lookup_table(
+      dim3 cluster_id) {
+    return m_cluster_mbarrier_lookup_table[cluster_id];
+  }
 };
+
+enum class OPNDCOLL_TYPE { DETAILED = 0, SIMPLE };
 
 class core_config {
  public:
@@ -426,11 +734,11 @@ class core_config {
   bool gmem_skip_L1D;  // on = global memory access always skip the L1 cache
 
   bool adaptive_cache_config;
+  OPNDCOLL_TYPE opndcoll_model;
 };
 
 // bounded stack that implements simt reconvergence using pdom mechanism from
 // MICRO'07 paper
-const unsigned MAX_WARP_SIZE = 32;
 typedef std::bitset<MAX_WARP_SIZE> active_mask_t;
 #define MAX_WARP_SIZE_SIMT_STACK MAX_WARP_SIZE
 typedef std::bitset<MAX_WARP_SIZE_SIMT_STACK> simt_mask_t;
@@ -609,15 +917,9 @@ class gpgpu_t {
   void memcpy_from_gpu(void *dst, size_t src_start_addr, size_t count);
   void memcpy_gpu_to_gpu(size_t dst, size_t src, size_t count);
 
-  class memory_space *get_global_memory() {
-    return m_global_mem;
-  }
-  class memory_space *get_tex_memory() {
-    return m_tex_mem;
-  }
-  class memory_space *get_surf_memory() {
-    return m_surf_mem;
-  }
+  class memory_space *get_global_memory() { return m_global_mem; }
+  class memory_space *get_tex_memory() { return m_tex_mem; }
+  class memory_space *get_surf_memory() { return m_surf_mem; }
 
   void gpgpu_ptx_sim_bindTextureToArray(const struct textureReference *texref,
                                         const struct cudaArray *array);
@@ -630,7 +932,7 @@ class gpgpu_t {
 
   const struct textureReference *get_texref(const std::string &texname) const {
     std::map<std::string,
-             std::set<const struct textureReference *> >::const_iterator t =
+             std::set<const struct textureReference *>>::const_iterator t =
         m_NameToTextureRef.find(texname);
     assert(t != m_NameToTextureRef.end());
     return *(t->second.begin());
@@ -685,7 +987,7 @@ class gpgpu_t {
   unsigned long long m_dev_malloc;
   //  These maps contain the current texture mappings for the GPU at any given
   //  time.
-  std::map<std::string, std::set<const struct textureReference *> >
+  std::map<std::string, std::set<const struct textureReference *>>
       m_NameToTextureRef;
   std::map<const struct textureReference *, std::string> m_TextureRefToName;
   std::map<std::string, const struct cudaArray *> m_NameToCudaArray;
@@ -771,10 +1073,11 @@ typedef std::bitset<SECTOR_CHUNCK_SIZE> mem_access_sector_mask_t;
 
 #define MEM_ACCESS_TYPE_TUP_DEF                                         \
   MA_TUP_BEGIN(mem_access_type)                                         \
-  MA_TUP(GLOBAL_ACC_R), MA_TUP(LOCAL_ACC_R), MA_TUP(CONST_ACC_R),       \
-      MA_TUP(TEXTURE_ACC_R), MA_TUP(GLOBAL_ACC_W), MA_TUP(LOCAL_ACC_W), \
-      MA_TUP(L1_WRBK_ACC), MA_TUP(L2_WRBK_ACC), MA_TUP(INST_ACC_R),     \
-      MA_TUP(L1_WR_ALLOC_R), MA_TUP(L2_WR_ALLOC_R),                     \
+  MA_TUP(GLOBAL_ACC_R), MA_TUP(CHIPLET_ACC_R), MA_TUP(LOCAL_ACC_R),     \
+      MA_TUP(CONST_ACC_R), MA_TUP(TEXTURE_ACC_R), MA_TUP(GLOBAL_ACC_W), \
+      MA_TUP(CHIPLET_ACC_W), MA_TUP(LOCAL_ACC_W), MA_TUP(L1_WRBK_ACC),  \
+      MA_TUP(L2_WRBK_ACC), MA_TUP(INST_ACC_R), MA_TUP(L1_WR_ALLOC_R),   \
+      MA_TUP(L2_WR_ALLOC_R),                                            \
       MA_TUP(NUM_MEM_ACCESS_TYPE) MA_TUP_END(mem_access_type)
 
 #define MA_TUP_BEGIN(X) enum X {
@@ -811,17 +1114,35 @@ class mem_access_t {
  public:
   mem_access_t(gpgpu_context *ctx) { init(ctx); }
   mem_access_t(mem_access_type type, new_addr_type address, unsigned size,
-               bool wr, gpgpu_context *ctx) {
+               bool wr, gpgpu_context *ctx, bool is_tma = false,
+               uint32_t tma_mbar_addr = 0, bool is_tma_multicast = false,
+               uint32_t tma_multicast_cta_mask = 0,
+               dim3 cuda_cta_id = dim3(-1, -1, -1),
+               dim3 cuda_cluster_id = dim3(-1, -1, -1),
+               unsigned cuda_cluster_rank = 0) {
     init(ctx);
     m_type = type;
     m_addr = address;
     m_req_size = size;
     m_write = wr;
+    m_is_tma = is_tma;
+    m_tma_mbar_addr = tma_mbar_addr;
+    m_is_tma_multicast = is_tma_multicast;
+    m_tma_multicast_cta_mask = tma_multicast_cta_mask;
+    m_cuda_cta_id = cuda_cta_id;
+    m_cuda_cluster_id = cuda_cluster_id;
+    m_cuda_cluster_rank = cuda_cluster_rank;
   }
   mem_access_t(mem_access_type type, new_addr_type address, unsigned size,
                bool wr, const active_mask_t &active_mask,
                const mem_access_byte_mask_t &byte_mask,
-               const mem_access_sector_mask_t &sector_mask, gpgpu_context *ctx)
+               const mem_access_sector_mask_t &sector_mask, gpgpu_context *ctx,
+               bool is_tma = false, uint32_t tma_mbar_addr = 0,
+               bool is_tma_multicast = false,
+               uint32_t tma_multicast_cta_mask = 0,
+               dim3 cuda_cta_id = dim3(-1, -1, -1),
+               dim3 cuda_cluster_id = dim3(-1, -1, -1),
+               unsigned cuda_cluster_rank = 0)
       : m_warp_mask(active_mask),
         m_byte_mask(byte_mask),
         m_sector_mask(sector_mask) {
@@ -830,6 +1151,13 @@ class mem_access_t {
     m_addr = address;
     m_req_size = size;
     m_write = wr;
+    m_is_tma = is_tma;
+    m_tma_mbar_addr = tma_mbar_addr;
+    m_cuda_cta_id = cuda_cta_id;
+    m_cuda_cluster_id = cuda_cluster_id;
+    m_cuda_cluster_rank = cuda_cluster_rank;
+    m_is_tma_multicast = is_tma_multicast;
+    m_tma_multicast_cta_mask = tma_multicast_cta_mask;
   }
 
   new_addr_type get_addr() const { return m_addr; }
@@ -837,10 +1165,19 @@ class mem_access_t {
   unsigned get_size() const { return m_req_size; }
   const active_mask_t &get_warp_mask() const { return m_warp_mask; }
   bool is_write() const { return m_write; }
+  bool is_tma() const { return m_is_tma; }
   enum mem_access_type get_type() const { return m_type; }
+  void set_type(enum mem_access_type type) { m_type = type; }
   mem_access_byte_mask_t get_byte_mask() const { return m_byte_mask; }
   mem_access_sector_mask_t get_sector_mask() const { return m_sector_mask; }
-
+  uint32_t get_tma_mbar_addr() const { return m_tma_mbar_addr; }
+  dim3 get_cuda_cta_id() const { return m_cuda_cta_id; }
+  dim3 get_cuda_cluster_id() const { return m_cuda_cluster_id; }
+  unsigned get_cuda_cluster_rank() const { return m_cuda_cluster_rank; }
+  bool is_tma_multicast() const { return m_is_tma_multicast; }
+  uint32_t get_tma_multicast_cta_mask() const {
+    return m_tma_multicast_cta_mask;
+  }
   void print(FILE *fp) const {
     fprintf(fp, "addr=0x%llx, %s, size=%u, ", m_addr,
             m_write ? "store" : "load ", m_req_size);
@@ -891,6 +1228,19 @@ class mem_access_t {
   active_mask_t m_warp_mask;
   mem_access_byte_mask_t m_byte_mask;
   mem_access_sector_mask_t m_sector_mask;
+
+  // TMA memory access information
+  bool m_is_tma;
+  uint32_t m_tma_mbar_addr;
+  bool m_is_tma_multicast;
+  uint32_t m_tma_multicast_cta_mask;
+  dim3 m_cuda_cta_id;
+
+  // CUDA cluster information
+  // TODO Maybe we want to inherit from base mem_access_t for cluster
+  // mem_access_t?
+  dim3 m_cuda_cluster_id;
+  unsigned m_cuda_cluster_rank;
 };
 
 class mem_fetch;
@@ -966,6 +1316,8 @@ class inst_t {
       arch_reg.dst[i] = -1;
     }
     isize = 0;
+    m_is_proxy_fence = false;
+    m_syncs_op = SYNCS_MAX_ENUM_NO_USED;
   }
   bool valid() const { return m_decoded; }
   virtual void print_insn(FILE *fp) const {
@@ -996,13 +1348,52 @@ class inst_t {
             (sp_op == TENSOR__OP));
   }
   bool is_alu() const { return (sp_op == INT__OP); }
+  bool is_fence() const { return (op == FENCE_OP); }
+  bool is_syncs() const { return (op == SYNCS_OP); }
+  bool is_shmem_load() const {
+    return is_load() && space.get_type() == shared_space;
+  }
+  bool is_shmem_store() const {
+    return is_store() && space.get_type() == shared_space;
+  }
+  bool is_shmem_access() const { return is_shmem_load() || is_shmem_store(); }
+  bool is_proxy_fence() const { return is_fence() && m_is_proxy_fence; }
+  bool is_proxy_fence_async() const {
+    return is_proxy_fence() && (m_fence_proxy_kind == ASYNC_SHARED_CLUSTER ||
+                                m_fence_proxy_kind == ASYNC_SHARED_CTA);
+  }
+  bool is_syncs_test_wait() const {
+    return is_syncs() && (m_syncs_op == SYNCS_TEST_WAIT);
+  }
+  bool is_syncs_try_wait() const {
+    return is_syncs() && (m_syncs_op == SYNCS_TRY_WAIT);
+  }
+  bool is_syncs_arrive() const {
+    return is_syncs() &&
+           (m_syncs_op == SYNCS_ARRIVE || m_syncs_op == SYNCS_ARRIVE_DROP ||
+            m_syncs_op == SYNCS_ARRIVE_EXPECT_TX);
+  }
+  bool is_tma() const { return (op == TMA_OP); }
+  bool is_tma_load() const { return is_tma() && memory_op == memory_load; }
+  bool is_tma_store() const { return is_tma() && memory_op == memory_store; }
+  bool is_arrives() const { return (op == ARRIVES_OP); }
+  bool is_gmma() const { return (op == SPECIALIZED_UNIT_5_OP); }
 
   unsigned get_num_operands() const { return num_operands; }
   unsigned get_num_regs() const { return num_regs; }
+  fence_proxy_kind get_fence_proxy_kind() const { return m_fence_proxy_kind; }
+  syncs_op get_syncs_op() const { return m_syncs_op; }
   void set_num_regs(unsigned num) { num_regs = num; }
   void set_num_operands(unsigned num) { num_operands = num; }
   void set_bar_id(unsigned id) { bar_id = id; }
   void set_bar_count(unsigned count) { bar_count = count; }
+  void set_proxy_fence(bool is_proxy_fence) {
+    m_is_proxy_fence = is_proxy_fence;
+  }
+  void set_fence_proxy_kind(fence_proxy_kind fence_proxy_kind) {
+    m_fence_proxy_kind = fence_proxy_kind;
+  }
+  void set_syncs_op(syncs_op syncs_op) { m_syncs_op = syncs_op; }
 
   address_type pc;  // program counter address of instruction
   unsigned isize;   // size of instruction in bytes
@@ -1053,6 +1444,17 @@ class inst_t {
  protected:
   bool m_decoded;
   virtual void pre_decode() {}
+
+  // Weili: fence related, for proxy
+  // https://docs.nvidia.com/cuda/parallel-thread-execution/#parallel-synchronization-and-communication-instructions-membar
+  // https://docs.nvidia.com/cuda/parallel-thread-execution/#memory-consistency-model
+  // Right we just support fence.proxy.async.shared::{cta, cluster}
+  bool m_is_proxy_fence;
+  fence_proxy_kind m_fence_proxy_kind;
+
+  // Weili: syncs unit related, for mbarrier
+  // https://docs.nvidia.com/cuda/parallel-thread-execution/#parallel-synchronization-and-communication-instructions-mbarrier
+  syncs_op m_syncs_op;
 };
 
 enum divergence_support_t { POST_DOMINATOR = 1, NUM_SIMD_MODEL };
@@ -1060,6 +1462,8 @@ enum divergence_support_t { POST_DOMINATOR = 1, NUM_SIMD_MODEL };
 const unsigned MAX_ACCESSES_PER_INSN_PER_THREAD = 8;
 
 class warp_inst_t : public inst_t {
+  // TODO Weili Oct, 8 2025: Fields unique to certain type of instructions
+  // TODO should be grouped under a union to reduce memory usage
  public:
   // constructors
   warp_inst_t() {
@@ -1074,6 +1478,15 @@ class warp_inst_t : public inst_t {
     m_is_depbar = false;
 
     m_depbar_group_no = 0;
+    m_nanosleep_ns = 0;
+    m_tma_mbar_addr = 0;
+    m_tma_byte_count = 0;
+    m_tma_oob_byte_count = 0;
+    m_is_tma_cmdflush = false;
+    m_is_ldgsts_arrives_mbar = false;
+    m_is_ldgsts_arrives_arvcnt = false;
+    m_is_gmma_commit_group = false;
+    memset(m_ldgsts_arrives_mbar_addr, 0, sizeof(m_ldgsts_arrives_mbar_addr));
   }
   warp_inst_t(const core_config *config) {
     m_uid = 0;
@@ -1095,6 +1508,19 @@ class warp_inst_t : public inst_t {
     m_is_depbar = false;
 
     m_depbar_group_no = 0;
+    m_nanosleep_ns = 0;
+    m_tma_mbar_addr = 0;
+    m_tma_byte_count = 0;
+    m_tma_oob_byte_count = 0;
+    m_cuda_cta_id = dim3(-1, -1, -1);
+    m_cuda_cluster_cta_id = dim3(-1, -1, -1);
+    m_cuda_cluster_id = dim3(-1, -1, -1);
+    m_cuda_cluster_rank = 0;
+    m_is_tma_cmdflush = false;
+    m_is_ldgsts_arrives_mbar = false;
+    m_is_ldgsts_arrives_arvcnt = false;
+    m_is_gmma_commit_group = false;
+    memset(m_ldgsts_arrives_mbar_addr, 0, sizeof(m_ldgsts_arrives_mbar_addr));
   }
   virtual ~warp_inst_t() {}
 
@@ -1117,24 +1543,52 @@ class warp_inst_t : public inst_t {
       m_per_scalar_thread.resize(m_config->warp_size);
       m_per_scalar_thread_valid = true;
     }
-    m_per_scalar_thread[n].memreqaddr[0] = addr;
+    assert(m_per_scalar_thread[n].memreqaddr.empty());
+    m_per_scalar_thread[n].memreqaddr.push_back(addr);
   }
+  void set_cuda_cta_id(dim3 cta_id) { m_cuda_cta_id = cta_id; }
+  dim3 get_cuda_cta_id() const { return m_cuda_cta_id; }
+  void set_cuda_cluster_cta_id(dim3 cluster_cta_id) {
+    m_cuda_cluster_cta_id = cluster_cta_id;
+  }
+  dim3 get_cuda_cluster_cta_id() const { return m_cuda_cluster_cta_id; }
+  void set_cuda_cluster_id(dim3 cluster_id) { m_cuda_cluster_id = cluster_id; }
+  dim3 get_cuda_cluster_id() const { return m_cuda_cluster_id; }
+  void set_cuda_cluster_rank(unsigned cluster_rank) {
+    m_cuda_cluster_rank = cluster_rank;
+  }
+  unsigned get_cuda_cluster_rank() const { return m_cuda_cluster_rank; }
   void set_addr(unsigned n, new_addr_type *addr, unsigned num_addrs) {
     if (!m_per_scalar_thread_valid) {
       m_per_scalar_thread.resize(m_config->warp_size);
       m_per_scalar_thread_valid = true;
     }
     assert(num_addrs <= MAX_ACCESSES_PER_INSN_PER_THREAD);
+    m_per_scalar_thread[n].memreqaddr.clear();
     for (unsigned i = 0; i < num_addrs; i++)
-      m_per_scalar_thread[n].memreqaddr[i] = addr[i];
+      m_per_scalar_thread[n].memreqaddr.push_back(addr[i]);
+  }
+  void set_tma_access_addrs(new_addr_type *addrs, unsigned num_addrs) {
+    for (unsigned i = 0; i < num_addrs; i++)
+      m_tma_access_addrs.push_back(addrs[i]);
+  }
+  void set_tma_access_addrs(const std::vector<new_addr_type> &addrs) {
+    m_tma_access_addrs = addrs;
+  }
+  void set_tma_access_addrs(const std::vector<uint64_t> &addrs) {
+    for (const auto &addr : addrs) {
+      m_tma_access_addrs.push_back(addr);
+    }
+  }
+  void push_back_tma_access_addr(new_addr_type addr) {
+    m_tma_access_addrs.push_back(addr);
   }
   void print_m_accessq() {
     if (accessq_empty())
       return;
     else {
       printf("Printing mem access generated\n");
-      std::list<mem_access_t>::iterator it;
-      for (it = m_accessq.begin(); it != m_accessq.end(); ++it) {
+      for (auto it = m_accessq.begin(); it != m_accessq.end(); ++it) {
         printf("MEM_TXN_GEN:%s:%llx, Size:%d \n",
                mem_access_type_str(it->get_type()), it->get_addr(),
                it->get_size());
@@ -1213,6 +1667,7 @@ class warp_inst_t : public inst_t {
   }
   new_addr_type get_addr(unsigned n) const {
     assert(m_per_scalar_thread_valid);
+    assert(!m_per_scalar_thread[n].memreqaddr.empty());
     return m_per_scalar_thread[n].memreqaddr[0];
   }
 
@@ -1238,6 +1693,31 @@ class warp_inst_t : public inst_t {
   unsigned get_schd_id() const { return m_scheduler_id; }
   active_mask_t get_warp_active_mask() const { return m_warp_active_mask; }
 
+  // SYNCS related
+  // Set the operand for the syncs instruction
+  void set_syncs_operand(syncs_operand operand) { m_syncs_operand = operand; }
+  syncs_operand get_syncs_operand() const { return m_syncs_operand; }
+
+  // TMA mbarrier related
+  uint32_t get_tma_mbar_addr() const { return m_tma_mbar_addr; }
+  void set_tma_mbar_addr(uint32_t addr) { m_tma_mbar_addr = addr; }
+  size_t get_tma_byte_count() const { return m_tma_byte_count; }
+  void set_tma_byte_count(size_t byte_count) { m_tma_byte_count = byte_count; }
+  size_t get_tma_oob_byte_count() const { return m_tma_oob_byte_count; }
+  void set_tma_oob_byte_count(size_t oob_byte_count) {
+    m_tma_oob_byte_count = oob_byte_count;
+  }
+  bool is_tma_multicast() const { return m_is_tma_multicast; }
+  uint32_t get_tma_multicast_cta_mask() const {
+    return m_tma_multicast_cta_mask;
+  }
+  void set_tma_multicast(bool is_tma_multicast) {
+    m_is_tma_multicast = is_tma_multicast;
+  }
+  void set_tma_multicast_cta_mask(uint32_t tma_multicast_cta_mask) {
+    m_tma_multicast_cta_mask = tma_multicast_cta_mask;
+  }
+
  protected:
   unsigned m_uid;
   unsigned long long m_streamID;
@@ -1258,22 +1738,15 @@ class warp_inst_t : public inst_t {
                            // -- for instruction counting
 
   struct per_thread_info {
-    per_thread_info() {
-      for (unsigned i = 0; i < MAX_ACCESSES_PER_INSN_PER_THREAD; i++)
-        memreqaddr[i] = 0;
-    }
     dram_callback_t callback;
-    new_addr_type
-        memreqaddr[MAX_ACCESSES_PER_INSN_PER_THREAD];  // effective address,
-                                                       // upto 8 different
-                                                       // requests (to support
-                                                       // 32B access in 8 chunks
-                                                       // of 4B each)
+    std::vector<new_addr_type> memreqaddr;  // effective address,
+                                            // dynamic size (up to
+                                            // MAX_ACCESSES_PER_INSN_PER_THREAD)
   };
   bool m_per_scalar_thread_valid;
   std::vector<per_thread_info> m_per_scalar_thread;
   bool m_mem_accesses_created;
-  std::list<mem_access_t> m_accessq;
+  std::vector<mem_access_t> m_accessq;
 
   unsigned m_scheduler_id;  // the scheduler that issues this inst
 
@@ -1287,6 +1760,47 @@ class warp_inst_t : public inst_t {
   bool m_is_depbar;
 
   unsigned int m_depbar_group_no;
+
+  // NANOSLEEP support
+  uint64_t m_nanosleep_ns;
+
+  // Weili: warp-specific attributes for syncs instructions
+  // Almost like a functional model now for syncs unit
+  syncs_operand m_syncs_operand;
+
+  // Weili: TMA and cluster related
+  std::vector<new_addr_type> m_tma_access_addrs;
+  uint32_t m_tma_mbar_addr;
+  // actual transfer byte count
+  size_t m_tma_byte_count;
+  // out-of-bounds byte count
+  size_t m_tma_oob_byte_count;
+  bool m_is_tma_multicast;
+  uint32_t m_tma_multicast_cta_mask;
+  // Software CTA id
+  dim3 m_cuda_cta_id;
+  // CTA id within the cluster
+  dim3 m_cuda_cluster_cta_id;
+  // Cluster id within the grid
+  dim3 m_cuda_cluster_id;
+  // CTA rank within the cluster
+  unsigned m_cuda_cluster_rank;
+
+  // TMA store commit group
+  // Whether this instruction is a UTMACMDFLUSH instruction, which is used to
+  // form a bulk group containing all the previous stores due to TMA
+  // instructions.
+  bool m_is_tma_cmdflush;
+
+  // GMMA commit group
+  bool m_is_gmma_commit_group;
+
+  // For mbarrier-based LDGSTS completion mechanism
+  bool m_is_ldgsts_arrives_mbar;
+  // True if ARRIVES.LDGSTSBAR.64.ARVCNT (arrive-on, decrement pending count)
+  // False if ARRIVES.LDGSTSBAR.64.TRANSCNT (complete-tx, decrement tx count)
+  bool m_is_ldgsts_arrives_arvcnt;
+  uint32_t m_ldgsts_arrives_mbar_addr[MAX_WARP_SIZE];
 };
 
 void move_warp(warp_inst_t *&dst, warp_inst_t *&src);
@@ -1337,9 +1851,7 @@ class core_t {
   virtual bool warp_waiting_at_barrier(unsigned warp_id) const = 0;
   virtual void checkExecutionStatusAndUpdate(warp_inst_t &inst, unsigned t,
                                              unsigned tid) = 0;
-  class gpgpu_sim *get_gpu() {
-    return m_gpu;
-  }
+  class gpgpu_sim *get_gpu() { return m_gpu; }
   void execute_warp_inst_t(warp_inst_t &inst, unsigned warpId = (unsigned)-1);
   bool ptx_thread_done(unsigned hw_thread_id) const;
   virtual void updateSIMTStack(unsigned warpId, warp_inst_t *inst);
@@ -1349,9 +1861,7 @@ class core_t {
   void get_pdom_stack_top_info(unsigned warpId, unsigned *pc,
                                unsigned *rpc) const;
   kernel_info_t *get_kernel_info() { return m_kernel; }
-  class ptx_thread_info **get_thread_info() {
-    return m_thread;
-  }
+  class ptx_thread_info **get_thread_info() { return m_thread; }
   unsigned get_warp_size() const { return m_warp_size; }
   void and_reduction(unsigned ctaid, unsigned barid, bool value) {
     reduction_storage[ctaid][barid] &= value;
@@ -1526,10 +2036,59 @@ class register_set {
   }
 
   unsigned get_size() { return regs.size(); }
+  std::vector<warp_inst_t *> &get_regs() { return regs; }
 
  private:
   std::vector<warp_inst_t *> regs;
   const char *m_name;
+};
+
+class PerfCounter {
+ public:
+  PerfCounter() {
+    header_printed = false;
+    output_csv = nullptr;
+
+    // Generate timestamped filename
+    auto now = std::chrono::system_clock::now();
+    auto time_t_now = std::chrono::system_clock::to_time_t(now);
+    std::tm *tm_now = std::localtime(&time_t_now);
+    char timestamp[32];
+    std::strftime(timestamp, sizeof(timestamp), "%Y-%m-%d_%H-%M-%S", tm_now);
+    output_csv_name = std::string("perf_counter_") + timestamp + ".csv.gz";
+  }
+
+  inline void open_for_write();
+
+  inline void open_for_append();
+
+  void add_absolute_counter(std::string name, unsigned long long &counter);
+
+  void add_ratio_counter(std::string name, float &counter);
+
+  void add_statistics_counter(Statistics::AbstractStatsCounter &counter);
+
+  void print_header();
+
+  void print_counters();
+
+  inline void close();
+
+ private:
+  std::vector<std::reference_wrapper<unsigned long long>> absolute_counters;
+  std::vector<std::string> absolute_counter_names;
+
+  // ratio counters
+  std::vector<std::string> ratio_counter_names;
+  std::vector<std::reference_wrapper<float>> ratio_counters;
+
+  // Statistics counters
+  std::vector<std::reference_wrapper<Statistics::AbstractStatsCounter>>
+      statistics_counters;
+
+  bool header_printed;
+  gzFile output_csv;
+  std::string output_csv_name;
 };
 
 #endif  // #ifdef __cplusplus
